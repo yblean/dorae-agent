@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_macros.html" import mascot %}
+{% block main %}{% set a = editing %}
+<section class="main">
+  <header class="top-bar">
+    <a class="back" href="/chat/{{ a.id }}" aria-label="Back">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </a>
+    {{ mascot('idle', a.color, 'cz-head', 'avatar-xs', a.name) }}
+    <span class="top-title">{{ a.name }}</span>
+  </header>
+  <div class="main-scroll">
+    <form class="maker" method="post" action="/agents/{{ a.id }}/customize" data-maker>
+      <div class="maker-avatar">{{ mascot('idle', a.color, 'cz', 'avatar-hero', a.name) }}</div>
+      <div class="swatches" role="radiogroup" aria-label="Colour">
+        {% for c in colors %}
+        <label class="swatch" style="--c: {{ c }}">
+          <input type="radio" name="color" value="{{ c }}" {{ 'checked' if c|upper == a.color|upper }}>
+          <span class="sr-only">{{ c }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <label class="maker-field">
+        <span>Name</span>
+        <input class="maker-input" name="name" value="{{ a.name }}" maxlength="24" data-original="{{ a.name }}" required>
+      </label>
+      <p class="maker-role">{{ a.role }} · {{ 'looks after your spending from receipts and bank alerts' if a.id == 'money' else 'looks after bills, appointments, deadlines and trips from your email' }}</p>
+      <button class="maker-save" disabled>Save</button>
+    </form>
+
+    <div class="suggest">
+      <div class="suggest-head">Your agents</div>
+      <div class="suggest-grid">
+        {% for e in sidebar %}{% set b = e.agent %}
+        <a class="suggest-card" href="/chat/{{ b.id }}">
+          {{ mascot('idle', b.color, 'sg-' ~ b.id, 'avatar-lg', b.name) }}
+          <span><strong>{{ b.name }}</strong><span>{{ b.role }}. {{ 'Answers "where did my money go?" and remembers your category fixes.' if b.id == 'money' else 'Finds what needs your OK and puts it in your calendar.' }}</span></span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

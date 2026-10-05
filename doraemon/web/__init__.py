@@ -20,7 +20,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from doraemon.agents import AGENTS, Brain
+import re
+
+from doraemon.agents import AGENTS, COLORS, Brain, shades, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.calendar_sync import Calendar, connect_calendar, event_body
 from doraemon.config import Settings
@@ -34,6 +36,7 @@ from doraemon.schema import Category, ItemType
 
 HERE = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=HERE / "templates")
+TEMPLATES.env.filters["shades"] = shades
 TRAVEL = {ItemType.FLIGHT.value, ItemType.OTHER_TRAVEL.value}
 # Chip colours per item type: (background, text, label)
 CHIPS = {
@@ -84,6 +87,11 @@ class CheckJob:
             self.db.add_message("calendar", "agent", f"Sorry, checking your inbox failed: {e}")
         finally:
             self.running = False
+
+
+def asset_version() -> str:
+    """Changes whenever app.css or app.js changes, so browsers fetch the new file instead of a cached one."""
+    return str(max(int(f.stat().st_mtime) for f in (HERE / "static").iterdir()))
 
 
 def create_app(settings: Settings | None = None, fx: FxRates | None = None,
@@ -169,7 +177,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
 
     def sidebar() -> list[dict]:
         entries = []
-        for agent in AGENTS.values():
+        for agent in (styled(a, db) for a in AGENTS.values()):
             last = db.last_message(agent.id)
             seen = int(db.get_setting(f"seen:{agent.id}") or 0)
             preview = (last["text"].split("\n")[0] if last and last["text"] else
@@ -187,7 +195,9 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             "sidebar": sidebar(),
             "current": None,
             "gmail_connected": Path(settings.google_token).exists(),
+            "account": settings.user_emails[0] if settings.user_emails else "",
             "types": [t.value for t in ItemType],
+            "asset_version": asset_version(),
             **context,
         })
 
@@ -259,8 +269,42 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         db.set_setting("last_agent", agent_id)
         last = last_full_month(settings)
         suggestions = [s.format(last_month=month_name(last)) for s in agent.suggestions]
-        return render(request, "chat.html", current=agent, messages=[message_view(r) for r in rows],
+        return render(request, "chat.html", current=styled(agent, db), messages=with_separators(rows),
                       suggestions=suggestions, panel=panel(agent_id))
+
+    def with_separators(rows) -> list[dict]:
+        """Message views with a centred time label wherever 20+ minutes passed, like a phone chat."""
+        views, previous = [], None
+        for row in rows:
+            view = message_view(row)
+            at = datetime.fromisoformat(row["created_at"]).astimezone(tz)
+            if previous is None or (at - previous).total_seconds() > 20 * 60:
+                day = "Today" if at.date() == datetime.now(tz).date() else at.strftime("%a %d %b").replace(" 0", " ")
+                view["separator"] = f"{day} {at.strftime('%I:%M %p').lstrip('0')}"
+            previous = at
+            views.append(view)
+        return views
+
+    # --- customize an agent (name and colour) ---------------------------------
+
+    @app.get("/agents/{agent_id}/customize", response_class=HTMLResponse)
+    def customize(request: Request, agent_id: str):
+        agent = AGENTS.get(agent_id)
+        if agent is None:
+            raise HTTPException(404)
+        return render(request, "customize.html", current=None, editing=styled(agent, db), colors=COLORS,
+                      defaults=agent)
+
+    @app.post("/agents/{agent_id}/customize")
+    def save_customize(agent_id: str, name: str = Form(...), color: str = Form(...)):
+        agent = AGENTS.get(agent_id)
+        if agent is None:
+            raise HTTPException(404)
+        name = name.strip()[:24] or agent.name
+        color = color if re.fullmatch(r"#[0-9A-Fa-f]{6}", color) else agent.color
+        db.set_setting(f"agent:{agent_id}:name", None if name == agent.name else name)
+        db.set_setting(f"agent:{agent_id}:color", None if color.upper() == agent.color.upper() else color.upper())
+        return RedirectResponse(f"/chat/{agent_id}", status_code=303)
 
     def panel(agent_id: str) -> dict:
         if agent_id == "money":

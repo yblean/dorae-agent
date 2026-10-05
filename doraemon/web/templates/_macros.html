@@ -1,33 +1,31 @@
 {# Agent avatar: a round close-up of Doraemon's collar, swaying bell and pocket.
-   color: blue (Dorae-1) or pink (Dorae-2). uid keeps gradient ids unique when several
+   color: any hex colour; its shades are worked out by the `shades` filter. uid keeps gradient ids unique when several
    avatars share a page. Moods change how the bell moves (see app.css). #}
-{% macro mascot(mood='idle', color='blue', uid='a', cls='') %}
-{% set c = {'blue': ['#7FD6FF', '#1FA2EC', '#0A6DB8', '#064F8A', '#062F55'],
-            'pink': ['#FFD3E5', '#F570A8', '#CC3D7E', '#8C1F52', '#4F0F2E']}[color] %}
-<svg class="mascot {{ cls }}" data-mascot data-mood="{{ mood }}" viewBox="0 0 200 200" role="img" aria-label="{{ 'Dorae-2' if color == 'pink' else 'Dorae-1' }}">
+{% macro mascot(mood='idle', color='#3B82F6', uid='a', cls='', label='Doraemon') %}
+{% set c = color|shades %}
+<svg class="mascot {{ cls }}" data-mascot data-mood="{{ mood }}" viewBox="0 0 200 200" role="img" aria-label="{{ label }}">
   <defs>
-    <clipPath id="{{ uid }}-circle"><circle cx="100" cy="100" r="92"/></clipPath>
-    <radialGradient id="{{ uid }}-body" cx=".3" cy=".22" r=".95"><stop offset="0" stop-color="{{ c[0] }}"/><stop offset=".4" stop-color="{{ c[1] }}"/><stop offset=".85" stop-color="{{ c[2] }}"/><stop offset="1" stop-color="{{ c[3] }}"/></radialGradient>
+    <clipPath id="{{ uid }}-circle"><circle cx="100" cy="100" r="100"/></clipPath>
+    <radialGradient id="{{ uid }}-body" cx=".3" cy=".22" r=".95"><stop offset="0" stop-color="{{ c[0] }}" data-shade="0"/><stop offset=".4" stop-color="{{ c[1] }}" data-shade="1"/><stop offset=".85" stop-color="{{ c[2] }}" data-shade="2"/><stop offset="1" stop-color="{{ c[3] }}" data-shade="3"/></radialGradient>
     <radialGradient id="{{ uid }}-belly" cx=".42" cy=".28" r=".8"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".7" stop-color="#F1F5F8"/><stop offset="1" stop-color="#C6D2DD"/></radialGradient>
     <linearGradient id="{{ uid }}-pocket" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#DCE5ED"/><stop offset=".25" stop-color="#F6F9FB"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient>
     <linearGradient id="{{ uid }}-collar" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FF7466"/><stop offset=".45" stop-color="#E3342C"/><stop offset="1" stop-color="#9E1717"/></linearGradient>
     <radialGradient id="{{ uid }}-bell" cx=".34" cy=".28" r=".85"><stop offset="0" stop-color="#FFF8CC"/><stop offset=".4" stop-color="#FFCD2E"/><stop offset=".85" stop-color="#C48A00"/><stop offset="1" stop-color="#8F6200"/></radialGradient>
-    <radialGradient id="{{ uid }}-vignette" cx=".5" cy=".45" r=".6"><stop offset=".7" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="{{ c[4] }}" stop-opacity=".3"/></radialGradient>
+    <radialGradient id="{{ uid }}-vignette" cx=".5" cy=".45" r=".6"><stop offset=".7" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="{{ c[4] }}" stop-opacity=".3" data-shade="4"/></radialGradient>
     <radialGradient id="{{ uid }}-glow" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#FFE680" stop-opacity=".9"/><stop offset="1" stop-color="#FFE680" stop-opacity="0"/></radialGradient>
     <filter id="{{ uid }}-soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="3.5"/></filter>
     <filter id="{{ uid }}-ring" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="3.5" flood-color="#3A2A1C" flood-opacity=".25"/></filter>
     <path id="{{ uid }}-sparkle" d="M0 -8 Q1.2 -1.2 8 0 Q1.2 1.2 0 8 Q-1.2 1.2 -8 0 Q-1.2 -1.2 0 -8 Z"/>
   </defs>
-  <circle cx="100" cy="100" r="96" fill="#FFFFFF" filter="url(#{{ uid }}-ring)"/>
   <g clip-path="url(#{{ uid }}-circle)">
     <rect width="200" height="200" fill="url(#{{ uid }}-body)"/>
     <ellipse cx="100" cy="156" rx="80" ry="74" fill="url(#{{ uid }}-belly)"/>
-    <ellipse cx="100" cy="128" rx="58" ry="10" fill="{{ c[4] }}" opacity=".18" filter="url(#{{ uid }}-soft)"/>
+    <ellipse cx="100" cy="128" rx="58" ry="10" fill="{{ c[4] }}" data-shade="4" opacity=".18" filter="url(#{{ uid }}-soft)"/>
     <path d="M50 140 A50 42 0 0 0 150 140 Z" fill="url(#{{ uid }}-pocket)"/>
     <path d="M50 140 A50 42 0 0 0 150 140 Z" fill="none" stroke="#93A6B8" stroke-width="2.2" stroke-linejoin="round"/>
     <path d="M56 143 H144" stroke="#7F93A6" stroke-width="2" stroke-linecap="round" opacity=".5"/>
     <ellipse class="mood mood-thinking pocket-glow" cx="100" cy="158" rx="34" ry="16" fill="url(#{{ uid }}-glow)"/>
-    <ellipse cx="100" cy="82" rx="110" ry="16" fill="{{ c[4] }}" opacity=".35" filter="url(#{{ uid }}-soft)"/>
+    <ellipse cx="100" cy="82" rx="110" ry="16" fill="{{ c[4] }}" data-shade="4" opacity=".35" filter="url(#{{ uid }}-soft)"/>
     <path d="M-6 40 Q100 84 206 40 L206 60 Q100 104 -6 60 Z" fill="url(#{{ uid }}-collar)"/>
     <path d="M-6 44 Q100 88 206 44" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" opacity=".3"/>
     <g class="bell">
@@ -40,7 +38,7 @@
       <path d="M100 113 V122" stroke="#3D2A00" stroke-width="3" stroke-linecap="round"/>
       <ellipse cx="92" cy="90" rx="6" ry="4" transform="rotate(-30 92 90)" fill="#FFFFFF" opacity=".85"/>
     </g>
-    <circle cx="100" cy="100" r="92" fill="url(#{{ uid }}-vignette)"/>
+    <circle cx="100" cy="100" r="100" fill="url(#{{ uid }}-vignette)"/>
     <ellipse cx="62" cy="34" rx="34" ry="12" transform="rotate(-28 62 34)" fill="#FFFFFF" opacity=".28" filter="url(#{{ uid }}-soft)"/>
   </g>
   {# position on the outer group: the twinkle animation replaces the inner transform #}
@@ -105,7 +103,8 @@
 
 {# One chat message, with its card if it has one. #}
 {% macro message(m, types) %}
-<div class="msg {{ 'from-you' if m.role == 'user' else 'from-agent' }}" data-msg="{{ m.id }}">
+{% if m.separator %}<div class="sep">{{ m.separator }}</div>{% endif %}
+<div class="msg {{ 'from-you' if m.role == 'user' else 'from-agent' }}" data-msg="{{ m.id }}" title="{{ m.time }}">
   {% if m.text %}<div class="bubble">{{ m.text }}</div>{% endif %}
 
   {% if m.kind == 'breakdown' and m.payload %}{% set p = m.payload %}
@@ -154,6 +153,5 @@
     {% endfor %}
   </div>
   {% endif %}
-  <span class="msg-time">{{ m.time }}</span>
 </div>
 {% endmacro %}

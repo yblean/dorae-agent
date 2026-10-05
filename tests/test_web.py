@@ -127,3 +127,28 @@ def test_reprocessing_keeps_decisions(tmp_path, settings):
     db.update("item", 1, "confirm", status="confirmed")
     db.save_result("g1", "t1", email(), Extraction(message_id="m", items=[item]), "extracted")  # --again
     assert [r["status"] for r in db.conn.execute("SELECT status FROM action_items")] == ["confirmed", "proposed"]
+
+
+def test_customize_agent_name_and_colour(client):
+    page = client.get("/agents/money/customize").text
+    assert page.count('name="color"') == 10 and 'value="#3B82F6" checked' in page
+    page = client.post("/agents/money/customize", data={"name": "Penny", "color": "#22C55E"}).text
+    assert "Penny" in page and "--agent: #22C55E" in page   # lands back in the chat, restyled
+    assert "Penny" in client.get("/agents").text            # sidebar uses the new name
+    # bad input falls back to the defaults instead of breaking the page
+    client.post("/agents/money/customize", data={"name": "  ", "color": "red; background: url(x)"})
+    page = client.get("/chat/money").text
+    assert "Dorae-1" in page and "--agent: #3B82F6" in page
+
+
+def test_time_separators_between_messages(client):
+    page = client.get("/chat/calendar").text
+    assert '<div class="sep">Today ' in page
+
+
+def test_budget_question_is_answered_honestly(client):
+    client.headers["x-requested-with"] = "fetch"
+    html = client.post("/chat/money/ask", data={"q": "help me set a budget of $300 per month"}).json()["html"]
+    assert "I can&#39;t save budgets yet" in html and "SGD 300.00" in html
+    html = client.post("/chat/money/ask", data={"q": "set a budget"}).json()["html"]
+    assert "Tell me an amount" in html

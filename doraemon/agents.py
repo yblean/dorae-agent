@@ -8,7 +8,7 @@ Answers are computed from your database (no model call yet): a reply is some
 text plus, optionally, a card (breakdown bars, a payments table, item cards).
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -33,20 +33,39 @@ class Agent:
 
 
 MONEY = Agent(
-    "money", "Dorae-1", "Spending", "blue",
+    "money", "Dorae-1", "Spending", "#3B82F6",
     ("Show this month's breakdown", "Where did I spend the most?", "How was {last_month}?", "Show my dining payments"),
     (("Check inbox for receipts", "With Dorae-2's check", "On"),
      ("Monthly summary", "1st of each month, 9:00", "Coming soon"),
      ("Overspend alerts", "When a budget is passed", "Coming soon")),
 )
 CALENDAR = Agent(
-    "calendar", "Dorae-2", "Calendar & reminders", "pink",
+    "calendar", "Dorae-2", "Calendar & reminders", "#EC4899",
     ("What needs my OK?", "What's due this week?", "My upcoming trips", "What already passed?"),
     (("Check inbox", "When you press Run now", "Run now"),
      ("Morning briefing", "Every day, 8:00", "Coming soon"),
      ("Due-soon reminders", "3 days and 1 day before", "Coming soon")),
 )
 AGENTS = {a.id: a for a in (MONEY, CALENDAR)}
+# The swatches offered when you customize an agent
+COLORS = ["#8B5E3C", "#EF4444", "#F97316", "#F59E0B", "#22C55E", "#14B8A6", "#3B82F6", "#8B5CF6", "#EC4899", "#6B7280"]
+
+
+def styled(agent: Agent, db: Database) -> Agent:
+    """The agent with the name and colour you picked, if you customized it."""
+    name = db.get_setting(f"agent:{agent.id}:name") or agent.name
+    color = db.get_setting(f"agent:{agent.id}:color") or agent.color
+    return replace(agent, name=name, color=color)
+
+
+def shades(hex_color: str) -> list[str]:
+    """Five tones for the 3D avatar: highlight, light, base, shade, deep shadow."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+    def mix(target: int, amount: float) -> str:
+        return "#" + "".join(f"{round(c + (target - c) * amount):02X}" for c in (r, g, b))
+    return [mix(255, .55), mix(255, .18), hex_color, mix(0, .3), mix(0, .65)]
 
 _MONTHS = ["january", "february", "march", "april", "may", "june", "july",
            "august", "september", "october", "november", "december"]
@@ -154,8 +173,34 @@ class Brain:
         card["text"] = f"Where your money went in {month_name(month)}:\n" + "\n".join(lines)
         return card
 
+    def budget_check(self, q: str) -> dict:
+        """Budgets can't be saved yet; compare the amount you mention with this month instead."""
+        text = "I can't save budgets yet. That's coming together with overspend alerts."
+        found = re.search(r"(\d[\d,]*(?:\.\d+)?)", q)
+        if not found:
+            return {"text": text + " Tell me an amount, like \"a budget of $300\", and I'll check this month against it.",
+                    "kind": "text", "payload": None}
+        limit = Decimal(found.group(1).replace(",", ""))
+        month = self.this_month()
+        spent = spending_totals(self.ledger(month), self.home, self.fx).total
+        day = self.today().day
+        next_month = (date.fromisoformat(month + "-01") + timedelta(days=32)).replace(day=1)
+        days_in_month = (next_month - timedelta(days=1)).day
+        if spent > limit:
+            status = f"you're already {money(spent - limit, self.home)} over"
+        else:
+            on_track = limit * Decimal(day) / Decimal(days_in_month)
+            status = (f"{money(limit - spent, self.home)} left for the rest of the month"
+                      + (", and ahead of a steady pace" if spent > on_track else ", on track so far"))
+        card = self.breakdown(month)
+        card["text"] = (f"{text} For now, here's {month_name(month)} against {money(limit, self.home)}: "
+                        f"{money(spent, self.home)} spent by day {day}, so {status}.")
+        return card
+
     def money_reply(self, q: str) -> list[dict]:
         q = q.lower()
+        if re.search(r"budget|overspen|spending limit|\bcap\b", q):
+            return [self.budget_check(q)]
         month = self._month_in(q)
         category = next((c for word, c in _CATEGORY_WORDS.items() if re.search(rf"\b{word}", q)), None)
         if category and category in {c.value for c in Category}:

@@ -1,6 +1,7 @@
 // Chat behaviour. Without this script every button still works as a normal form.
 (() => {
-  const thread = document.getElementById('thread');
+  const thread = document.getElementById('thread');           // the scrolling area
+  const list = thread ? thread.querySelector('.thread-inner') || thread : null;  // the centred column messages go in
   const agent = thread ? thread.dataset.agent : null;
   const headMascot = document.querySelector('.chat-head [data-mascot]');
   let moodTimer;
@@ -21,7 +22,7 @@
     if (!thread || !html) return;
     const tpl = document.createElement('template');
     tpl.innerHTML = html.trim();
-    thread.append(tpl.content);
+    list.append(tpl.content);
     scrollDown();
   }
 
@@ -32,7 +33,7 @@
     body.className = 'bubble';
     body.textContent = text;
     msg.append(body);
-    thread.append(msg);
+    list.append(msg);
     scrollDown();
     return msg;
   }
@@ -42,7 +43,7 @@
     const dots = document.createElement('div');
     dots.className = 'typing';
     dots.innerHTML = '<span class="dot-anim"></span><span class="dot-anim dot2"></span><span class="dot-anim dot3"></span>';
-    thread.append(dots);
+    list.append(dots);
     scrollDown();
     return () => dots.remove();
   }
@@ -131,9 +132,55 @@
     }
   }));
 
-  // Overview panel on narrower screens
+  // The agent's screen panel: hide/show on wide screens, slide over on narrow ones
   const panel = document.getElementById('panel');
-  document.querySelectorAll('[data-panel-toggle]').forEach((b) => b.addEventListener('click', () => panel && panel.classList.toggle('open')));
+  const shell = document.querySelector('.shell');
+  const narrow = window.matchMedia('(max-width: 1180px)');
+  try { if (localStorage.getItem('panelHidden') === '1' && !narrow.matches) shell.classList.add('panel-hidden'); } catch {}
+  document.querySelectorAll('[data-panel-toggle]').forEach((b) => b.addEventListener('click', () => {
+    if (!panel) return;
+    if (narrow.matches) { panel.classList.toggle('open'); return; }
+    const hidden = shell.classList.toggle('panel-hidden');
+    try { localStorage.setItem('panelHidden', hidden ? '1' : '0'); } catch {}
+  }));
+
+  // "+" in the composer shows suggested questions
+  const chips = document.getElementById('chips');
+  const plus = document.querySelector('[data-toggle-chips]');
+  if (plus && chips) {
+    plus.setAttribute('aria-expanded', 'false');
+    plus.addEventListener('click', () => {
+      chips.hidden = !chips.hidden;
+      plus.setAttribute('aria-expanded', String(!chips.hidden));
+    });
+    chips.addEventListener('click', () => { chips.hidden = true; plus.setAttribute('aria-expanded', 'false'); });
+  }
+
+  // Customize an agent: preview the colour straight away, enable Save once something changed
+  const maker = document.querySelector('[data-maker]');
+  if (maker) {
+    const save = maker.querySelector('.maker-save');
+    const nameInput = maker.querySelector('input[name="name"]');
+    const startColor = (maker.querySelector('input[name="color"]:checked') || {}).value;
+    const shades = (hex) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      const mix = (t, a) => '#' + [r, g, b].map((c) => Math.round(c + (t - c) * a).toString(16).padStart(2, '0')).join('');
+      return [mix(255, .55), mix(255, .18), hex, mix(0, .3), mix(0, .65)];
+    };
+    const refresh = () => {
+      const color = (maker.querySelector('input[name="color"]:checked') || {}).value;
+      if (color) {
+        const tones = shades(color);
+        document.querySelectorAll('.maker [data-shade], .top-bar [data-shade]').forEach((el) => {
+          const tone = tones[+el.dataset.shade];
+          if (el.tagName.toLowerCase() === 'stop') el.setAttribute('stop-color', tone); else el.setAttribute('fill', tone);
+        });
+      }
+      save.disabled = !nameInput.value.trim() || (nameInput.value.trim() === nameInput.dataset.original && color === startColor);
+    };
+    maker.addEventListener('input', refresh);
+    maker.addEventListener('change', refresh);
+  }
 
   // Sidebar search filters the agent list
   const search = document.querySelector('[data-search]');

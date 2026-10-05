@@ -1,88 +1,97 @@
 {% extends "base.html" %}
 {% from "_macros.html" import mascot, message %}
 {% block main %}{% set a = current %}
-<section class="main chat" style="--agent: var(--{{ a.color }}); --agent-soft: var(--{{ a.color }}-soft)">
-  <header class="chat-head">
-    <a class="back" href="/agents" aria-label="All agents">‹</a>
-    {{ mascot('idle', a.color, 'head', 'avatar-md') }}
-    <div class="chat-title">
-      <span class="chat-name">{{ a.name }}</span>
-      <span class="chat-role">{{ a.role }}</span>
-    </div>
+<section class="main chat" style="--agent: {{ a.color }}">
+  <header class="top-bar">
+    <a class="back" href="/agents" aria-label="All agents">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </a>
+    {{ mascot('idle', a.color, 'head', 'avatar-xs', a.name) }}
+    <span class="top-title">{{ a.name }}</span>
     <span class="spacer"></span>
     <form method="post" action="/chat/{{ a.id }}/clear">
       <button class="icon-btn" title="New chat" aria-label="New chat">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
       </button>
     </form>
-    <button type="button" class="icon-btn" data-panel-toggle aria-label="Show overview" title="Overview">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+    <button type="button" class="icon-btn" data-panel-toggle aria-label="Show {{ a.name }}'s screen" title="{{ a.name }}'s screen">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
     </button>
   </header>
 
   <div class="thread" id="thread" data-agent="{{ a.id }}" aria-live="polite">
-    {% for m in messages %}{{ message(m, types) }}{% endfor %}
+    <div class="thread-inner">
+      {% for m in messages %}{{ message(m, types) }}{% endfor %}
+    </div>
   </div>
 
   <footer class="composer-wrap">
-    <div class="chips">
+    <div class="chips" id="chips" hidden>
       {% for s in suggestions %}<button type="button" class="ask-chip" data-q="{{ s }}">{{ s }}</button>{% endfor %}
     </div>
     <form class="composer" id="ask" method="post" action="/chat/{{ a.id }}/ask">
+      <button type="button" class="plus" data-toggle-chips aria-label="Suggestions" title="Suggestions">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
       <label for="ask-q" class="sr-only">Message {{ a.name }}</label>
       <input id="ask-q" name="q" autocomplete="off" placeholder="Message {{ a.name }}" required>
       <button class="send" aria-label="Send">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
       </button>
     </form>
   </footer>
 </section>
 
-<aside class="panel" id="panel" aria-label="{{ a.name }}'s overview">
-  <div class="panel-head">
-    <span>{{ a.name }}'s overview</span>
-    <button type="button" class="icon-btn panel-close" data-panel-toggle aria-label="Close overview">×</button>
+<aside class="panel" id="panel" aria-label="{{ a.name }}'s screen" style="--agent: {{ a.color }}">
+  <div class="panel-bar">
+    <button type="button" class="icon-btn" data-panel-toggle aria-label="Hide" title="Hide">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <span class="spacer"></span>
+    <a class="icon-btn" href="/agents/{{ a.id }}/customize" aria-label="Customize {{ a.name }}" title="Customize">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </a>
   </div>
 
-  <div class="screen" style="--agent: var(--{{ a.color }}); --agent-soft: var(--{{ a.color }}-soft)">
+  <div class="screen">
     {% if panel.kind == 'money' %}
       <div class="screen-label">{{ panel.label }} so far</div>
       <div class="screen-big">{{ panel.currency }} {{ '{:,.2f}'.format(panel.total|float) }}</div>
-      <div class="note">{{ panel.count }} payments from email</div>
+      <div class="screen-sub">{{ panel.count }} payments from email</div>
       <div class="screen-bars">
         {% for category, amount, width in panel.bars[:6] %}
         <div class="bar-row"><span>{{ category }}</span><span class="bar"><span style="width: {{ width }}%"></span></span><span class="num">{{ '{:,.0f}'.format(amount|float) }}</span></div>
         {% endfor %}
       </div>
-      <a class="screen-link" href="/spending">All payments →</a>
     {% else %}
       <div class="screen-stats">
         <a href="/pocket"><strong>{{ panel.waiting }}</strong><span>need your OK</span></a>
-        <a href="/pocket?show=past"><strong>{{ panel.passed }}</strong><span>already passed</span></a>
+        <a href="/pocket?show=past"><strong>{{ panel.passed }}</strong><span>passed</span></a>
         <a href="/upcoming"><strong>{{ panel.week|length }}</strong><span>next 7 days</span></a>
       </div>
-      <div class="screen-label">Next 7 days</div>
-      {% for c in panel.week[:5] %}
+      {% for c in panel.week[:4] %}
       <div class="mini-row"><span class="dot" style="background: {{ c.chip_fg }}"></span>
-        <span><strong>{{ c.row.title }}</strong><span class="note">{{ c.detail }}</span></span></div>
-      {% else %}<div class="note">Nothing in the next 7 days.</div>{% endfor %}
-      <div class="note cal-status">{{ '✓ Syncing to your Doraemon calendar' if panel.calendar_connected else 'Google Calendar not connected yet' }}</div>
-      <a class="screen-link" href="/upcoming">Upcoming →</a>
+        <span><strong>{{ c.row.title }}</strong><span>{{ c.detail }}</span></span></div>
+      {% else %}<div class="screen-sub">Nothing in the next 7 days.</div>{% endfor %}
     {% endif %}
+  </div>
+  <div class="screen-caption">
+    {% if panel.kind == 'money' %}<a href="/spending">{{ a.name }}'s screen · all payments</a>
+    {% else %}<a href="/upcoming">{{ a.name }}'s screen · {{ 'syncing to Google Calendar' if panel.calendar_connected else 'calendar not connected' }}</a>{% endif %}
   </div>
 
   <div class="routines">
     <div class="routines-head">Routines</div>
-    {% for name, when, status in a.routines %}
+    {% for name, when, status in a.routines %}{% set live = status in ('On', 'Run now') %}
     <div class="routine">
-      <span class="routine-icon {{ 'on' if status in ('On', 'Run now') else 'soon' }}" aria-hidden="true">
-        {% if status in ('On', 'Run now') %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>
-        {% else %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{% endif %}
+      <span class="routine-icon {{ 'on' if live else 'paused' }}" aria-hidden="true">
+        {% if live %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>
+        {% else %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>{% endif %}
       </span>
-      <span class="routine-text"><strong>{{ name }}</strong><span class="note">{{ when }}</span></span>
+      <span class="routine-text"><span class="routine-name">{{ name }}</span><span class="routine-when">{{ when if live else when ~ ' · coming soon' }}</span></span>
       {% if status == 'Run now' %}
         <button type="button" class="btn-small" data-check-now {{ 'disabled' if panel.checking }}>{{ 'Checking…' if panel.checking else 'Run now' }}</button>
-      {% else %}<span class="routine-status">{{ status }}</span>{% endif %}
+      {% endif %}
     </div>
     {% endfor %}
   </div>

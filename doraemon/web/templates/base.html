@@ -3,53 +3,65 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ current.name if current else (title or 'Doraemon') }} · Doraemon</title>
+<title>{{ current.name if current else (title or 'Doraemon') }}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=M+PLUS+Rounded+1c:wght@400;500;700&display=swap">
-<link rel="stylesheet" href="/static/app.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'><rect x='7' y='2' width='16' height='26' rx='3' fill='%23E2508E'/><circle cx='19.5' cy='16' r='1.8' fill='%23FFE27A'/></svg>">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'><circle cx='15' cy='15' r='14' fill='%233B82F6'/><circle cx='15' cy='17' r='5' fill='%23FFCD2E'/></svg>">
 </head>
 <body>
 <div class="shell {{ 'in-chat with-panel' if current else '' }} {% block shell_class %}{% endblock %}">
   <aside class="sidebar" aria-label="Agents">
-    <div class="side-head">
-      <svg width="22" height="22" viewBox="0 0 30 30" aria-hidden="true">
-        <defs><linearGradient id="door" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF8FB8"/><stop offset="1" stop-color="#D9407E"/></linearGradient></defs>
-        <rect x="7" y="2" width="16" height="26" rx="3" fill="url(#door)"/><circle cx="19.5" cy="16" r="1.8" fill="#FFE27A"/>
-      </svg>
-      <span class="brand">Doraemon</span>
+    <div class="side-top">
+      <label class="search"><span class="sr-only">Search agents</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input type="search" placeholder="Search" data-search>
+      </label>
     </div>
-    <label class="search"><span class="sr-only">Search agents</span>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <input type="search" placeholder="Search" data-search>
-    </label>
+
+    <div class="fav-row" aria-hidden="true">
+      {% for e in sidebar %}{% set a = e.agent %}
+      <a href="/chat/{{ a.id }}" tabindex="-1">{{ mascot('idle', a.color, 'fav-' ~ a.id, 'avatar-xl', a.name) }}<span>{{ a.name }}</span></a>
+      {% endfor %}
+    </div>
+
     <nav class="agent-list">
       {% for e in sidebar %}{% set a = e.agent %}
       <a class="agent-row" href="/chat/{{ a.id }}" data-name="{{ a.name }} {{ a.role }}" {{ 'aria-current=page' if current and current.id == a.id }}>
-        {{ mascot('idle', a.color, 'side-' ~ a.id, 'avatar-sm') }}
+        {{ mascot('idle', a.color, 'side-' ~ a.id, 'avatar-sm', a.name) }}
         <span class="agent-text">
           <span class="agent-top"><span class="agent-name">{{ a.name }}</span><span class="agent-time">{{ e.time }}</span></span>
-          <span class="agent-role" style="color: var(--{{ a.color }})">{{ a.role }}</span>
           <span class="agent-preview">{{ e.preview }}</span>
         </span>
         {% if e.unread %}<span class="unread" aria-label="New messages"></span>{% endif %}
       </a>
       {% endfor %}
     </nav>
+
     <div class="side-foot">
-      <a href="/pocket">All items</a>
-      <a href="/spending">All payments</a>
-      <a href="/history">Activity &amp; undo</a>
-      <a href="/rules">Learned rules</a>
-      <span class="account"><span class="status-dot {{ '' if gmail_connected else 'off' }}"></span>{{ 'Gmail connected' if gmail_connected else 'Gmail not connected' }}</span>
+      <a class="foot-row" href="/pocket">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13l3-8h12l3 8"/><path d="M3 13v6h18v-6h-5l-1.5 2.5h-5L8 13z"/></svg>All items</a>
+      <a class="foot-row" href="/spending">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 20V11M12 20V5M19 20v-6"/></svg>All payments</a>
+      <a class="foot-row" href="/history">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.5-5.8"/><path d="M4 4v4h4"/><path d="M12 8v4l3 2"/></svg>Activity</a>
+      <a class="foot-row" href="/rules">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>Learned rules</a>
+      <div class="me">
+        <span class="me-avatar">{{ (account or 'Y')[0]|upper }}</span>
+        <span class="me-name">{{ account or 'You' }}</span>
+        <span class="status-dot {{ '' if gmail_connected else 'off' }}" title="{{ 'Gmail connected' if gmail_connected else 'Gmail not connected' }}"></span>
+      </div>
     </div>
   </aside>
 
   {% block main %}
   <section class="main">
-    <header class="main-head">
-      <a class="back" href="/agents" aria-label="All agents">‹</a>
-      <h1>{{ title }}</h1>
+    <header class="top-bar">
+      <a class="back" href="/agents" aria-label="All agents">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </a>
+      <h1 class="top-title">{{ title }}</h1>
     </header>
     <div class="main-scroll">
       <div class="page">
@@ -60,6 +72,6 @@
   </section>
   {% endblock %}
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>
