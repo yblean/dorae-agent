@@ -52,6 +52,8 @@ transactions: money the user spent, will be charged, or got refunded, one per pa
   a payment processor) ARE spending. Transfers to a person's name or a phone number are not.
 - Money the user RECEIVED (incoming transfer, "You have received", crypto received)
   is not spending: return empty lists for it.
+- A REFUND of the user's own purchase ("We've refunded SGD 13.50 from SHOP", "Transaction refunded")
+  IS a transaction: is_refund true, amount positive, merchant the shop that refunded.
 - category, from the merchant and what was bought:
   groceries: supermarkets, convenience stores (NTUC, Giant, Cold Storage, 7-Eleven)
   dining: restaurants, cafes, food courts, kopitiams, hawkers, fast food, food delivery

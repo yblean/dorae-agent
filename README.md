@@ -52,6 +52,30 @@ Predictions are saved to `evals/results/` so runs can be compared.
 - **Numeric dates are day-first** (`02/10/26` is 2 October). Set `DORAEMON_DATE_ORDER=MDY` to change.
 - **Fixed spending categories** (see `Category` in `doraemon/schema.py`).
 
+## Connect Gmail
+
+One-time setup in Google Cloud (about 15 minutes). Doraemon asks only for **read-only** mail access.
+
+1. Go to <https://console.cloud.google.com>, create a project (e.g. `doraemon`).
+2. **APIs & Services → Library**: enable the **Gmail API** (and the **Google Calendar API**, for later).
+3. **Google Auth Platform → Branding**: app name `Doraemon`, your email as support contact.
+4. **Audience**: user type **External**, then add your own Gmail address under **Test users**.
+5. **Clients → Create client**: type **Desktop app**. Download the JSON and save it as
+   `data/google/credentials.json` (gitignored with the rest of `data/`).
+6. Run:
+   ```
+   python -m doraemon.ingest --days 30
+   ```
+   Your browser opens: sign in, and on "Google hasn't verified this app" choose **Continue**
+   (it's your own app). Approve read-only Gmail access. The token is saved to `data/google/token.json`.
+
+While the app is in **Testing**, Google expires the sign-in after 7 days, so ingest will ask you to
+sign in again weekly. Publishing it (Audience → **Publish app**) removes that for personal use;
+you'll keep seeing the "unverified app" screen, which is expected for an app only you use.
+
+Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
+subject looks like an order, booking, bill or delivery.
+
 ## Rules
 
 Corrections are remembered as rules and applied in code, so the same mistake isn't made twice.

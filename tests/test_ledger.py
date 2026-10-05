@@ -62,6 +62,20 @@ def test_forward_of_dropped_receipt_is_dropped_by_order_ref():
     assert kept == [bank] and len(dups) == 2
 
 
+def test_kept_alert_takes_category_from_dropped_receipt():
+    bank = txn("b", BANK, "ANTHROPIC* CLAUDE SUB +14152360599 US", "30.00", 3)
+    receipt = txn("r", RECEIPT, "Anthropic, PBC", "30.00", 3).model_copy(update={"category": "subscriptions"})
+    kept, _ = build_ledger([bank, receipt])
+    assert kept == [bank] and bank.category == "subscriptions"
+
+
+def test_specific_alert_category_is_kept():
+    bank = txn("b", BANK, "McDonalds 930255", "4.70", 2).model_copy(update={"category": "dining"})
+    receipt = txn("r", RECEIPT, "McDonald's", "4.70", 2).model_copy(update={"category": "shopping"})
+    build_ledger([bank, receipt])
+    assert bank.category == "dining"
+
+
 def test_two_bank_alerts_same_amount_both_count():
     # Two bus rides at S$1.28 are two real payments
     kept, _ = build_ledger([txn("b1", BANK, "BUS/MRT", "1.28", 1), txn("b2", BANK, "BUS/MRT", "1.28", 1)])

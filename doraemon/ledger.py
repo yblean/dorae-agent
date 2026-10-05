@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 
-from doraemon.schema import Transaction, TxnSource
+from doraemon.schema import Category, Transaction, TxnSource
 
 WINDOW_DAYS = 3
 # Points, coins and vouchers can make the card charge smaller than the receipt total.
@@ -69,6 +69,10 @@ def build_ledger(transactions: list[Transaction]) -> tuple[list[Transaction], li
         match = next((k for k in seen if same_payment(receipt, k)), None)
         if match:
             duplicates.append(Duplicate(dropped=receipt, kept=match))
+            # A bank payee like "ANTHROPIC* CLAUDE SUB +1415..." often lands in `other`;
+            # the merchant's own receipt knows better.
+            if match.category == Category.OTHER and receipt.category != Category.OTHER:
+                match.category = receipt.category
         else:
             kept.append(receipt)
     return sorted(kept, key=lambda t: t.purchased_at), duplicates
