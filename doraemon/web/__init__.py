@@ -9,6 +9,7 @@ escape everything, and form posts from other websites are rejected.
 """
 import json
 import threading
+from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -52,41 +53,81 @@ CHIPS = {
 
 
 class CheckJob:
-    """'Check now': one background ingest at a time; reports back in the agents' chats."""
+    """Checks Gmail in the background, one check at a time: every few minutes, or when you press Run now.
 
-    def __init__(self, db: Database) -> None:
-        self.db = db
+    Reports back in the agents' chats. Automatic checks speak up only when there's something
+    new, and say each problem once instead of every 15 minutes.
+    """
+
+    def __init__(self, db: Database, settings: Settings, ingest=None) -> None:
+        self.db, self.settings = db, settings
+        self.ingest = ingest  # run_ingest; tests pass a fake
         self.lock = threading.Lock()
         self.running = False
+        self.last_problem = ""
 
-    def start(self, settings: Settings) -> bool:
+    def start(self, auto: bool = False) -> bool:
         with self.lock:
             if self.running:
                 return False
             self.running = True
-        threading.Thread(target=self._run, args=(settings,), daemon=True).start()
+        threading.Thread(target=self.run, args=(auto,), daemon=True).start()
         return True
 
-    def _run(self, settings: Settings) -> None:
-        from doraemon.ingest import run_ingest  # imports Google libraries only when needed
+    def run(self, auto: bool) -> None:
+        if self.ingest is None:
+            from doraemon.ingest import run_ingest  # imports Google libraries only when needed
+            self.ingest = run_ingest
         try:
-            summary = run_ingest(settings, days=3, say=lambda _: None)
-            items, txns = summary["items"], len(summary["transactions"])
-            if not summary["processed"]:
-                text = "Checked your inbox just now. Nothing new since my last look."
-            else:
-                text = f"Checked {summary['processed']} new email(s): " + (
-                    f"{items} new thing(s) for you. Ask \"What needs my OK?\" to see them." if items
-                    else "nothing that needs you.")
-            self.db.add_message("calendar", "agent", text)
-            if txns:
-                self.db.add_message("money", "agent", f"{txns} new payment(s) came in with Dorae-2's inbox check.")
+            # never opens a browser from here: an expired sign-in raises NotConnected instead
+            summary = self.ingest(self.settings, say=lambda _: None, interactive=False)
+        except NotConnected:
+            self.problem(auto, "I can't read your Gmail until you approve Google access again. "
+                               "Run: python -m doraemon.calendar_sync connect")
         except FileNotFoundError:
-            self.db.add_message("calendar", "agent", "Gmail isn't connected yet. Run python -m doraemon.ingest once to sign in.")
+            self.problem(auto, "Gmail isn't connected yet. Run python -m doraemon.ingest once to sign in.")
         except Exception as e:  # shown in the chat rather than crashing the page
-            self.db.add_message("calendar", "agent", f"Sorry, checking your inbox failed: {e}")
+            self.problem(auto, f"Sorry, checking your inbox failed: {e}")
+        else:
+            self.report(summary, auto)
         finally:
             self.running = False
+
+    def report(self, summary: dict, auto: bool) -> None:
+        items, txns, n = summary["items"], len(summary["transactions"]), summary["processed"]
+        if summary.get("stopped"):
+            self.problem(auto, f"I read {n} new email(s), then stopped: {summary['stopped']} I'll try again later.")
+        elif summary["counts"].get("failed"):
+            self.problem(auto, f"{summary['counts']['failed']} email(s) couldn't be read just now. I'll try again later.")
+        else:
+            self.last_problem = ""
+        if items:
+            self.db.add_message("calendar", "agent", f"📬 {n} new email(s): {items} new thing(s) for you. "
+                                                     "Ask \"What needs my OK?\" to see them.")
+        elif not auto and not summary.get("stopped"):
+            self.db.add_message("calendar", "agent", f"Checked {n} new email(s): nothing that needs you." if n
+                                else "Checked your inbox just now. Nothing new since my last look.")
+        if txns:
+            self.db.add_message("money", "agent", f"{txns} new payment(s) came in with Dorae-2's inbox check.")
+
+    def problem(self, auto: bool, text: str) -> None:
+        if auto and text == self.last_problem:
+            return
+        self.last_problem = text
+        self.db.add_message("calendar", "agent", text)
+
+
+def poll_every(job: CheckJob, minutes: int) -> threading.Event:
+    """Run the check soon after the app starts, then every few minutes. Set the returned event to stop."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        wait = 20  # first look shortly after starting, so the app has settled
+        while not stop.wait(wait):
+            job.start(auto=True)
+            wait = minutes * 60
+    threading.Thread(target=loop, daemon=True, name="gmail-check").start()
+    return stop
 
 
 def asset_version() -> str:
@@ -101,13 +142,13 @@ def clock(hhmm: str) -> str:
 
 
 def create_app(settings: Settings | None = None, fx: FxRates | None = None,
-               calendar: Calendar | None = None, schedule: Schedule | None = None) -> FastAPI:
+               calendar: Calendar | None = None, schedule: Schedule | None = None, ingest=None) -> FastAPI:
     settings = settings or Settings()
     # The page only reads cached rates, so it never waits on the network; ingest fetches them.
     fx = fx or (FxRates(settings.db_path, fetch=None) if settings.convert_currencies else None)
     db = Database(settings.db_path)
     rules = RuleStore(settings.db_path)
-    job = CheckJob(db)
+    job = CheckJob(db, settings, ingest)
     connected_calendar: list[Calendar] = [calendar] if calendar else []
     connected_schedule: list[Schedule] = [schedule] if schedule else []
 
@@ -121,8 +162,16 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return connected_schedule[0]
 
     brain = Brain(db, settings, fx, schedule=get_schedule)
-    app = FastAPI(title="Doraemon")
-    app.state.db, app.state.rules, app.state.settings = db, rules, settings
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        stop = poll_every(job, settings.poll_minutes) if settings.poll_minutes > 0 else None
+        yield
+        if stop:
+            stop.set()
+
+    app = FastAPI(title="Doraemon", lifespan=lifespan)
+    app.state.db, app.state.rules, app.state.settings, app.state.job = db, rules, settings, job
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     tz = ZoneInfo(settings.timezone)
     home = settings.home_currency
@@ -354,8 +403,11 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                     "bars": bars(b["rows"]), "currency": home}
         upcoming, past = brain.pending()
         week = [card(db.get("item", i)) for i in brain.agenda(7)]
+        checked = db.get_setting("gmail_checked_at")
+        every = f"Every {settings.poll_minutes} min" if settings.poll_minutes > 0 else "When you press Run now"
         return {"kind": "calendar", "waiting": len(upcoming), "passed": len(past), "week": week,
-                "calendar_connected": get_calendar() is not None, "checking": job.running}
+                "calendar_connected": get_calendar() is not None, "checking": job.running,
+                "check_when": every + (f" · last {local_time(checked)}" if checked else "")}
 
     @app.post("/chat/{agent_id}/ask")
     def ask(request: Request, agent_id: str, q: str = Form(...)):
@@ -375,9 +427,20 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         db.set_setting(f"overview:{agent_id}", None)  # start fresh with a new overview
         return RedirectResponse(f"/chat/{agent_id}", status_code=303)
 
+    @app.get("/chat/{agent_id}/new")
+    def new_messages(request: Request, agent_id: str, after: int = 0):
+        """Messages posted since the page loaded, e.g. by the automatic inbox check."""
+        if agent_id not in AGENTS:
+            raise HTTPException(404)
+        rows = db.messages(agent_id, after_id=after)
+        if rows:
+            db.set_setting(f"seen:{agent_id}", str(rows[-1]["id"]))
+        return JSONResponse({"html": render_messages(request, [r["id"] for r in rows]),
+                             "last": rows[-1]["id"] if rows else after})
+
     @app.post("/check")
     def check():
-        started = job.start(settings)
+        started = job.start()
         return JSONResponse({"started": started})
 
     @app.get("/check/status")

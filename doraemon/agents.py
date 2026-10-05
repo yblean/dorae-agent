@@ -45,7 +45,7 @@ MONEY = Agent(
 CALENDAR = Agent(
     "calendar", "Dorae-2", "Calendar & reminders", "#EC4899",
     ("What needs my OK?", "Show my schedule this week", "What's due this week?", "My upcoming trips"),
-    (("Check inbox", "When you press Run now", "Run now"),
+    (("Check inbox", "Every 15 minutes", "Run now"),
      ("Morning briefing", "Every day, 8:00", "Coming soon"),
      ("Due-soon reminders", "3 days and 1 day before", "Coming soon")),
 )

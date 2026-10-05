@@ -28,5 +28,7 @@ class Settings:
     google_credentials: str = os.getenv("DORAEMON_GOOGLE_CREDENTIALS", "data/google/credentials.json")
     google_token: str = os.getenv("DORAEMON_GOOGLE_TOKEN", "data/google/token.json")
     ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    # While the web app is open it checks Gmail this often; 0 turns it off ("Run now" still works)
+    poll_minutes: int = int(os.getenv("DORAEMON_POLL_MINUTES", "15"))
     # Reasoning before answering: slower, sometimes more accurate. Off for the per-email pipeline.
     think: bool = os.getenv("DORAEMON_THINK", "false").lower() == "true"

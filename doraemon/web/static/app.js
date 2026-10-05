@@ -22,6 +22,9 @@
     if (!thread || !html) return;
     const tpl = document.createElement('template');
     tpl.innerHTML = html.trim();
+    tpl.content.querySelectorAll('[data-msg]').forEach((m) => {  // already shown (background refresh got it first)
+      if (list.querySelector(`[data-msg="${m.dataset.msg}"]`)) m.remove();
+    });
     list.append(tpl.content);
     scrollDown();
   }
@@ -48,11 +51,29 @@
     return () => dots.remove();
   }
 
+  let busy = 0;  // requests in flight; their answers are appended by whoever asked
   async function post(url, data) {
-    const res = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'fetch' }, body: data });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
+    busy++;
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'X-Requested-With': 'fetch' }, body: data });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } finally {
+      busy--;
+    }
   }
+
+  // Messages posted in the background (the automatic inbox check) show up without a reload
+  function lastId() {
+    return Math.max(0, ...[...document.querySelectorAll('[data-msg]')].map((m) => +m.dataset.msg));
+  }
+  if (thread) setInterval(async () => {
+    if (busy || document.hidden) return;
+    try {
+      const res = await (await fetch(`/chat/${agent}/new?after=${lastId()}`)).json();
+      if (!busy && res.html.trim()) appendHtml(res.html);
+    } catch {}
+  }, 30000);
 
   // Start at the latest message
   if (thread) thread.scrollTop = thread.scrollHeight;

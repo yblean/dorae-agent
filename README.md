@@ -73,6 +73,11 @@ One-time setup in Google Cloud (about 15 minutes). Doraemon asks only for **read
    Your browser opens: sign in, and on "Google hasn't verified this app" choose **Continue**
    (it's your own app). Approve read-only Gmail access. The token is saved to `data/google/token.json`.
 
+After that, each run asks Gmail only for mail since the last complete check (with an hour's overlap
+for late arrivals) and skips emails it has already read. While the web app is open, Dorae-2 does
+this every 15 minutes and posts in its chat when something new turns up. Set
+`DORAEMON_POLL_MINUTES` to change the interval, or `0` to turn it off ("Run now" still works).
+
 While the app is in **Testing**, Google expires the sign-in after 7 days, so ingest will ask you to
 sign in again weekly. Publishing it (Audience → **Publish app**) removes that for personal use;
 you'll keep seeing the "unverified app" screen, which is expected for an app only you use.
