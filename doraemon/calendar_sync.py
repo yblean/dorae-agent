@@ -1,14 +1,16 @@
-"""Confirmed items become events in a "Doraemon" Google Calendar, linked back to the email.
+"""Confirmed items become events in a "Doraemon" Google Calendar, linked back to the email,
+and Dorae-2 can show your week from all your calendars.
 
-Doraemon creates and only touches its own calendar (scope calendar.app.created),
-so your other calendars are never read or changed. Hide or delete the Doraemon
-calendar in Google Calendar any time.
+Doraemon only writes to its own calendar (scope calendar.app.created). Your
+other calendars are read-only to it: it reads their events to show your week
+and never changes them. Hide or delete the Doraemon calendar in Google Calendar any time.
 
     python -m doraemon.calendar_sync connect   # approve access (opens your browser)
     python -m doraemon.calendar_sync push      # add confirmed items that aren't in the calendar yet
 """
 import argparse
-from datetime import timedelta
+import re
+from datetime import date, datetime, time, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -17,7 +19,7 @@ from googleapiclient.errors import HttpError
 
 from doraemon.config import Settings
 from doraemon.db import Database, item_model
-from doraemon.google_auth import ALL_SCOPES, CALENDAR, load_credentials
+from doraemon.google_auth import ALL_SCOPES, CALENDAR, CALENDAR_READ, load_credentials
 from doraemon.schema import ActionItem, ItemType
 
 CALENDAR_NAME = "Doraemon"
@@ -136,6 +138,82 @@ def connect_calendar(settings: Settings, db: Database, interactive: bool = False
     return GoogleCalendar(creds, db, settings.timezone)
 
 
+# --- reading your week ----------------------------------------------------------
+
+HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def schedule_event(e: dict, calendar: str, color: str, zone: ZoneInfo) -> dict | None:
+    """One Google event as the week view shows it, or None if it shouldn't show (cancelled, declined)."""
+    if e.get("status") == "cancelled" or e.get("eventType") == "workingLocation":
+        return None
+    if any(a.get("self") and a.get("responseStatus") == "declined" for a in e.get("attendees", [])):
+        return None
+    start, end = e.get("start", {}), e.get("end", {})
+    if "date" in start:  # all day; Google's end date is exclusive
+        first = date.fromisoformat(start["date"])
+        last = date.fromisoformat(end.get("date", start["date"])) - timedelta(days=1)
+        at = until = None
+    elif "dateTime" in start:
+        at = datetime.fromisoformat(start["dateTime"]).astimezone(zone)
+        until = datetime.fromisoformat(end["dateTime"]).astimezone(zone) if "dateTime" in end else at
+        first = at.date()
+        last = (until - timedelta(microseconds=1)).date() if until > at else first  # ending at midnight stays on the day
+    else:
+        return None
+    link = e.get("htmlLink", "")
+    return {"title": e.get("summary") or "(No title)", "first": first.isoformat(), "last": max(first, last).isoformat(),
+            "start": at.strftime("%H:%M") if at else "", "end": until.strftime("%H:%M") if until else "",
+            "calendar": calendar, "color": color if HEX_COLOR.fullmatch(color or "") else "#9AA0A6",
+            "location": e.get("location", ""), "link": link if link.startswith("https://") else ""}
+
+
+class Schedule(Protocol):
+    def events(self, first: date, last: date) -> list[dict]: ...
+
+
+class GoogleSchedule:
+    """Events from the calendars you show in Google Calendar. Read-only."""
+
+    def __init__(self, creds, timezone: str) -> None:
+        self.service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        self.zone = ZoneInfo(timezone)
+
+    def calendars(self) -> list[dict]:
+        found, page = [], None
+        while True:
+            resp = self.service.calendarList().list(pageToken=page).execute()
+            found += [c for c in resp.get("items", []) if (c.get("primary") or c.get("selected")) and not c.get("hidden")]
+            page = resp.get("nextPageToken")
+            if not page:
+                return found
+
+    def events(self, first: date, last: date) -> list[dict]:
+        """Events from the first to the last day (both included), all-day ones first each day."""
+        t0 = datetime.combine(first, time(0), self.zone)
+        t1 = datetime.combine(last + timedelta(days=1), time(0), self.zone)
+        found = []
+        for cal in self.calendars():
+            name = cal.get("summaryOverride") or cal.get("summary", "")
+            page = None
+            while True:
+                resp = self.service.events().list(
+                    calendarId=cal["id"], timeMin=t0.isoformat(), timeMax=t1.isoformat(), singleEvents=True,
+                    orderBy="startTime", maxResults=250, pageToken=page).execute()
+                found += [ev for e in resp.get("items", [])
+                          if (ev := schedule_event(e, name, cal.get("backgroundColor", ""), self.zone))]
+                page = resp.get("nextPageToken")
+                if not page:
+                    break
+        return sorted(found, key=lambda ev: (ev["first"], ev["start"]))
+
+
+def connect_schedule(settings: Settings) -> GoogleSchedule:
+    """Raises NotConnected if reading your calendars hasn't been approved yet. Never opens a browser."""
+    creds = load_credentials(settings.google_credentials, settings.google_token, need=CALENDAR_READ, interactive=False)
+    return GoogleSchedule(creds, settings.timezone)
+
+
 def push_confirmed(db: Database, cal: Calendar) -> tuple[int, int]:
     """Add confirmed items that aren't in the calendar yet. Returns (added, skipped without a date)."""
     added = skipped = 0
@@ -160,7 +238,8 @@ def main() -> None:
     cal = connect_calendar(settings, db, interactive=True)
     cal_id = cal.calendar_id()
     if args.command == "connect":
-        print(f"Connected. Confirmed items go to your '{CALENDAR_NAME}' calendar ({cal_id}).")
+        print(f"Connected. Confirmed items go to your '{CALENDAR_NAME}' calendar ({cal_id}),")
+        print("and Dorae-2 can show your week from all your calendars (read-only).")
     added, skipped = push_confirmed(db, cal)
     print(f"Added {added} confirmed item(s) to the calendar" + (f"; {skipped} have no date." if skipped else "."))
 

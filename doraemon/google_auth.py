@@ -2,8 +2,10 @@
 
 Scopes are the narrowest that work:
 - gmail.readonly: read mail; can never send, delete or label
-- calendar.app.created: manage only calendars this app creates (the "Doraemon"
-  calendar); your other calendars and events are invisible to it
+- calendar.app.created: create and change events only in calendars this app
+  creates (the "Doraemon" calendar)
+- calendar.events.readonly + calendar.calendarlist.readonly: see your other
+  calendars' events to show your week; can never change them
 """
 from pathlib import Path
 
@@ -14,7 +16,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 GMAIL = "https://www.googleapis.com/auth/gmail.readonly"
 CALENDAR = "https://www.googleapis.com/auth/calendar.app.created"
-ALL_SCOPES = [GMAIL, CALENDAR]
+CALENDAR_READ = ["https://www.googleapis.com/auth/calendar.events.readonly",
+                 "https://www.googleapis.com/auth/calendar.calendarlist.readonly"]
+ALL_SCOPES = [GMAIL, CALENDAR, *CALENDAR_READ]
 
 
 class NotConnected(Exception):

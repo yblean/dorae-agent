@@ -5,15 +5,18 @@ appointments, deadlines and trips, and holds the items waiting for your OK.
 Each posts a short overview once a day; you ask for the details.
 
 Answers are computed from your database (no model call yet): a reply is some
-text plus, optionally, a card (breakdown bars, a payments table, item cards).
+text plus, optionally, a card (breakdown bars, a payments table, item cards,
+your week from Google Calendar).
 """
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from doraemon.assistant import last_full_month, month_name, spending as spending_text
+from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
 from doraemon.config import Settings
 from doraemon.db import Database, item_model, transaction_model
 from doraemon.display import describe_when
@@ -41,7 +44,7 @@ MONEY = Agent(
 )
 CALENDAR = Agent(
     "calendar", "Dorae-2", "Calendar & reminders", "#EC4899",
-    ("What needs my OK?", "What's due this week?", "My upcoming trips", "What already passed?"),
+    ("What needs my OK?", "Show my schedule this week", "What's due this week?", "My upcoming trips"),
     (("Check inbox", "When you press Run now", "Run now"),
      ("Morning briefing", "Every day, 8:00", "Coming soon"),
      ("Due-soon reminders", "3 days and 1 day before", "Coming soon")),
@@ -84,8 +87,10 @@ def money(amount: Decimal, currency: str) -> str:
 
 
 class Brain:
-    def __init__(self, db: Database, settings: Settings, fx=None) -> None:
+    def __init__(self, db: Database, settings: Settings, fx=None,
+                 schedule: Callable[[], Schedule | None] | None = None) -> None:
         self.db, self.settings, self.fx = db, settings, fx
+        self.schedule = schedule  # your Google calendars, or None until reading them is approved
         self.tz = ZoneInfo(settings.timezone)
         self.home = settings.home_currency
 
@@ -245,6 +250,44 @@ class Brain:
                 and (not types or r["type"] in types)]
         return [r["id"] for r in sorted(rows, key=lambda r: r["start_at"])]
 
+    def week(self, q: str) -> dict:
+        """Your week (Monday to Sunday) from all your Google calendars, plus email items not in it yet."""
+        monday = self.today() - timedelta(days=self.today().weekday())
+        if "next week" in q:
+            monday += timedelta(days=7)
+        sunday = monday + timedelta(days=6)
+        source = self.schedule() if self.schedule else None
+        if source is None:
+            return {"text": "To show your week I need to read your Google calendars (read-only). Run "
+                            "python -m doraemon.calendar_sync connect once and approve.", "kind": "text", "payload": None}
+        try:
+            events = source.events(monday, sunday)
+        except Exception as e:  # network, or the API turned off: say so instead of failing the chat
+            return {"text": f"Sorry, I couldn't read your Google Calendar ({str(e)[:160]}).", "kind": "text", "payload": None}
+
+        color = styled(CALENDAR, self.db).color
+        waiting = 0
+        for r in self.db.items(("proposed", "confirmed")):
+            day = self._dated(r)
+            if r["calendar_event_id"] or day is None or not monday <= day <= sunday:
+                continue  # already in Google Calendar, or not this week
+            item = item_model(r)
+            timed = not (item.all_day or item.type in ALL_DAY_TYPES)
+            events.append({"title": r["title"], "first": day.isoformat(), "last": day.isoformat(),
+                           "start": item.start_at.astimezone(self.tz).strftime("%H:%M") if timed else "", "end": "",
+                           "calendar": "From your email", "color": color, "location": r["location"] or "",
+                           "link": "", "waiting": r["status"] == "proposed"})
+            waiting += r["status"] == "proposed"
+        events.sort(key=lambda ev: (ev["first"], ev["start"]))
+
+        span = f"{monday.day} {monday:%b}" if monday.month != sunday.month else str(monday.day)
+        label = f"{'Next week' if 'next week' in q else 'This week'}, {span} – {sunday.day} {sunday:%b}"
+        n = len(events)
+        text = f"{label}: {n} event{'s' if n != 1 else ''}." if n else f"{label}: nothing on your calendars. 🌤️"
+        if waiting:
+            text += f" {waiting} from your email still need{'s' if waiting == 1 else ''} your OK (dashed)."
+        return {"text": text, "kind": "week", "payload": {"first": monday.isoformat(), "label": label, "events": events}}
+
     def calendar_overview(self) -> list[dict]:
         upcoming, past = self.pending()
         week = self.agenda(7)
@@ -272,6 +315,8 @@ class Brain:
             return [{"text": f"{len(past)} item{'s' if len(past) != 1 else ''} already passed. Confirm the ones "
                              "you still want on record, or dismiss them.",
                      "kind": "items", "payload": {"ids": past[:20], "more": max(0, len(past) - 20)}}]
+        if re.search(r"schedule|calendar|my week|week ahead|next week|busy|plans", q):
+            return [self.week(q)]
         if re.search(r"trip|travel|flight|hotel|train|holiday", q):
             ids = self.agenda(365, ("flight", "hotel", "other_travel"))
             if not ids:
@@ -299,7 +344,7 @@ class Brain:
                 return [{"text": "Nothing needs your OK right now. 🎉", "kind": "text", "payload": None}]
             return [{"text": f"{len(upcoming)} thing{'s' if len(upcoming) != 1 else ''} waiting for your OK, soonest first:",
                      "kind": "items", "payload": {"ids": upcoming[:20], "more": max(0, len(upcoming) - 20)}}]
-        return [{"text": "I look after your calendar. Try: \"What needs my OK?\", \"What's due this week?\", "
+        return [{"text": "I look after your calendar. Try: \"What needs my OK?\", \"Show my schedule this week\", "
                          "\"My upcoming trips\" or \"What's on tomorrow?\"", "kind": "text", "payload": None}]
 
     # --- shared --------------------------------------------------------------

@@ -104,7 +104,7 @@
 {# One chat message, with its card if it has one. #}
 {% macro message(m, types) %}
 {% if m.separator %}<div class="sep">{{ m.separator }}</div>{% endif %}
-<div class="msg {{ 'from-you' if m.role == 'user' else 'from-agent' }}" data-msg="{{ m.id }}" title="{{ m.time }}">
+<div class="msg {{ 'from-you' if m.role == 'user' else 'from-agent' }}{{ ' wide' if m.kind == 'week' }}" data-msg="{{ m.id }}" title="{{ m.time }}">
   {% if m.text %}<div class="bubble">{{ m.text }}</div>{% endif %}
 
   {% if m.kind == 'breakdown' and m.payload %}{% set p = m.payload %}
@@ -151,6 +151,27 @@
       <span class="note nowrap">{{ '✓ In calendar' if r.calendar_event_id else ('✓ Confirmed' if r.status == 'confirmed' else 'Needs your OK') }}</span>
     </div>
     {% endfor %}
+  </div>
+
+  {% elif m.kind == 'week' and m.payload %}
+  <div class="card week-card">
+    <div class="card-head"><span>{{ m.payload.label }}</span><span class="note">{{ m.payload.events|length }} events</span></div>
+    <div class="week">
+      {% for d in m.days %}
+      <div class="day{{ ' today' if d.today }}{{ ' past' if d.past }}">
+        <div class="day-head"><span>{{ d.name }}</span><strong>{{ d.num }}</strong></div>
+        <div class="day-events">
+          {% for e in d.events %}
+          {% if e.link %}<a class="ev{{ ' ev-allday' if e.all_day }}" style="--c: {{ e.color }}" title="{{ e.tip }}" href="{{ e.link }}" target="_blank" rel="noopener noreferrer">
+          {% else %}<div class="ev{{ ' ev-allday' if e.all_day }}{{ ' ev-waiting' if e.waiting }}" style="--c: {{ e.color }}" title="{{ e.tip }}{{ ' · needs your OK' if e.waiting }}">{% endif %}
+            {% if e.time %}<span class="ev-time">{{ e.time }}</span>{% endif %}<span class="ev-title">{{ e.title }}</span>
+          {% if e.link %}</a>{% else %}</div>{% endif %}
+          {% else %}<div class="day-free">Free</div>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if m.calendars %}<div class="week-legend">{% for name, color in m.calendars.items() %}<span style="--c: {{ color }}">{{ name }}</span>{% endfor %}</div>{% endif %}
   </div>
   {% endif %}
 </div>

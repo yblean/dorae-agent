@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from doraemon.calendar_sync import event_body, push_confirmed
+from doraemon.calendar_sync import event_body, push_confirmed, schedule_event
 from doraemon.db import Database
 from doraemon.email_parse import ParsedEmail
 from doraemon.schema import ActionItem, Extraction
@@ -85,8 +85,8 @@ def app_with(tmp_path, settings):
     soon = datetime.now(ZoneInfo(SG)).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=5)
     db.save_result("g1", "t1", email(), Extraction(message_id="m", items=[item(start=soon)]), "extracted")
 
-    def make(cal):
-        return TestClient(create_app(s, calendar=cal), follow_redirects=True), db
+    def make(cal, schedule=None):
+        return TestClient(create_app(s, calendar=cal, schedule=schedule), follow_redirects=True), db
     return make
 
 
@@ -131,3 +131,67 @@ def test_push_adds_confirmed_items_missing_from_calendar(tmp_path):
     cal = FakeCalendar()
     assert push_confirmed(db, cal) == (1, 0)
     assert push_confirmed(db, cal) == (0, 0)  # already there: nothing added twice
+
+
+# --- your week, read from all your Google calendars ------------------------------
+
+def test_google_events_become_week_entries():
+    sg = ZoneInfo(SG)
+    trip = schedule_event({"summary": "Bali", "start": {"date": "2026-10-09"}, "end": {"date": "2026-10-12"},
+                           "htmlLink": "https://www.google.com/calendar/event?eid=x"}, "Personal", "#9fe1e7", sg)
+    assert (trip["first"], trip["last"], trip["start"]) == ("2026-10-09", "2026-10-11", "")  # end date is exclusive
+    call = schedule_event({"summary": "Standup", "start": {"dateTime": "2026-10-06T01:00:00Z"},
+                           "end": {"dateTime": "2026-10-06T01:30:00Z"}}, "Work", "red", sg)
+    assert (call["first"], call["start"], call["end"]) == ("2026-10-06", "09:00", "09:30")  # in your timezone
+    assert call["color"] == "#9AA0A6"  # anything but a hex colour is replaced
+    declined = {"summary": "x", "start": {"date": "2026-10-06"}, "attendees": [{"self": True, "responseStatus": "declined"}]}
+    assert schedule_event(declined, "Work", "#000000", sg) is None
+    assert schedule_event({"status": "cancelled", "start": {"date": "2026-10-06"}}, "Work", "#000000", sg) is None
+    sneaky = schedule_event({"summary": "x", "start": {"date": "2026-10-06"}, "htmlLink": "javascript:alert(1)"}, "W", "", sg)
+    assert sneaky["link"] == ""
+
+
+class FakeSchedule:
+    def __init__(self, events):
+        self.events_list, self.asked = events, []
+
+    def events(self, first, last):
+        self.asked.append((first, last))
+        return [dict(e) for e in self.events_list]
+
+
+def test_dorae2_shows_your_week(app_with):
+    today = datetime.now(ZoneInfo(SG)).date()
+    schedule = FakeSchedule([
+        {"title": "<b>Dentist</b>", "first": today.isoformat(), "last": today.isoformat(), "start": "14:30",
+         "end": "15:00", "calendar": "Personal", "color": "#7986CB", "location": "", "link": "https://calendar.google.com/x"},
+    ])
+    client, _ = app_with(None, schedule)
+    client.headers["x-requested-with"] = "fetch"
+    html = client.post("/chat/calendar/ask", data={"q": "can you show me my schedule for this week"}).json()["html"]
+    monday = today - timedelta(days=today.weekday())
+    assert schedule.asked == [(monday, monday + timedelta(days=6))]
+    assert "week-card" in html and html.count('class="day-head"') == 7
+    assert "&lt;b&gt;Dentist&lt;/b&gt;" in html and "2:30pm" in html and 'href="https://calendar.google.com/x"' in html
+    assert 'class="day today' in html
+    client.post("/chat/calendar/ask", data={"q": "what about next week?"})
+    assert schedule.asked[-1][0] == monday + timedelta(days=7)
+
+
+def test_week_includes_email_items_not_in_google_yet(app_with):
+    schedule = FakeSchedule([])
+    client, db = app_with(None, schedule)
+    client.headers["x-requested-with"] = "fetch"
+    due = datetime.fromisoformat(db.get("item", 1)["start_at"]).astimezone(ZoneInfo(SG)).date()  # in 5 days
+    today = datetime.now(ZoneInfo(SG)).date()
+    sunday = today + timedelta(days=6 - today.weekday())
+    q = "show my schedule this week" if due <= sunday else "my schedule next week"
+    html = client.post("/chat/calendar/ask", data={"q": q}).json()["html"]
+    assert "SIT tuition fees" in html and "ev-waiting" in html and "still needs your OK" in html
+
+
+def test_week_asks_to_connect_when_reading_isnt_approved(app_with):
+    client, _ = app_with(None)  # no token, so reading calendars isn't approved
+    client.headers["x-requested-with"] = "fetch"
+    html = client.post("/chat/calendar/ask", data={"q": "show my schedule"}).json()["html"]
+    assert "python -m doraemon.calendar_sync connect" in html

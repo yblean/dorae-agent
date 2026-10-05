@@ -80,13 +80,18 @@ you'll keep seeing the "unverified app" screen, which is expected for an app onl
 ### Connect Google Calendar
 
 Confirmed items go into a separate **Doraemon** calendar that the app creates. It uses the
-`calendar.app.created` permission, so it can only see and change that one calendar, never your others.
+`calendar.app.created` permission, so it can only change that one calendar. To show your week, it also
+reads your other calendars' events (`calendar.events.readonly` and `calendar.calendarlist.readonly`),
+which can never change them.
 
 1. In Google Cloud, **APIs & Services → Library**: enable the **Google Calendar API**.
 2. Run `python -m doraemon.calendar_sync connect` and approve in your browser (one approval covers Gmail and Calendar).
+   If you connected before the week view existed, run it again to approve reading your calendars.
 
 After that, **Confirm** adds the event (with reminders and a link to the email) and **Undo** removes it.
 `python -m doraemon.calendar_sync push` adds anything you confirmed before connecting.
+Ask Dorae-2 "Show my schedule this week" (or "next week") for a week view of all the calendars you
+show in Google Calendar, plus things from your email that aren't in it yet.
 
 Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
 subject looks like an order, booking, bill or delivery.

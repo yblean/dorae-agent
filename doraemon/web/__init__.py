@@ -9,7 +9,7 @@ escape everything, and form posts from other websites are rejected.
 """
 import json
 import threading
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -24,7 +24,7 @@ import re
 
 from doraemon.agents import AGENTS, COLORS, Brain, shades, styled
 from doraemon.assistant import last_full_month, month_name
-from doraemon.calendar_sync import Calendar, connect_calendar, event_body
+from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, connect_schedule, event_body
 from doraemon.config import Settings
 from doraemon.db import Database, item_model, transaction_model
 from doraemon.display import describe_when, zone_name
@@ -94,16 +94,33 @@ def asset_version() -> str:
     return str(max(int(f.stat().st_mtime) for f in (HERE / "static").iterdir()))
 
 
+def clock(hhmm: str) -> str:
+    """'09:30' -> '9:30am', '14:00' -> '2pm'."""
+    t = time.fromisoformat(hhmm)
+    return f"{t.hour % 12 or 12}{f':{t.minute:02d}' if t.minute else ''}{'am' if t.hour < 12 else 'pm'}"
+
+
 def create_app(settings: Settings | None = None, fx: FxRates | None = None,
-               calendar: Calendar | None = None) -> FastAPI:
+               calendar: Calendar | None = None, schedule: Schedule | None = None) -> FastAPI:
     settings = settings or Settings()
     # The page only reads cached rates, so it never waits on the network; ingest fetches them.
     fx = fx or (FxRates(settings.db_path, fetch=None) if settings.convert_currencies else None)
     db = Database(settings.db_path)
     rules = RuleStore(settings.db_path)
-    brain = Brain(db, settings, fx)
     job = CheckJob(db)
     connected_calendar: list[Calendar] = [calendar] if calendar else []
+    connected_schedule: list[Schedule] = [schedule] if schedule else []
+
+    def get_schedule() -> Schedule | None:
+        """Your Google calendars (read-only), or None until you've approved reading them (never opens a browser)."""
+        if not connected_schedule:
+            try:
+                connected_schedule.append(connect_schedule(settings))
+            except (NotConnected, FileNotFoundError):
+                return None
+        return connected_schedule[0]
+
+    brain = Brain(db, settings, fx, schedule=get_schedule)
     app = FastAPI(title="Doraemon")
     app.state.db, app.state.rules, app.state.settings = db, rules, settings
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -173,7 +190,28 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["home"] = home
         elif row["kind"] == "breakdown" and payload:
             view["bars"] = bars(payload["rows"])
+        elif row["kind"] == "week" and payload:
+            view["days"] = week_days(payload)
+            view["calendars"] = {e["calendar"]: e["color"] for e in payload["events"]}
         return view
+
+    def week_days(payload: dict) -> list[dict]:
+        """Seven day columns; an event spanning days shows on each, with its time only on the first."""
+        first, today = date.fromisoformat(payload["first"]), datetime.now(tz).date()
+        days = []
+        for d in (first + timedelta(days=i) for i in range(7)):
+            iso, events = d.isoformat(), []
+            for e in payload["events"]:
+                if not e["first"] <= iso <= e["last"]:
+                    continue
+                timed = bool(e["start"]) and iso == e["first"]
+                when = (clock(e["start"]) + (f"–{clock(e['end'])}" if e["end"] and e["end"] != e["start"] else "")
+                        if timed else "All day")
+                tip = " · ".join(x for x in (when, e["title"], e["calendar"], e["location"]) if x)
+                events.append({**e, "time": clock(e["start"]) if timed else "", "all_day": not timed, "tip": tip})
+            events.sort(key=lambda e: (not e["all_day"], e["start"]))
+            days.append({"name": d.strftime("%a"), "num": d.day, "today": d == today, "past": d < today, "events": events})
+        return days
 
     def sidebar() -> list[dict]:
         entries = []
