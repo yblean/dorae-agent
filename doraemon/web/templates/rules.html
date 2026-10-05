@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% set title = "Learned rules" %}
+{% block content %}
+<div class="panel-box">
+  <p style="margin-top: 0">These are things I've learned from your corrections. I apply them before and after
+     reading each email, so I don't make the same mistake twice. I also start with {{ n_defaults }}
+     built-in ones (common Singapore merchants and airports).</p>
+  <table>
+    <tr><th>Rule</th><th>When</th><th>Then</th><th>Learned from</th><th></th></tr>
+    {% for r in mine %}
+    <tr>
+      <td>{{ r.rule_type.replace('_', ' ') }}</td>
+      <td>{{ r.match }}</td>
+      <td>{{ r.value or ('skip the email' if r.rule_type == 'ignore_sender' else 'not spending') }}</td>
+      <td class="note">{{ r.created_from or '' }}</td>
+      <td><form method="post" action="/rules/{{ r.id }}/delete"><button class="btn-link">Delete</button></form></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="empty">Nothing learned yet. I learn when you fix a category, ignore a sender or remove a payee.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

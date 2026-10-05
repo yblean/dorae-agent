@@ -31,7 +31,7 @@ def name_key(name: str) -> str:
     return " ".join(w for w in words if len(w) > 1 and w not in _NOISE)
 
 
-def _name_matches(rule_key: str, name: str) -> bool:
+def name_matches(rule_key: str, name: str) -> bool:
     words = set(name_key(name).split())
     return all(w in words for w in rule_key.split())
 
@@ -94,7 +94,8 @@ class RuleStore:
     def __init__(self, db_path: str | Path = ":memory:", use_defaults: bool = True) -> None:
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(db_path)
+        # Web requests run on worker threads; ingest may be writing at the same time
+        self.db = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS user_rules (
                 id INTEGER PRIMARY KEY,
@@ -142,7 +143,7 @@ class RuleStore:
     def _find(self, rule_type: str, name: str | None) -> Rule | None:
         if not name:
             return None
-        matching = [r for r in self.all_rules() if r.rule_type == rule_type and _name_matches(r.match, name)]
+        matching = [r for r in self.all_rules() if r.rule_type == rule_type and name_matches(r.match, name)]
         # Your corrections beat defaults; then the most specific (most words) wins.
         matching.sort(key=lambda r: (r.source != "correction", -len(r.match.split())))
         return matching[0] if matching else None

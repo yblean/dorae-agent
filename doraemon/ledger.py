@@ -76,3 +76,27 @@ def build_ledger(transactions: list[Transaction]) -> tuple[list[Transaction], li
         else:
             kept.append(receipt)
     return sorted(kept, key=lambda t: t.purchased_at), duplicates
+
+
+@dataclass
+class Totals:
+    by_category: dict[str, Decimal]
+    total: Decimal
+    home_amounts: dict[int, Decimal]  # id(txn) -> amount in the home currency, for display
+    unconverted: list[Transaction]    # foreign payments with no exchange rate available
+
+
+def spending_totals(kept: list[Transaction], home: str, fx=None) -> Totals:
+    """Sum a ledger by category in the home currency, converting foreign payments when `fx` is given."""
+    by_category: dict[str, Decimal] = {}
+    home_amounts: dict[int, Decimal] = {}
+    unconverted = []
+    for txn in kept:
+        amount = txn.amount if txn.currency == home else (fx.to_home(txn, home) if fx else None)
+        if amount is None:
+            unconverted.append(txn)
+            continue
+        home_amounts[id(txn)] = amount
+        signed = -amount if txn.is_refund else amount
+        by_category[txn.category.value] = by_category.get(txn.category.value, Decimal(0)) + signed
+    return Totals(by_category, sum(by_category.values(), Decimal(0)), home_amounts, unconverted)

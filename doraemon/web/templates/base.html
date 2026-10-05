@@ -1,0 +1,65 @@
+{% from "_macros.html" import mascot %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ current.name if current else (title or 'Doraemon') }} · Doraemon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=M+PLUS+Rounded+1c:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'><rect x='7' y='2' width='16' height='26' rx='3' fill='%23E2508E'/><circle cx='19.5' cy='16' r='1.8' fill='%23FFE27A'/></svg>">
+</head>
+<body>
+<div class="shell {{ 'in-chat with-panel' if current else '' }} {% block shell_class %}{% endblock %}">
+  <aside class="sidebar" aria-label="Agents">
+    <div class="side-head">
+      <svg width="22" height="22" viewBox="0 0 30 30" aria-hidden="true">
+        <defs><linearGradient id="door" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF8FB8"/><stop offset="1" stop-color="#D9407E"/></linearGradient></defs>
+        <rect x="7" y="2" width="16" height="26" rx="3" fill="url(#door)"/><circle cx="19.5" cy="16" r="1.8" fill="#FFE27A"/>
+      </svg>
+      <span class="brand">Doraemon</span>
+    </div>
+    <label class="search"><span class="sr-only">Search agents</span>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input type="search" placeholder="Search" data-search>
+    </label>
+    <nav class="agent-list">
+      {% for e in sidebar %}{% set a = e.agent %}
+      <a class="agent-row" href="/chat/{{ a.id }}" data-name="{{ a.name }} {{ a.role }}" {{ 'aria-current=page' if current and current.id == a.id }}>
+        {{ mascot('idle', a.color, 'side-' ~ a.id, 'avatar-sm') }}
+        <span class="agent-text">
+          <span class="agent-top"><span class="agent-name">{{ a.name }}</span><span class="agent-time">{{ e.time }}</span></span>
+          <span class="agent-role" style="color: var(--{{ a.color }})">{{ a.role }}</span>
+          <span class="agent-preview">{{ e.preview }}</span>
+        </span>
+        {% if e.unread %}<span class="unread" aria-label="New messages"></span>{% endif %}
+      </a>
+      {% endfor %}
+    </nav>
+    <div class="side-foot">
+      <a href="/pocket">All items</a>
+      <a href="/spending">All payments</a>
+      <a href="/history">Activity &amp; undo</a>
+      <a href="/rules">Learned rules</a>
+      <span class="account"><span class="status-dot {{ '' if gmail_connected else 'off' }}"></span>{{ 'Gmail connected' if gmail_connected else 'Gmail not connected' }}</span>
+    </div>
+  </aside>
+
+  {% block main %}
+  <section class="main">
+    <header class="main-head">
+      <a class="back" href="/agents" aria-label="All agents">‹</a>
+      <h1>{{ title }}</h1>
+    </header>
+    <div class="main-scroll">
+      <div class="page">
+        {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+        {% block content %}{% endblock %}
+      </div>
+    </div>
+  </section>
+  {% endblock %}
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

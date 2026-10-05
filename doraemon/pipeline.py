@@ -1,6 +1,6 @@
 """One email through the whole pipeline: triage and rules before the model, the model, rules after."""
 from doraemon.config import Settings
-from doraemon.email_parse import ParsedEmail
+from doraemon.email_parse import ParsedEmail, forwarded_original_recipients
 from doraemon.extract import extract
 from doraemon.llm import Backend
 from doraemon.rules import RuleStore
@@ -26,4 +26,16 @@ def process(
         return Extraction(message_id=email.message_id, skipped=reason)
     if raw is None:
         raw = extract(email, backend, settings)
-    return rules.apply(raw.model_copy(deep=True), sender=email.sender)
+    result = rules.apply(raw.model_copy(deep=True), sender=email.sender)
+
+    # A forwarded receipt is your spending only if the original was sent to you:
+    # a friend forwarding their own booking keeps the trip, not the payment.
+    recipients = forwarded_original_recipients(email.subject, email.body)
+    if recipients and settings.user_emails and not set(recipients) & set(settings.user_emails):
+        for txn in result.transactions:
+            result.applied_rules.append(
+                f"not your purchase: forwarded booking was for {', '.join(recipients)} "
+                f"({txn.merchant} {txn.currency} {txn.amount})"
+            )
+        result.transactions = []
+    return result

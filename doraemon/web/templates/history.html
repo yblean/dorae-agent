@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% set title = "Activity &amp; undo" %}
+{% block content %}
+<div class="panel-box">
+  <table>
+    <tr><th>When (UTC)</th><th>Action</th><th>On</th><th></th></tr>
+    {% for e in entries %}
+    <tr>
+      <td class="num note">{{ e.a.created_at[5:16].replace('T', ' ') }}</td>
+      <td>{{ e.a.action }}</td>
+      <td>{{ e.label }}</td>
+      <td><form method="post" action="/undo/{{ e.a.id }}"><button class="btn-link">Undo</button></form></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty">Nothing yet. Every confirm, dismiss and edit shows up here, and can be undone.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

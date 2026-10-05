@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% set title = "All items" %}
+{% from "_macros.html" import item_card %}
+{% block content %}
+<div class="tabs">
+  <a href="/pocket?show=upcoming" class="tab" {{ 'aria-current=page' if show == 'upcoming' }}>Coming up · {{ n_upcoming }}</a>
+  <a href="/pocket?show=past" class="tab" {{ 'aria-current=page' if show == 'past' }}>Already passed · {{ n_past }}</a>
+</div>
+<div class="items" id="items">
+  {% for c in cards %}{{ item_card(c, types, '/pocket?show=' ~ show) }}
+  {% else %}<div class="empty">{{ "Your pocket's empty. Nothing waiting for your OK! 🎉" if show == 'upcoming' else 'Nothing here.' }}</div>
+  {% endfor %}
+</div>
+<div id="thread" class="stack"></div>
+{% endblock %}

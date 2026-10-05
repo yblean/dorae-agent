@@ -26,6 +26,7 @@ def test_takeout_header_is_parsed():
     ("FLASH DEAL: $2 off PlayMade", ["promotions"]),
     ("<ADV> Unlock up to three NVIDIA shares", ["updates"]),
     ("You've been invited", ["social"]),
+    ("[EDM] Tech Unlocked - Big Discovery at NCS Hub", ["updates"]),
 ])
 def test_marketing_is_skipped(subject, categories):
     assert skip_reason(email(subject, categories))

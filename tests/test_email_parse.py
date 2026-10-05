@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from doraemon.email_parse import parse_eml, strip_quoted_reply
+from doraemon.email_parse import forwarded_original_recipients, parse_eml, strip_quoted_reply
 
 
 def test_parses_headers_and_html_body(bill_email):
@@ -35,6 +35,14 @@ def test_reply_drops_quoted_original():
     assert strip_quoted_reply("Re: [REMINDER] BTC Day", body) == "Please bring your laptop tomorrow.\n\nBest Regards"
     gmail = "Sounds good!\n\nOn Mon, 5 Oct 2026 at 10:00, Bob <b@x.com> wrote:\n> Dinner at 7?"
     assert strip_quoted_reply("RE: dinner", gmail).strip() == "Sounds good!"
+
+
+def test_forwarded_original_recipient_is_innermost():
+    body = ("FYI\n---------- Forwarded message ---------\nFrom: Matthew <m@x.com>\n"
+            "To: Yi Bin <yibin@x.com>, z@x.com\n\n---------- Forwarded message ---------\n"
+            "From: flychinaeastern <a@ceair.com>\nDate: Fri\nTo: <m@x.com>\n\nTicket issued")
+    assert forwarded_original_recipients("Fwd: Fwd: Ticket issued", body) == ["m@x.com"]
+    assert forwarded_original_recipients("Ticket issued", body) is None  # not a forward
 
 
 def test_forward_keeps_quoted_content():

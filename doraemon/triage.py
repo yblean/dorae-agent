@@ -9,7 +9,8 @@ import re
 from doraemon.email_parse import ParsedEmail
 
 SKIP_CATEGORIES = {"promotions", "social", "forums"}
-_ADVERT_RE = re.compile(r"<ADV>|\[ADV\]|\(ADV\)", re.IGNORECASE)
+# <ADV> is Singapore's legal tag for advertisements; [EDM] marks "electronic direct mail" (mass mailers)
+_ADVERT_RE = re.compile(r"<ADV>|\[ADV\]|\(ADV\)|\[EDM\]", re.IGNORECASE)
 # Real mail that Gmail sometimes files under Promotions
 _TRANSACTIONAL_RE = re.compile(
     r"\b(order|receipt|invoice|booking|reservation|itinerary|e-?ticket|payment|paid|"

@@ -14,6 +14,13 @@ load_dotenv()
 class Settings:
     timezone: str = os.getenv("DORAEMON_TIMEZONE", "UTC")
     home_currency: str = os.getenv("DORAEMON_HOME_CURRENCY", "USD")
+    # Convert foreign spending to home_currency with ECB rates (Frankfurter); "off" to keep it separate
+    convert_currencies: bool = os.getenv("DORAEMON_CONVERT_CURRENCIES", "on").lower() != "off"
+    # Your addresses: a forwarded receipt counts as your spending only if it was sent to one of these.
+    # Gmail ingest adds the connected account automatically.
+    user_emails: tuple[str, ...] = tuple(
+        e.strip().lower() for e in os.getenv("DORAEMON_USER_EMAILS", "").split(",") if e.strip()
+    )
     date_order: str = os.getenv("DORAEMON_DATE_ORDER", "DMY")  # how to read 02/10/26
     model: str = os.getenv("DORAEMON_MODEL", "ollama:qwen3.5:4b")
     db_path: str = os.getenv("DORAEMON_DB", "data/doraemon.db")  # your rules; never committed

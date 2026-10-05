@@ -52,6 +52,9 @@ transactions: money the user spent, will be charged, or got refunded, one per pa
   a payment processor) ARE spending. Transfers to a person's name or a phone number are not.
 - Money the user RECEIVED (incoming transfer, "You have received", crypto received)
   is not spending: return empty lists for it.
+- Moving the user's own money is NOT spending: paying their own credit card bill ("payment to
+  Mari Credit Card"), transfers or top-ups between their own accounts. Return empty lists.
+  (A credit card statement asking for payment by a due date is still a bill item.)
 - A REFUND of the user's own purchase ("We've refunded SGD 13.50 from SHOP", "Transaction refunded")
   IS a transaction: is_refund true, amount positive, merchant the shop that refunded.
 - category, from the merchant and what was bought:

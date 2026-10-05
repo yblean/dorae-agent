@@ -1,0 +1,159 @@
+{# Agent avatar: a round close-up of Doraemon's collar, swaying bell and pocket.
+   color: blue (Dorae-1) or pink (Dorae-2). uid keeps gradient ids unique when several
+   avatars share a page. Moods change how the bell moves (see app.css). #}
+{% macro mascot(mood='idle', color='blue', uid='a', cls='') %}
+{% set c = {'blue': ['#7FD6FF', '#1FA2EC', '#0A6DB8', '#064F8A', '#062F55'],
+            'pink': ['#FFD3E5', '#F570A8', '#CC3D7E', '#8C1F52', '#4F0F2E']}[color] %}
+<svg class="mascot {{ cls }}" data-mascot data-mood="{{ mood }}" viewBox="0 0 200 200" role="img" aria-label="{{ 'Dorae-2' if color == 'pink' else 'Dorae-1' }}">
+  <defs>
+    <clipPath id="{{ uid }}-circle"><circle cx="100" cy="100" r="92"/></clipPath>
+    <radialGradient id="{{ uid }}-body" cx=".3" cy=".22" r=".95"><stop offset="0" stop-color="{{ c[0] }}"/><stop offset=".4" stop-color="{{ c[1] }}"/><stop offset=".85" stop-color="{{ c[2] }}"/><stop offset="1" stop-color="{{ c[3] }}"/></radialGradient>
+    <radialGradient id="{{ uid }}-belly" cx=".42" cy=".28" r=".8"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".7" stop-color="#F1F5F8"/><stop offset="1" stop-color="#C6D2DD"/></radialGradient>
+    <linearGradient id="{{ uid }}-pocket" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#DCE5ED"/><stop offset=".25" stop-color="#F6F9FB"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient>
+    <linearGradient id="{{ uid }}-collar" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FF7466"/><stop offset=".45" stop-color="#E3342C"/><stop offset="1" stop-color="#9E1717"/></linearGradient>
+    <radialGradient id="{{ uid }}-bell" cx=".34" cy=".28" r=".85"><stop offset="0" stop-color="#FFF8CC"/><stop offset=".4" stop-color="#FFCD2E"/><stop offset=".85" stop-color="#C48A00"/><stop offset="1" stop-color="#8F6200"/></radialGradient>
+    <radialGradient id="{{ uid }}-vignette" cx=".5" cy=".45" r=".6"><stop offset=".7" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="{{ c[4] }}" stop-opacity=".3"/></radialGradient>
+    <radialGradient id="{{ uid }}-glow" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#FFE680" stop-opacity=".9"/><stop offset="1" stop-color="#FFE680" stop-opacity="0"/></radialGradient>
+    <filter id="{{ uid }}-soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="3.5"/></filter>
+    <filter id="{{ uid }}-ring" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="3.5" flood-color="#3A2A1C" flood-opacity=".25"/></filter>
+    <path id="{{ uid }}-sparkle" d="M0 -8 Q1.2 -1.2 8 0 Q1.2 1.2 0 8 Q-1.2 1.2 -8 0 Q-1.2 -1.2 0 -8 Z"/>
+  </defs>
+  <circle cx="100" cy="100" r="96" fill="#FFFFFF" filter="url(#{{ uid }}-ring)"/>
+  <g clip-path="url(#{{ uid }}-circle)">
+    <rect width="200" height="200" fill="url(#{{ uid }}-body)"/>
+    <ellipse cx="100" cy="156" rx="80" ry="74" fill="url(#{{ uid }}-belly)"/>
+    <ellipse cx="100" cy="128" rx="58" ry="10" fill="{{ c[4] }}" opacity=".18" filter="url(#{{ uid }}-soft)"/>
+    <path d="M50 140 A50 42 0 0 0 150 140 Z" fill="url(#{{ uid }}-pocket)"/>
+    <path d="M50 140 A50 42 0 0 0 150 140 Z" fill="none" stroke="#93A6B8" stroke-width="2.2" stroke-linejoin="round"/>
+    <path d="M56 143 H144" stroke="#7F93A6" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+    <ellipse class="mood mood-thinking pocket-glow" cx="100" cy="158" rx="34" ry="16" fill="url(#{{ uid }}-glow)"/>
+    <ellipse cx="100" cy="82" rx="110" ry="16" fill="{{ c[4] }}" opacity=".35" filter="url(#{{ uid }}-soft)"/>
+    <path d="M-6 40 Q100 84 206 40 L206 60 Q100 104 -6 60 Z" fill="url(#{{ uid }}-collar)"/>
+    <path d="M-6 44 Q100 88 206 44" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" opacity=".3"/>
+    <g class="bell">
+      <ellipse cx="100" cy="124" rx="16" ry="5" fill="#3A2A1C" opacity=".25" filter="url(#{{ uid }}-soft)"/>
+      <rect x="95" y="76" width="10" height="9" rx="3" fill="#B07A00"/>
+      <circle cx="100" cy="103" r="21" fill="url(#{{ uid }}-bell)" stroke="#8F6200" stroke-width="1.3"/>
+      <path d="M79.5 97 Q100 104 120.5 97" fill="none" stroke="#7A5300" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M80 93 Q100 100 120 93" fill="none" stroke="#FFF2B0" stroke-width="1.6" stroke-linecap="round" opacity=".8"/>
+      <circle cx="100" cy="110" r="4.2" fill="#3D2A00"/>
+      <path d="M100 113 V122" stroke="#3D2A00" stroke-width="3" stroke-linecap="round"/>
+      <ellipse cx="92" cy="90" rx="6" ry="4" transform="rotate(-30 92 90)" fill="#FFFFFF" opacity=".85"/>
+    </g>
+    <circle cx="100" cy="100" r="92" fill="url(#{{ uid }}-vignette)"/>
+    <ellipse cx="62" cy="34" rx="34" ry="12" transform="rotate(-28 62 34)" fill="#FFFFFF" opacity=".28" filter="url(#{{ uid }}-soft)"/>
+  </g>
+  {# position on the outer group: the twinkle animation replaces the inner transform #}
+  <g class="mood mood-happy" fill="#FFC21A" stroke="#D98E00" stroke-width="1">
+    <g transform="translate(40 112) scale(1.3)"><use href="#{{ uid }}-sparkle" class="twinkle"/></g>
+    <g transform="translate(160 118) scale(1.1)"><use href="#{{ uid }}-sparkle" class="twinkle"/></g>
+    <g transform="translate(152 84) scale(.75)"><use href="#{{ uid }}-sparkle" class="twinkle"/></g>
+  </g>
+</svg>
+{% endmacro %}
+
+{# One thing found in an email, with Confirm / Dismiss and an Edit drawer. #}
+{% macro item_card(c, types, back='/chat/calendar') %}{% set r = c.row %}
+<div class="item" data-item="{{ r.id }}">
+  <div class="item-body">
+    <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
+    <span class="item-title">{{ r.title }}{% if r.confidence < 0.6 %} <span class="check">· please check</span>{% endif %}</span>
+    <span class="item-detail">{{ c.detail }}</span>
+    {% if r.evidence_snippet %}<span class="item-quote">From email: “{{ r.evidence_snippet }}”</span>{% endif %}
+  </div>
+  {% if r.status == 'proposed' %}
+  <div class="item-actions">
+    <form method="post" action="/items/{{ r.id }}/confirm" data-ajax>
+      <input type="hidden" name="back" value="{{ back }}">
+      <button class="btn btn-primary btn3d">Confirm</button>
+    </form>
+    <form method="post" action="/items/{{ r.id }}/dismiss" data-ajax>
+      <input type="hidden" name="back" value="{{ back }}">
+      <button class="btn btn-ghost">Dismiss</button>
+    </form>
+  </div>
+  <details class="more">
+    <summary>Edit · more options</summary>
+    <form method="post" action="/items/{{ r.id }}/edit" data-ajax>
+      <input type="hidden" name="back" value="{{ back }}">
+      <div class="edit-grid">
+        <label>Title <input class="field" name="title" value="{{ r.title }}"></label>
+        <label>Type
+          <select class="field" name="type">{% for t in types %}<option value="{{ t }}" {{ 'selected' if t == r.type }}>{{ t.replace('_', ' ') }}</option>{% endfor %}</select>
+        </label>
+        <label>Date <input class="field" type="date" name="day" value="{{ c.date }}"></label>
+        <label>Time (blank = all day) <input class="field" type="time" name="at" value="{{ c.time }}"></label>
+        {% if c.is_travel %}<label>Departure timezone <input class="field" name="zone" value="{{ r.timezone }}" placeholder="Asia/Tokyo"></label>{% endif %}
+      </div>
+      <div class="row">
+        <button class="btn btn-white btn3d">Save changes</button>
+        {% if c.is_travel and r.departs_from %}<span class="note">Changing the timezone teaches me about {{ r.departs_from }}.</span>{% endif %}
+      </div>
+    </form>
+    {% if c.sender %}
+    <form method="post" action="/items/{{ r.id }}/dismiss" data-ajax class="row">
+      <input type="hidden" name="back" value="{{ back }}"><input type="hidden" name="ignore_sender" value="1">
+      <button class="btn-link">Dismiss and ignore {{ c.sender }} from now on</button>
+    </form>
+    {% endif %}
+  </details>
+  {% else %}
+  <span class="status-pill">{{ '✓ In calendar' if r.calendar_event_id else ('✓ Confirmed' if r.status == 'confirmed' else 'Dismissed') }}</span>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# One chat message, with its card if it has one. #}
+{% macro message(m, types) %}
+<div class="msg {{ 'from-you' if m.role == 'user' else 'from-agent' }}" data-msg="{{ m.id }}">
+  {% if m.text %}<div class="bubble">{{ m.text }}</div>{% endif %}
+
+  {% if m.kind == 'breakdown' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ p.label }}</span><strong>{{ p.currency }} {{ '{:,.2f}'.format(p.total|float) }}</strong></div>
+    {% for category, amount, width in m.bars %}
+    <div class="bar-row"><span>{{ category }}</span><span class="bar"><span style="width: {{ width }}%"></span></span>
+      <span class="num">{{ '{:,.2f}'.format(amount|float) }}</span></div>
+    {% else %}<div class="note">No payments.</div>{% endfor %}
+    <div class="note">{{ p.count }} payments{% if p.converted %} · {{ p.converted }} overseas, converted{% endif %}{% if p.unconverted %} · {{ p.unconverted }} without an exchange rate{% endif %}</div>
+  </div>
+
+  {% elif m.kind == 'payments' %}
+  <div class="card">
+    <table class="payments">
+      {% for l in m.lines %}{% set r = l.row %}
+      <tr class="{{ '' if r.status == 'counted' else 'faded' }}">
+        <td>{{ r.merchant }}<div class="note">{{ l.day }} · {{ 'bank alert' if r.source == 'bank_alert' else 'receipt' }}{% if r.status != 'counted' %} · removed{% endif %}</div></td>
+        <td class="num">{{ '−' if r.is_refund }}{{ r.currency }} {{ r.amount }}{% if l.home_amount is not none %}<div class="note">≈ {{ m.home }} {{ l.home_amount }}</div>{% endif %}</td>
+        <td>{% if r.status == 'counted' %}
+          <form method="post" action="/transactions/{{ r.id }}/category" data-ajax data-autosubmit>
+            <select class="field" name="category" aria-label="Category for {{ r.merchant }}">
+              {% for c in ['groceries','dining','shopping','transport','travel','utilities','subscriptions','memberships','health','entertainment','other'] %}<option value="{{ c }}" {{ 'selected' if c == l.category }}>{{ c }}</option>{% endfor %}
+            </select>
+          </form>{% else %}<span class="note">{{ l.category }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  {% elif m.kind == 'items' %}
+  <div class="items">
+    {% for c in m.cards %}{{ item_card(c, types) }}{% endfor %}
+    {% if m.more %}<a class="note" href="/pocket">…and {{ m.more }} more. See them all</a>{% endif %}
+  </div>
+
+  {% elif m.kind == 'agenda' %}
+  <div class="card">
+    {% for c in m.cards %}{% set r = c.row %}
+    <div class="agenda-row">
+      <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
+      <div><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div></div>
+      <span class="note nowrap">{{ '✓ In calendar' if r.calendar_event_id else ('✓ Confirmed' if r.status == 'confirmed' else 'Needs your OK') }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <span class="msg-time">{{ m.time }}</span>
+</div>
+{% endmacro %}

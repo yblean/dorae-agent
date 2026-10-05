@@ -1,0 +1,75 @@
+{% extends "base.html" %}{% set title = "All payments" %}
+{% block content %}
+<div class="tabs">
+  <a href="/spending" class="tab" {{ 'aria-current=page' if not month }}>All</a>
+  {% for m in months %}<a href="/spending?month={{ m }}" class="tab" {{ 'aria-current=page' if m == month }}>{{ m }}</a>{% endfor %}
+</div>
+
+<div class="panel-box">
+  {% for category, amount, width in bars %}
+  <div class="bar-row">
+    <span>{{ category }}</span>
+    <span class="bar"><span style="width: {{ width }}%"></span></span>
+    <span class="num">{{ home }} {{ amount }}</span>
+  </div>
+  {% endfor %}
+  <div class="total-row"><span>Total</span><span class="num">{{ home }} {{ total }}</span></div>
+  {% if n_converted %}
+  <p class="note">{{ n_converted }} overseas payment{{ 's' if n_converted != 1 }} converted to {{ home }} at the
+    European Central Bank rate on the purchase date. Your bank's rate and fees differ slightly.</p>
+  {% endif %}
+  {% if foreign %}
+  <p class="note">Not in the total (no exchange rate available):
+    {% for t in foreign %}{{ t.currency }} {{ t.amount }} {{ t.merchant }}{{ ', ' if not loop.last }}{% endfor %}</p>
+  {% endif %}
+  <p class="note">Only payments with an email are counted; cash and other card payments are missing.</p>
+</div>
+
+<div class="panel-box">
+  <table>
+    <tr><th>Payment</th><th class="num">Amount</th><th>Category</th></tr>
+    {% for l in lines %}{% set r = l.row %}{% set active = r.status == 'counted' and not l.duplicate_of %}
+    <tr class="{{ '' if active else 'faded' }}">
+      <td>{{ r.merchant }}
+        <div class="note">
+          {{ l.day }} · {{ 'bank alert' if r.source == 'bank_alert' else 'receipt' }}
+          {% if l.duplicate_of %} · same payment as {{ l.duplicate_of.merchant }}, not counted twice{% endif %}
+          {% if r.status == 'removed' %} · removed{% endif %}
+        </div>
+        {% if active %}
+        <details class="more"><summary>Remove</summary>
+          <form method="post" action="/transactions/{{ r.id }}/remove" class="row">
+            <input type="hidden" name="back" value="/spending?month={{ month }}">
+            <button class="btn btn-white btn3d">Just this one</button>
+          </form>
+          <form method="post" action="/transactions/{{ r.id }}/remove">
+            <input type="hidden" name="back" value="/spending?month={{ month }}"><input type="hidden" name="never" value="1">
+            <button class="btn-link">Never count this payee</button>
+          </form>
+        </details>
+        {% elif r.status == 'removed' %}
+        <form method="post" action="/transactions/{{ r.id }}/restore">
+          <input type="hidden" name="back" value="/spending?month={{ month }}"><button class="btn-link">Restore</button>
+        </form>
+        {% endif %}
+      </td>
+      <td class="num">{{ '−' if r.is_refund }}{{ r.currency }} {{ r.amount }}
+        {% if l.home_amount is not none %}<div class="note">≈ {{ home }} {{ l.home_amount }}</div>{% endif %}</td>
+      <td>
+        {% if active %}
+        <form method="post" action="/transactions/{{ r.id }}/category">
+          <input type="hidden" name="back" value="/spending?month={{ month }}">
+          <select class="field" name="category" onchange="this.form.submit()" aria-label="Category for {{ r.merchant }}">
+            {% for c in categories %}<option value="{{ c }}" {{ 'selected' if c == l.category }}>{{ c }}</option>{% endfor %}
+          </select>
+        </form>
+        {% else %}<span class="note">{{ l.category }}</span>{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="empty">No payments yet. Press Check now.</td></tr>
+    {% endfor %}
+  </table>
+  <p class="note">Changing a category teaches me: this merchant's other and future payments follow it.</p>
+</div>
+{% endblock %}

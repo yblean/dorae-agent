@@ -76,6 +76,30 @@ def strip_quoted_reply(subject: str, body: str) -> str:
     return "\n".join(line for line in body.splitlines() if not line.lstrip().startswith(">"))
 
 
+_FORWARD_SUBJECT_RE = re.compile(r"^\s*(fwd?|fw)\s*:", re.IGNORECASE)
+_HEADER_FROM_RE = re.compile(r"^\s*\*?From:\*?\s", re.MULTILINE | re.IGNORECASE)
+_HEADER_TO_RE = re.compile(r"^\s*\*?To:\*?\s*(.+)$", re.MULTILINE | re.IGNORECASE)
+_ADDRESS_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def forwarded_original_recipients(subject: str, body: str) -> list[str] | None:
+    """Who the original (innermost) forwarded email was addressed to, or None if not a forward.
+
+    For "Fwd: Fwd: Ticket confirmed", that's the airline's email to whoever booked,
+    which tells us whose purchase it was.
+    """
+    if not _FORWARD_SUBJECT_RE.match(subject):
+        return None
+    header_starts = [m.start() for m in _HEADER_FROM_RE.finditer(body)]
+    if not header_starts:
+        return None
+    innermost = body[header_starts[-1]:]
+    to = _HEADER_TO_RE.search(innermost[:1500])
+    if not to:
+        return None
+    return [a.lower() for a in _ADDRESS_RE.findall(to.group(1))]
+
+
 def _pdf_texts(msg) -> list[str]:
     """Text of each PDF attachment. Many airlines and billers put everything in the PDF."""
     texts = []

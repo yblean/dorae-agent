@@ -26,10 +26,32 @@ def test_gmail_labels_drive_triage(settings):
 
 def test_real_email_is_extracted(settings):
     msg = GmailMessage("g2", "t2", ["INBOX", "CATEGORY_UPDATES"], FIXTURE)
-    subject, result = ingest_message(msg, FakeBackend(json.dumps(BILL)), settings, RuleStore(use_defaults=False))
-    assert subject == "Your October electricity bill is ready"
+    email, result = ingest_message(msg, FakeBackend(json.dumps(BILL)), settings, RuleStore(use_defaults=False))
+    assert email.subject == "Your October electricity bill is ready"
     assert triage_label(result) == "extracted"
     assert result.items[0].start_at.date().isoformat() == "2026-10-16"
+
+
+FORWARD = (b"Subject: Fwd: Ticket issuance confirmed\nFrom: Matthew <m@x.com>\nTo: yibin@x.com\n"
+           b"Date: Fri, 18 Sep 2026 10:00:00 +0800\n\n---------- Forwarded message ---------\n"
+           b"From: airline <a@ceair.com>\nTo: <m@x.com>\n\nTotal SGD 1579.50")
+TICKET = {"items": [], "transactions": [{"source": "merchant_receipt", "merchant": "China Eastern", "order_ref": None,
+                                          "purchased": None, "amount": 1579.5, "currency": "SGD",
+                                          "category": "travel", "is_refund": False}]}
+
+
+def test_friends_forwarded_booking_is_not_your_spending(settings):
+    import dataclasses
+    mine = dataclasses.replace(settings, user_emails=("yibin@x.com",))
+    msg = GmailMessage("g3", "t3", ["INBOX"], FORWARD)
+    _, result = ingest_message(msg, FakeBackend(json.dumps(TICKET)), mine, RuleStore(use_defaults=False))
+    assert result.transactions == []
+    assert "forwarded booking was for m@x.com" in result.applied_rules[0]
+    # Forwarded by you, originally sent to you: still counts
+    own = FORWARD.replace(b"To: <m@x.com>", b"To: <yibin@x.com>")
+    _, result = ingest_message(GmailMessage("g4", "t4", [], own), FakeBackend(json.dumps(TICKET)), mine,
+                               RuleStore(use_defaults=False))
+    assert len(result.transactions) == 1
 
 
 def test_processed_emails_are_remembered(tmp_path):

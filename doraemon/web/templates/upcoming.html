@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% set title = "Upcoming" %}
+{% block content %}
+<div class="panel-box">
+  {% if calendar_connected %}
+  <p class="note" style="margin-top: 0">Things you confirmed. They're in the <strong>Doraemon</strong> calendar in Google Calendar, with reminders.</p>
+  {% else %}
+  <p class="note" style="margin-top: 0">Things you confirmed. To also put them in Google Calendar, connect it once by running
+    <code>python -m doraemon.calendar_sync connect</code>, then press “Add to calendar”.</p>
+  {% endif %}
+  <table>
+    {% for c in cards %}{% set r = c.row %}
+    <tr>
+      <td style="width: 1%"><span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span></td>
+      <td><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div></td>
+      <td class="num">
+        {% if r.calendar_event_id %}<span class="note">✓ In calendar</span>
+        {% elif r.start_at %}
+        <form method="post" action="/items/{{ r.id }}/sync"><button class="btn btn-white btn3d">Add to calendar</button></form>
+        {% else %}<span class="note">No date</span>{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td class="empty">Nothing confirmed yet. Confirm things in Chat or your Pocket.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

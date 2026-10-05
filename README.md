@@ -42,6 +42,10 @@ Predictions are saved to `evals/results/` so runs can be compared.
   A merchant receipt counts only when no bank alert covers it: `doraemon/ledger.py` drops
   a receipt whose amount matches an alert within 3 days, or that has the same merchant
   name and is within 5% of it (Trip Coins, vouchers). Money received is not spending.
+- **Overseas spending is converted** to `DORAEMON_HOME_CURRENCY` at the European Central Bank rate on
+  the purchase date (Frankfurter API, no key; only currency codes and dates are sent). Rates are fetched
+  during ingest and cached, so the review page works offline. `DORAEMON_CONVERT_CURRENCIES=off` keeps
+  foreign payments out of the totals instead.
 - **Pay-later bookings count as spending** on the date the card will be charged.
 - **PDF attachments are read** (`pypdf`) and passed to the model with the email body.
 - **Hotel stays are all-day items** on the check-in date; check-in windows and hotel timezones are ignored.
@@ -72,6 +76,17 @@ One-time setup in Google Cloud (about 15 minutes). Doraemon asks only for **read
 While the app is in **Testing**, Google expires the sign-in after 7 days, so ingest will ask you to
 sign in again weekly. Publishing it (Audience → **Publish app**) removes that for personal use;
 you'll keep seeing the "unverified app" screen, which is expected for an app only you use.
+
+### Connect Google Calendar
+
+Confirmed items go into a separate **Doraemon** calendar that the app creates. It uses the
+`calendar.app.created` permission, so it can only see and change that one calendar, never your others.
+
+1. In Google Cloud, **APIs & Services → Library**: enable the **Google Calendar API**.
+2. Run `python -m doraemon.calendar_sync connect` and approve in your browser (one approval covers Gmail and Calendar).
+
+After that, **Confirm** adds the event (with reminders and a link to the email) and **Undo** removes it.
+`python -m doraemon.calendar_sync push` adds anything you confirmed before connecting.
 
 Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
 subject looks like an order, booking, bill or delivery.
