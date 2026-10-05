@@ -101,6 +101,22 @@ show in Google Calendar, plus things from your email that aren't in it yet.
 Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
 subject looks like an order, booking, bill or delivery.
 
+## Chat with the agents
+
+Dorae-1 (spending) and Dorae-2 (calendar) answer free-form questions like "what's my latest purchase?"
+or "any bills due this month?". The local model (`DORAEMON_CHAT_MODEL`, default: your `DORAEMON_MODEL`)
+calls read-only tools over your database and Google calendars; the card under each answer is built
+from the tool results, not from the model's words.
+
+Guardrails: a topic check runs first, so Dorae-1 points calendar questions to Dorae-2 (and the other
+way round) and declines anything else; each agent only has its own tools; chat can't change
+anything (the card buttons do). If the model isn't running, the agents fall back to fixed answers.
+Set `DORAEMON_CHAT_MODEL=off` to always use those.
+
+```
+python -m evals.chat_eval      # 16 questions: right topic, right tool, stays in its lane
+```
+
 ## Rules
 
 Corrections are remembered as rules and applied in code, so the same mistake isn't made twice.
@@ -132,4 +148,5 @@ python -m evals.run_eval --reuse evals/results/<run>.jsonl --rules defaults --le
 - `doraemon/extract.py`: prompt, model call, validation, safety checks
 - `doraemon/dates.py`: deterministic date parsing (the model never computes dates)
 - `doraemon/llm.py`: swappable model backends
+- `doraemon/chat.py`: the agents' tool-calling chat and its guardrails
 - `evals/`: labels, scoring, helper scripts

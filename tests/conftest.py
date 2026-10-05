@@ -24,7 +24,7 @@ class FakeBackend:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(timezone="America/New_York", home_currency="USD", model="fake:x")
+    return Settings(timezone="America/New_York", home_currency="USD", model="fake:x", chat_model="off")
 
 
 @pytest.fixture

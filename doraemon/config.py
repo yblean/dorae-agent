@@ -23,6 +23,8 @@ class Settings:
     )
     date_order: str = os.getenv("DORAEMON_DATE_ORDER", "DMY")  # how to read 02/10/26
     model: str = os.getenv("DORAEMON_MODEL", "ollama:qwen3.5:4b")
+    # The model behind the agents' chats (it calls read-only tools); "off" for fixed keyword answers
+    chat_model: str = os.getenv("DORAEMON_CHAT_MODEL", os.getenv("DORAEMON_MODEL", "ollama:qwen3.5:4b"))
     db_path: str = os.getenv("DORAEMON_DB", "data/doraemon.db")  # your rules; never committed
     # OAuth client from Google Cloud, and the sign-in token saved after you approve access
     google_credentials: str = os.getenv("DORAEMON_GOOGLE_CREDENTIALS", "data/google/credentials.json")

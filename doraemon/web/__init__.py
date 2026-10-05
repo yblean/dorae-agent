@@ -25,6 +25,7 @@ import re
 
 from doraemon.agents import AGENTS, COLORS, Brain, shades, styled
 from doraemon.assistant import last_full_month, month_name
+from doraemon.chat import AgentChat
 from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, connect_schedule, event_body
 from doraemon.config import Settings
 from doraemon.db import Database, item_model, transaction_model
@@ -32,6 +33,7 @@ from doraemon.display import describe_when, zone_name
 from doraemon.fx import FxRates
 from doraemon.google_auth import NotConnected
 from doraemon.ledger import build_ledger, spending_totals
+from doraemon.llm import get_backend
 from doraemon.rules import RuleStore, name_matches
 from doraemon.schema import Category, ItemType
 
@@ -142,7 +144,8 @@ def clock(hhmm: str) -> str:
 
 
 def create_app(settings: Settings | None = None, fx: FxRates | None = None,
-               calendar: Calendar | None = None, schedule: Schedule | None = None, ingest=None) -> FastAPI:
+               calendar: Calendar | None = None, schedule: Schedule | None = None, ingest=None,
+               chat_backend=None) -> FastAPI:
     settings = settings or Settings()
     # The page only reads cached rates, so it never waits on the network; ingest fetches them.
     fx = fx or (FxRates(settings.db_path, fetch=None) if settings.convert_currencies else None)
@@ -162,6 +165,13 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return connected_schedule[0]
 
     brain = Brain(db, settings, fx, schedule=get_schedule)
+    if chat_backend is None and settings.chat_model != "off":
+        try:
+            chat_backend = get_backend(settings.chat_model, settings)
+        except ValueError:
+            chat_backend = None  # unknown backend: the fixed answers still work
+    if chat_backend is not None:
+        brain.chat = AgentChat(brain, chat_backend)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

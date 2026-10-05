@@ -41,6 +41,17 @@ class OllamaBackend:
         resp.raise_for_status()
         return resp.json()["message"]["content"]
 
+    def chat(self, messages: list[dict], tools: list[dict]) -> dict:
+        """One chat turn that may call tools. Returns Ollama's message: content and maybe tool_calls."""
+        resp = httpx.post(
+            f"{self.url}/api/chat",
+            json={"model": self.model, "messages": messages, "tools": tools, "stream": False,
+                  "think": self.think, "options": {"temperature": 0, "num_ctx": 8192}},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]
+
 
 def get_backend(spec: str, settings: Settings) -> Backend:
     """`spec` is 'backend:model', e.g. 'ollama:qwen3:4b'."""

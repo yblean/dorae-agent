@@ -4,10 +4,12 @@ Dorae-1 (money) answers about spending; Dorae-2 (calendar) about bills,
 appointments, deadlines and trips, and holds the items waiting for your OK.
 Each posts a short overview once a day; you ask for the details.
 
-Answers are computed from your database (no model call yet): a reply is some
-text plus, optionally, a card (breakdown bars, a payments table, item cards,
-your week from Google Calendar).
+A reply is some text plus, optionally, a card (breakdown bars, a payments
+table, item cards, your week from Google Calendar). The local model answers
+questions by calling read-only tools (doraemon.chat); the keyword answers here
+are the fallback when it isn't running.
 """
+import logging
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -24,6 +26,8 @@ from doraemon.ledger import build_ledger, spending_totals
 from doraemon.rules import name_key
 from doraemon.schema import Category
 
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Agent:
@@ -37,7 +41,7 @@ class Agent:
 
 MONEY = Agent(
     "money", "Dorae-1", "Spending", "#3B82F6",
-    ("Show this month's breakdown", "Where did I spend the most?", "How was {last_month}?", "Show my dining payments"),
+    ("What's my latest purchase?", "Show this month's breakdown", "Where did I spend the most?", "How was {last_month}?"),
     (("Check inbox for receipts", "With Dorae-2's check", "On"),
      ("Monthly summary", "1st of each month, 9:00", "Coming soon"),
      ("Overspend alerts", "When a budget is passed", "Coming soon")),
@@ -91,6 +95,7 @@ class Brain:
                  schedule: Callable[[], Schedule | None] | None = None) -> None:
         self.db, self.settings, self.fx = db, settings, fx
         self.schedule = schedule  # your Google calendars, or None until reading them is approved
+        self.chat = None  # doraemon.chat.AgentChat when a chat model is set
         self.tz = ZoneInfo(settings.timezone)
         self.home = settings.home_currency
 
@@ -210,6 +215,8 @@ class Brain:
         category = next((c for word, c in _CATEGORY_WORDS.items() if re.search(rf"\b{word}", q)), None)
         if category and category in {c.value for c in Category}:
             return [self.payments(month or self.this_month(), category)]
+        if re.search(r"latest|last (purchase|payment)|recent", q):
+            return [self.payments(month or self.this_month(), limit=5)]
         if re.search(r"most|biggest|top|where", q):
             return [self.top_merchants(month or self.this_month())]
         if re.search(r"breakdown|categor|split", q):
@@ -360,9 +367,23 @@ class Brain:
         self.db.set_setting(key, today)
 
     def reply(self, agent: str, question: str) -> list[int]:
-        """Store your question and the agent's answer; returns the new message ids."""
+        """Store your question and the agent's answer; returns the new message ids.
+
+        The model answers when one is set (self.chat, see doraemon.chat); if it can't be
+        reached, the fixed keyword answers below take over.
+        """
+        history = self.db.messages(agent, limit=8)
         ids = [self.db.add_message(agent, "user", question)]
-        answers = self.money_reply(question) if agent == "money" else self.calendar_reply(question)
+        answers = None
+        if self.chat is not None:
+            try:
+                answers = self.chat.answer(agent, question, history)
+            except Exception as e:  # model not running, timed out, or gave nothing back
+                log.warning("chat model failed, using fixed answers: %s", e)
+        if answers is None:
+            answers = self.money_reply(question) if agent == "money" else self.calendar_reply(question)
+            if self.chat is not None:
+                answers[0]["text"] += "\n(Quick answer: the local model isn't responding right now.)"
         for msg in answers:
             ids.append(self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"]))
         return ids
