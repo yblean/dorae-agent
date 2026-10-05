@@ -7,3 +7,6 @@ __pycache__/
 # Real mail never goes in git
 data/
 evals/results/
+
+# Claude Code app settings (local to this machine)
+.claude/
