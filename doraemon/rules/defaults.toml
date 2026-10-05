@@ -1,0 +1,70 @@
+# Built-in rules every user starts with.
+# Your own corrections live in data/doraemon.db and win over these.
+#
+# Merchant and place names are matched on their core words: case, digits, punctuation
+# and filler like "Singapore", "SG", "Pte", "Ltd" are ignored, and every word of the
+# rule must appear in the name. "ntuc" matches "NTUC FP-BT BATOK EAST SINGAPORE SG".
+
+[merchant_category]
+"bus mrt" = "transport"
+"transitlink" = "transport"
+"comfortdelgro" = "transport"
+"gojek" = "transport"
+"kopitiam" = "dining"
+"mcdonalds" = "dining"
+"kfc" = "dining"
+"starbucks" = "dining"
+"toast box" = "dining"
+"ya kun" = "dining"
+"foodpanda" = "dining"
+"deliveroo" = "dining"
+"ntuc" = "groceries"
+"fairprice" = "groceries"
+"giant" = "groceries"
+"cold storage" = "groceries"
+"sheng siong" = "groceries"
+"eleven" = "groceries"          # 7-Eleven
+"shopee" = "shopping"
+"lazada" = "shopping"
+"amazon" = "shopping"
+"uniqlo" = "shopping"
+"anytime fitness" = "memberships"
+"netflix" = "subscriptions"
+"spotify" = "subscriptions"
+"singtel" = "subscriptions"
+"starhub" = "subscriptions"
+"circles life" = "subscriptions"
+"icymi" = "subscriptions"      # Vivifi mobile plans bill as ICYMI Pte. Ltd.
+"trip" = "travel"              # Trip.com
+"agoda" = "travel"
+"zipair" = "travel"
+"scoot" = "travel"
+"jetstar" = "travel"
+
+[travel_timezone]
+"changi" = "Asia/Singapore"
+"narita" = "Asia/Tokyo"
+"haneda" = "Asia/Tokyo"
+"kansai" = "Asia/Tokyo"
+"incheon" = "Asia/Seoul"
+"taoyuan" = "Asia/Taipei"
+"hong kong" = "Asia/Hong_Kong"
+"suvarnabhumi" = "Asia/Bangkok"
+"don mueang" = "Asia/Bangkok"
+"klia" = "Asia/Kuala_Lumpur"
+"kuala lumpur" = "Asia/Kuala_Lumpur"
+"soekarno" = "Asia/Jakarta"
+"shenzhen" = "Asia/Shanghai"
+"shenzhenbei" = "Asia/Shanghai"
+"guangzhou" = "Asia/Shanghai"
+"guangzhoudong" = "Asia/Shanghai"
+"pudong" = "Asia/Shanghai"
+"heathrow" = "Europe/London"
+
+[ignore_sender]
+# Exact addresses ("news@shop.example") or whole domains ("enews.shop.example").
+senders = []
+
+[not_spending]
+# Payees whose payments are never spending (e.g. family members you transfer to).
+payees = []
