@@ -452,10 +452,18 @@ class AgentChat:
                     {"role": "user", "content": question}]
         cards: list[dict] = []
         text = ""
+        nudged = False
         for round_ in range(MAX_ROUNDS + 1):
             last = round_ == MAX_ROUNDS
             msg = self.backend.chat(messages, [] if last else specs)
             calls = [] if last else (msg.get("tool_calls") or [])
+            if not calls and not self.last_tools and not nudged and not last:
+                # Small models answer from earlier messages instead, and invent the numbers they lack
+                nudged = True
+                messages += [{"role": "assistant", "content": msg.get("content", "")},
+                             {"role": "user", "content": "Don't answer from memory or earlier messages: call the "
+                                                         "right tool first, then answer from what it returns."}]
+                continue
             if not calls:
                 text = clean(msg.get("content", ""))
                 break
@@ -496,5 +504,6 @@ class AgentChat:
 def clean(text: str) -> str:
     """Plain text for the chat bubble: no hidden reasoning, no markdown emphasis, not too long."""
     text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
-    text = re.sub(r"\*\*|__|^#+\s*", "", text, flags=re.M).strip()
+    text = re.sub(r"\*\*|__|^#+\s*", "", text, flags=re.M)
+    text = re.sub(r"\[\s*card\b[^\]]*\]", "", text, flags=re.I).strip()  # the real card is drawn by the app
     return text[:1200]

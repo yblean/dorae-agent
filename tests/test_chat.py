@@ -371,3 +371,12 @@ def test_spending_trend_tool_shows_a_chart(chat):
     result = json.loads(model.seen[1]["messages"][-1]["content"])
     assert result["months"][-1]["so_far"] is True
     assert '<svg class="viz columns"' in html
+
+
+def test_answers_from_memory_are_sent_back_for_a_tool(chat):
+    chat.db.set_budget("dining", Decimal("10"))
+    model = ScriptedModel("spending", say("Dining used SGD 65 [Card: Dining SGD 65]"), call("budget_status"),
+                          say("Dining: SGD 7.02 of SGD 10.00. [Card: dining]"))
+    html = chat("money", "how is my budget?", model)
+    assert "call the right tool first" in model.seen[1]["messages"][-1]["content"]
+    assert "SGD 65" not in html and "[Card" not in html and "SGD 7.02 of SGD 10.00." in html
