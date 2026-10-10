@@ -83,7 +83,9 @@ def app_with(tmp_path, settings):
                             google_credentials=str(tmp_path / "credentials.json"))
     db = Database(s.db_path)
     soon = datetime.now(ZoneInfo(SG)).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=5)
-    db.save_result("g1", "t1", email(), Extraction(message_id="m", items=[item(start=soon)]), "extracted")
+    # appointments still go to Google Calendar; bills get Telegram reminders (tests/test_reminders.py)
+    db.save_result("g1", "t1", email(), Extraction(message_id="m", items=[item("appointment", "Dentist", start=soon)]),
+                   "extracted")
 
     def make(cal, schedule=None):
         return TestClient(create_app(s, calendar=cal, schedule=schedule), follow_redirects=True), db
@@ -94,7 +96,7 @@ def test_confirm_adds_event_and_undo_removes_it(app_with):
     cal = FakeCalendar()
     client, db = app_with(cal)
     msg = client.post("/items/1/confirm", headers={"x-requested-with": "fetch"}).json()["html"]
-    assert "Added “SIT tuition fees” to your Doraemon calendar" in msg
+    assert "Added “Dentist” to your Doraemon calendar" in msg
     assert db.get("item", 1)["calendar_event_id"] == "evt1"
     assert "✓ In calendar" in client.get("/upcoming").text
 
@@ -126,10 +128,13 @@ def test_calendar_error_is_reported_and_retry_works(app_with):
 
 def test_push_adds_confirmed_items_missing_from_calendar(tmp_path):
     db = Database(tmp_path / "d.db")
-    db.save_result("g1", "t1", email(), Extraction(message_id="m", items=[item()]), "extracted")
+    db.save_result("g1", "t1", email(), Extraction(message_id="m", items=[item("appointment", "Dentist"), item()]),
+                   "extracted")
     db.update("item", 1, "confirm", status="confirmed")
+    db.update("item", 2, "confirm", status="confirmed")
     cal = FakeCalendar()
-    assert push_confirmed(db, cal) == (1, 0)
+    assert push_confirmed(db, cal) == (1, 0)  # the bill has Telegram reminders instead
+    assert [b["summary"] for b in cal.events.values()] == ["📌 Dentist"]
     assert push_confirmed(db, cal) == (0, 0)  # already there: nothing added twice
 
 
@@ -187,7 +192,7 @@ def test_week_includes_email_items_not_in_google_yet(app_with):
     sunday = today + timedelta(days=6 - today.weekday())
     q = "show my schedule this week" if due <= sunday else "my schedule next week"
     html = client.post("/chat/calendar/ask", data={"q": q}).json()["html"]
-    assert "SIT tuition fees" in html and "ev-waiting" in html and "still needs your OK" in html
+    assert "Dentist" in html and "ev-waiting" in html and "still needs your OK" in html
 
 
 def test_week_asks_to_connect_when_reading_isnt_approved(app_with):

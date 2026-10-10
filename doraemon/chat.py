@@ -25,6 +25,7 @@ from doraemon.dates import resolve, resolve_spoken
 from doraemon.db import CHAT_ID_PREFIX, item_model
 from doraemon.display import describe_when
 from doraemon.ledger import spending_totals
+from doraemon.reminders import WANTS_REMINDER, draft_reminder
 from doraemon.schema import ActionItem, Category, ItemType
 
 ITEM_TYPES = [t.value for t in ItemType]
@@ -212,7 +213,8 @@ def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
              **({"amount": f"{r['currency']} {r['amount']}"} if r["amount"] else {}),
              **({"where": r["location"]} if r["location"] else {}),
              "status": "needs the user's OK" if r["status"] == "proposed" else
-                       ("in Google Calendar" if r["calendar_event_id"] else "confirmed")} for r in shown]}
+                       ("in Google Calendar" if r["calendar_event_id"] else
+                        "Telegram reminder set" if brain.db.reminders(r["id"]) else "confirmed")} for r in shown]}
         waiting = all(r["status"] == "proposed" for r in shown)
         card = {"kind": "items" if waiting else "agenda", "payload": {"ids": [r["id"] for r in shown]}} if shown else None
         return result, card
@@ -230,6 +232,8 @@ def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
 
     def propose_event(title=None, when=None, end=None, location=None, **_):
         """Adds the event as a card waiting for the user's OK; only their Confirm puts it in Google Calendar."""
+        if WANTS_REMINDER.search(turn.get("question", "")):  # small models reach for this tool for reminders too
+            return propose_reminder(title=title, when=when)
         title, when, end = _text(title, 80), _text(when, 80), _text(end, 80)
         if not title:
             return {"error": "No title. Ask the user what the event is called."}, None
@@ -262,6 +266,16 @@ def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
                 "next_step": "The user must press Confirm on the card to add it to Google Calendar."}, \
                {"kind": "items", "payload": {"ids": [item_id]}}
 
+    def propose_reminder(title=None, when=None, **_):
+        """Adds a reminder card the user can edit; only their Create reminder sets it up on Telegram."""
+        result, item_id = draft_reminder(brain.db, brain.settings.timezone, brain.settings.date_order,
+                                         _text(title, 80), _text(when, 80), _text(turn.get("question"), 200),
+                                         datetime.now(brain.tz))
+        if item_id is None:
+            return result, None
+        status = brain.db.get("item", item_id)["status"]
+        return result, {"kind": "items" if status == "proposed" else "agenda", "payload": {"ids": [item_id]}}
+
     return [
         Tool("find_items", "Search bills, appointments, deadlines, deliveries, RSVPs and trips found in the user's "
              "email, soonest first. Starts from today; give an earlier from_date for past ones. "
@@ -284,6 +298,12 @@ def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
               "end": {"type": "string", "description": "end time as the user wrote it, only if they gave one"},
               "location": {"type": "string"}},
              propose_event),
+        Tool("propose_reminder", "Draft a reminder the user asks for ('remind me to...', 'create a reminder to...'). "
+             "It shows as a card the user can edit, and Doraemon then reminds them on Telegram.",
+             {"title": {"type": "string", "description": "what to remind them about, short, e.g. Get groceries"},
+              "when": {"type": "string", "description": "the date and time exactly as the user wrote them, "
+                                                         "e.g. 'tmr', 'friday 5pm', 'in 2 hours'. Don't convert it."}},
+             propose_reminder),
     ]
 
 
@@ -299,8 +319,8 @@ other: anything else: general knowledge, jokes, writing, coding, advice, news, o
 Answer with JSON."""
 
 AREA = {"money": ("spending", "payments, merchants, categories and totals"),
-        "calendar": ("calendar", "bills due, appointments, deadlines, deliveries, trips, your schedule "
-                                 "and adding events")}
+        "calendar": ("calendar", "bills due, appointments, deadlines, deliveries, trips, your schedule, "
+                                 "adding events and setting reminders")}
 
 SYSTEM = """You are {name}, the {area} assistant in Doraemon, a personal app that reads the user's emailed receipts, bank alerts, bills and bookings.
 Today is {today}. Timezone {tz}. This month is {month}; last month was {last_month}.{extra}
@@ -316,8 +336,9 @@ CHANGES = {
     "money": "You can't change anything from chat. If asked to, say the buttons on the card do that.",
     "calendar": "To add a new event, call propose_event once with the user's own date wording. Then repeat the "
                 "date and time the tool returns, so the user can check it, and tell them to press Confirm on the "
-                "card. If a tool returns an error, say it to the user. You can't change, confirm or delete existing "
-                "items: the card buttons do that.",
+                "card. To set a reminder ('remind me to...'), call propose_reminder once instead, then repeat when it "
+                "will remind them and tell them to check the card and press Create reminder. If a tool returns an "
+                "error, say it to the user. You can't change, confirm or delete existing items: the card buttons do that.",
 }
 
 EXTRA = {"money": " For today, this week and other periods pass `period` and let the app work out the dates. Amounts are in {home} unless another currency is shown. Payments come only from emails, so cash is missing.",

@@ -94,12 +94,45 @@ which can never change them.
    If you connected before the week view existed, run it again to approve reading your calendars.
 
 After that, **Confirm** adds the event (with reminders and a link to the email) and **Undo** removes it.
+Bills, deadlines, deliveries and RSVPs don't go to the calendar: they get Telegram reminders instead (below).
 `python -m doraemon.calendar_sync push` adds anything you confirmed before connecting.
 Ask Dorae-2 "Show my schedule this week" (or "next week") for a week view of all the calendars you
 show in Google Calendar, plus things from your email that aren't in it yet.
 
 Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
 subject looks like an order, booking, bill or delivery.
+
+### Telegram reminders
+
+Bills, deadlines (e.g. module registration), deliveries and RSVPs show **Remind me** instead of Confirm.
+Pick when the first reminder comes (1 week, 3 days, 1 day, 3 hours, 1 hour before, or at the time) and how
+many (1–4); later ones step down that list, so "1 day before, 3 times" is 1 day, 3 hours and 1 hour before.
+All-day items count from 9am on the day and use whole days only ("the day before", "that morning").
+Change them later from **Upcoming**; **Undo** on the confirm cancels them. The bot messages you right away when
+you set or change reminders, listing when they'll come.
+
+1. In Telegram, message **@BotFather**, send `/newbot`, and copy the token into `.env` as `DORAEMON_TELEGRAM_TOKEN`.
+2. Run `python -m doraemon.telegram connect`, then send your new bot any message (e.g. `/start`).
+   It remembers that chat, so reminders only go to you. `python -m doraemon.telegram test` sends a test message.
+
+Reminders are sent by the web app, so it has to be running. If it was closed when one was due, the latest
+missed reminder goes out when it starts again, unless the item has already passed. Messages are plain text
+with a link to the email.
+
+You can also ask Dorae-2 for one: "create me a reminder to get groceries tmr" or "remind me to call mom
+at 5pm tomorrow". It drafts a card with the title, date, time and reminder settings filled in (once, at the
+time, or 9am for a day without a time); change anything, then press **Create reminder**. The app reads the
+date from your own words (it understands tmr, in 2 hours, next monday at 9am, a bare 8pm); clear requests
+like these don't wait for the model, and the model handles odder wording.
+
+**Item types.** The Type dropdown (under Edit · more options, and on reminder cards) groups types by
+where they go: Telegram reminders (Reminder, Bill, Deadline, Delivery, RSVP) or Google Calendar events
+(Appointment, Flight, Hotel, Train, bus or ferry). Pick **+ New type…** to make your own, like "Study" or
+"Gym", and choose which of the two it works like. Delete your types under Learned rules; their items keep
+working as before.
+
+Send the bot **/reminders** to get a list of your upcoming reminders (each item with the times it will
+remind you). It only answers your own chat, and only while the web app is running.
 
 ## Chat with the agents
 

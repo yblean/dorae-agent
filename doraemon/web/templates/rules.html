@@ -19,4 +19,19 @@
     {% endfor %}
   </table>
 </div>
+<div class="panel-box">
+  <p style="margin-top: 0">Your item types. Make one from an item's Edit · more options, under Type → “+ New type…”.</p>
+  <table>
+    <tr><th>Type</th><th>Works like</th><th></th></tr>
+    {% for t in custom_types %}
+    <tr>
+      <td>{{ t.name }}</td>
+      <td>{{ bases.get(t.base, t.base) }}</td>
+      <td><form method="post" action="/types/{{ t.id }}/delete"><button class="btn-link">Delete</button></form></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="empty">None yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
 {% endblock %}

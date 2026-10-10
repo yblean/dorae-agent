@@ -61,11 +61,24 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     payload TEXT,                  -- JSON for the card, e.g. which items or payments it shows
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS custom_types (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,   -- shown on the card, e.g. 'Study'
+    base TEXT NOT NULL             -- the built-in type it works like: 'reminder' (Telegram) or 'appointment' (Calendar)
+);
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL,
+    remind_at TEXT NOT NULL,       -- UTC
+    label TEXT NOT NULL,           -- e.g. '1 day before'
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending / sent / missed / cancelled
+    sent_at TEXT
+);
 """
 # Columns added after a table's first version: table -> {column: type}
 _ADDED_COLUMNS = {
     "processed_emails": {"subject": "TEXT", "sender": "TEXT", "sent_at": "TEXT", "notes": "TEXT"},
-    "action_items": {"calendar_event_id": "TEXT"},
+    "action_items": {"calendar_event_id": "TEXT", "custom_type_id": "INTEGER"},
 }
 _TABLES = {"item": "action_items", "transaction": "transactions"}
 CHAT_ID_PREFIX = "chat:"  # gmail_id of items you asked for in chat rather than found in an email
@@ -135,6 +148,62 @@ class Database:
         """Not a user action, so not in the action log: undoing the confirm removes the event."""
         self.conn.execute("UPDATE action_items SET calendar_event_id = ? WHERE id = ?", (event_id, item_id))
         self.conn.commit()
+
+    # --- your own item types ('Study', 'Gym'), each working like a built-in one ----
+
+    def custom_types(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM custom_types ORDER BY name COLLATE NOCASE").fetchall()
+
+    def custom_type(self, type_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM custom_types WHERE id = ?", (type_id,)).fetchone()
+
+    def add_custom_type(self, name: str, base: str) -> sqlite3.Row:
+        """The type with this name (any case), made if it's new. An existing one keeps how it works."""
+        self.conn.execute("INSERT OR IGNORE INTO custom_types (name, base) VALUES (?, ?)", (name, base))
+        self.conn.commit()
+        return self.conn.execute("SELECT * FROM custom_types WHERE name = ?", (name,)).fetchone()
+
+    def delete_custom_type(self, type_id: int) -> None:
+        """Items of this type keep working as the built-in type it was based on."""
+        self.conn.execute("UPDATE action_items SET custom_type_id = NULL WHERE custom_type_id = ?", (type_id,))
+        self.conn.execute("DELETE FROM custom_types WHERE id = ?", (type_id,))
+        self.conn.commit()
+
+    # --- Telegram reminders (not in the action log: undoing the confirm cancels them) ---
+
+    def set_reminders(self, item_id: int, planned: list[dict]) -> None:
+        """Replace the item's unsent reminders with `planned` ([{"at": datetime, "label": str}])."""
+        self.conn.execute("DELETE FROM reminders WHERE item_id = ? AND status = 'pending'", (item_id,))
+        for r in planned:
+            self.conn.execute("INSERT INTO reminders (item_id, remind_at, label) VALUES (?, ?, ?)",
+                              (item_id, r["at"].astimezone(timezone.utc).isoformat(), r["label"]))
+        self.conn.commit()
+
+    def reminders(self, item_id: int, status: str = "pending") -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM reminders WHERE item_id = ? AND status = ? ORDER BY remind_at",
+                                 (item_id, status)).fetchall()
+
+    def upcoming_reminders(self) -> list[sqlite3.Row]:
+        """Every unsent reminder of a confirmed item, soonest first."""
+        return self.conn.execute(
+            """SELECT r.* FROM reminders r JOIN action_items i ON i.id = r.item_id
+               WHERE r.status = 'pending' AND i.status = 'confirmed' ORDER BY r.remind_at""").fetchall()
+
+    def due_reminders(self, now: datetime) -> list[sqlite3.Row]:
+        """Unsent reminders whose time has come, oldest first."""
+        return self.conn.execute("SELECT * FROM reminders WHERE status = 'pending' AND remind_at <= ? ORDER BY remind_at",
+                                 (now.astimezone(timezone.utc).isoformat(),)).fetchall()
+
+    def mark_reminder(self, reminder_id: int, status: str) -> None:
+        self.conn.execute("UPDATE reminders SET status = ?, sent_at = ? WHERE id = ?",
+                          (status, _now() if status == "sent" else None, reminder_id))
+        self.conn.commit()
+
+    def cancel_reminders(self, item_id: int) -> int:
+        cur = self.conn.execute("UPDATE reminders SET status = 'cancelled' WHERE item_id = ? AND status = 'pending'",
+                                (item_id,))
+        self.conn.commit()
+        return cur.rowcount
 
     # --- ingest -------------------------------------------------------------
 

@@ -24,8 +24,10 @@ from doraemon.schema import ActionItem, ItemType
 
 CALENDAR_NAME = "Doraemon"
 EMOJI = {"bill": "💸", "appointment": "📌", "deadline": "⏰", "delivery": "📦", "rsvp": "✉️",
-         "flight": "✈️", "hotel": "🏨", "other_travel": "🚆"}
+         "flight": "✈️", "hotel": "🏨", "other_travel": "🚆", "reminder": "🔔"}
 ALL_DAY_TYPES = {ItemType.BILL, ItemType.DELIVERY, ItemType.HOTEL}
+# These get Telegram reminders (doraemon.reminders) instead of calendar events
+REMINDER_TYPES = {ItemType.BILL, ItemType.DEADLINE, ItemType.DELIVERY, ItemType.RSVP, ItemType.REMINDER}
 DEFAULT_MINUTES = {ItemType.FLIGHT: 120, ItemType.OTHER_TRAVEL: 90, ItemType.DEADLINE: 30}
 # All-day reminders count back from midnight: 900 min = 9am the day before, 3780 = 9am three days before
 ALL_DAY_REMINDERS = [{"method": "popup", "minutes": 900}, {"method": "popup", "minutes": 3780}]
@@ -219,10 +221,11 @@ def connect_schedule(settings: Settings) -> GoogleSchedule:
 
 
 def push_confirmed(db: Database, cal: Calendar) -> tuple[int, int]:
-    """Add confirmed items that aren't in the calendar yet. Returns (added, skipped without a date)."""
+    """Add confirmed items that aren't in the calendar yet (not ones with Telegram reminders).
+    Returns (added, skipped without a date)."""
     added = skipped = 0
     for row in db.items(("confirmed",)):
-        if row["calendar_event_id"]:
+        if row["calendar_event_id"] or row["type"] in REMINDER_TYPES:
             continue
         item = item_model(row)
         if item.start_at is None:

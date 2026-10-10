@@ -163,6 +163,13 @@ a.ev:hover { background: color-mix(in srgb, var(--c) 26%, #FFFFFF); }
 .item-quote { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .check { color: #B25E00; font-size: 12px; font-weight: 600; }
 .item-actions { display: flex; gap: 4px; align-items: center; }
+.item-actions, .remind { flex-wrap: wrap; }
+.remind { display: flex; gap: 4px; align-items: center; }
+.remind .field { height: 30px; }
+.draft { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; }
+.draft .wide { grid-column: 1 / -1; }
+.new-type { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.new-type[hidden] { display: none; }
 .status-pill { font-size: 12px; font-weight: 600; color: var(--green); }
 .item .more { flex-basis: 100%; }
 .more summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; display: inline-block; }

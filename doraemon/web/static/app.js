@@ -91,10 +91,21 @@
       if (res.remove && card) {
         card.classList.add('leaving');
         setTimeout(() => card.remove(), 250);
+      } else if (res.card && card) {
+        card.outerHTML = res.card;  // e.g. after an edit: the new type, date or buttons
       }
     } catch {
       form.submit();  // fall back to a normal page load
     }
+  });
+
+  // Type dropdown: "+ New type…" shows the name and "works like" fields
+  document.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-type-select]')) return;
+    const extra = e.target.closest('form').querySelector('[data-new-type]');
+    const adding = e.target.value === '__new__';
+    extra.hidden = !adding;
+    if (adding) extra.querySelector('input').focus();
   });
 
   // Category dropdowns save as soon as you pick

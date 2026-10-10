@@ -20,6 +20,7 @@ class ItemType(StrEnum):
     FLIGHT = "flight"
     HOTEL = "hotel"
     OTHER_TRAVEL = "other_travel"
+    REMINDER = "reminder"  # something you asked Dorae-2 to remind you about; never found in email
 
 
 class Category(StrEnum):

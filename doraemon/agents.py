@@ -23,6 +23,7 @@ from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
 from doraemon.ledger import build_ledger, spending_totals
+from doraemon.reminders import draft_reminder, split_request
 from doraemon.rules import name_key
 from doraemon.schema import Category
 
@@ -51,7 +52,7 @@ CALENDAR = Agent(
     ("What needs my OK?", "Show my schedule this week", "What's due this week?", "My upcoming trips"),
     (("Check inbox", "Every 15 minutes", "Run now"),
      ("Morning briefing", "Every day, 8:00", "Coming soon"),
-     ("Due-soon reminders", "3 days and 1 day before", "Coming soon")),
+     ("Telegram reminders", "Bills, deadlines, deliveries, RSVPs", "Telegram")),
 )
 AGENTS = {a.id: a for a in (MONEY, CALENDAR)}
 # The swatches offered when you customize an agent
@@ -366,7 +367,23 @@ class Brain:
                  "payload": {"ids": upcoming[:5], "more": max(0, len(upcoming) - 5)} if upcoming else None}]
         return msgs
 
+    def reminder_reply(self, title: str, when: str, question: str) -> dict:
+        """Draft the reminder you asked for as a card you can edit before pressing Create reminder."""
+        result, item_id = draft_reminder(self.db, self.settings.timezone, self.settings.date_order, title, when,
+                                         question, datetime.now(self.tz))
+        if item_id is None:
+            return {"text": result["error"], "kind": "text", "payload": None}
+        if result.get("already_there"):
+            status = self.db.get("item", item_id)["status"]
+            return {"text": f"You already have that one: “{result['title']}”, {result['when']}.",
+                    "kind": "items" if status == "proposed" else "agenda", "payload": {"ids": [item_id]}}
+        return {"text": f"Here's your reminder: “{result['title']}”, {result['when']}. I'll remind you "
+                        f"{result['reminds']} on Telegram. Change anything on the card, then press Create reminder.",
+                "kind": "items", "payload": {"ids": [item_id]}}
+
     def calendar_reply(self, q: str) -> list[dict]:
+        if (asked := split_request(q)) is not None:
+            return [self.reminder_reply(*asked, q)]
         q = q.lower()
         upcoming, past = self.pending()
         if re.search(r"past|passed|missed|old|overdue", q):
@@ -428,7 +445,10 @@ class Brain:
         history = self.db.messages(agent, limit=8)
         ids = [self.db.add_message(agent, "user", question)]
         answers = None
-        if self.chat is not None:
+        asked = split_request(question) if agent == "calendar" else None
+        if asked and asked[0] and asked[1]:  # "remind me to X tomorrow": clear enough to draft without the model
+            answers = [self.reminder_reply(*asked, question)]
+        elif self.chat is not None:
             try:
                 answers = self.chat.answer(agent, question, history)
             except Exception as e:  # model not running, timed out, or gave nothing back

@@ -28,14 +28,17 @@ from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
 from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, connect_schedule, event_body
 from doraemon.config import Settings
-from doraemon.db import Database, item_model, transaction_model
+from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when, zone_name
 from doraemon.fx import FxRates
 from doraemon.google_auth import NotConnected
 from doraemon.ledger import build_ledger, spending_totals
 from doraemon.llm import get_backend
+from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, ReminderJob, created_text,
+                                TIMED_STEPS, defaults_for, list_text, plan, short_time, steps_for, wants_reminder)
 from doraemon.rules import RuleStore, name_matches
 from doraemon.schema import Category, ItemType
+from doraemon.telegram import Command, CommandListener, connect_telegram
 
 HERE = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=HERE / "templates")
@@ -51,7 +54,20 @@ CHIPS = {
     "flight": ("#FDE4EF", "#9C2160", "Trip"),
     "hotel": ("#FDE4EF", "#9C2160", "Trip"),
     "other_travel": ("#FDE4EF", "#9C2160", "Trip"),
+    "reminder": ("#E0F2FE", "#075985", "Reminder"),
 }
+CUSTOM_CHIP = ("#EEF1F6", "#4A5D70")
+# The Type dropdown, grouped by where each type goes once you confirm it
+TYPE_GROUPS = [
+    ("Telegram reminder", [("reminder", "Reminder"), ("bill", "Bill"), ("deadline", "Deadline"),
+                           ("delivery", "Delivery"), ("rsvp", "RSVP")]),
+    ("Google Calendar event", [("appointment", "Appointment"), ("flight", "Flight"), ("hotel", "Hotel"),
+                               ("other_travel", "Train, bus or ferry")]),
+]
+TYPE_LABELS = {value: label for _, options in TYPE_GROUPS for value, label in options}
+# What your own types can work like: the group they join in the dropdown
+CUSTOM_BASES = {"reminder": "Telegram reminder", "appointment": "Google Calendar event"}
+NEW_TYPE = "__new__"
 
 
 class CheckJob:
@@ -145,7 +161,7 @@ def clock(hhmm: str) -> str:
 
 def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                calendar: Calendar | None = None, schedule: Schedule | None = None, ingest=None,
-               chat_backend=None) -> FastAPI:
+               chat_backend=None, messenger: Messenger | None = None) -> FastAPI:
     settings = settings or Settings()
     # The page only reads cached rates, so it never waits on the network; ingest fetches them.
     fx = fx or (FxRates(settings.db_path, fetch=None) if settings.convert_currencies else None)
@@ -154,6 +170,23 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     job = CheckJob(db, settings, ingest)
     connected_calendar: list[Calendar] = [calendar] if calendar else []
     connected_schedule: list[Schedule] = [schedule] if schedule else []
+    connected_bot: dict = {}  # chat id -> Telegram, so the bot is made once but connecting later still works
+
+    def get_messenger() -> Messenger | None:
+        """Your Telegram bot, or None until DORAEMON_TELEGRAM_TOKEN is set and `connect` has run."""
+        if messenger is not None:
+            return messenger
+        bot = connect_telegram(settings, db)
+        if bot is None:
+            return None
+        return connected_bot.setdefault(bot.chat_id, bot)
+
+    reminder_job = ReminderJob(db, settings.timezone, get_messenger)
+    # Commands you can send the bot. /remindars is a common misspelling, so it works too.
+    bot_commands = CommandListener(db, get_messenger, [
+        Command("reminders", "List your reminders", lambda: list_text(db, settings.timezone), ("remindars", "list")),
+        Command("help", "What I can do", lambda: bot_commands.help_text(), ("start",)),
+    ])
 
     def get_schedule() -> Schedule | None:
         """Your Google calendars (read-only), or None until you've approved reading them (never opens a browser)."""
@@ -176,12 +209,17 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         stop = poll_every(job, settings.poll_minutes) if settings.poll_minutes > 0 else None
+        stop_reminders = reminder_job.run_every(60)
+        stop_commands = bot_commands.run()
         yield
+        stop_reminders.set()
+        stop_commands.set()
         if stop:
             stop.set()
 
     app = FastAPI(title="Doraemon", lifespan=lifespan)
     app.state.db, app.state.rules, app.state.settings, app.state.job = db, rules, settings, job
+    app.state.reminders, app.state.bot_commands = reminder_job, bot_commands
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     tz = ZoneInfo(settings.timezone)
     home = settings.home_currency
@@ -206,10 +244,20 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             return dt.strftime("%I:%M %p").lstrip("0")
         return dt.strftime("%a") if (datetime.now(tz).date() - dt.date()).days < 7 else dt.strftime("%d %b").lstrip("0")
 
+    def type_options() -> list[tuple[str, list[tuple[str, str]]]]:
+        """TYPE_GROUPS with your own types added to the group they work like."""
+        mine: dict[str, list] = {}
+        for t in db.custom_types():
+            mine.setdefault(CUSTOM_BASES.get(t["base"], ""), []).append((f"custom:{t['id']}", t["name"]))
+        return [(group, options + mine.get(group, [])) for group, options in TYPE_GROUPS]
+
     def card(row) -> dict:
         item = item_model(row)
         local = item.start_at.astimezone(ZoneInfo(item.timezone)) if item.start_at else None
         bg, fg, kind = CHIPS.get(row["type"], ("#EEF1F6", "#4A5D70", row["type"]))
+        custom = db.custom_type(row["custom_type_id"]) if row["custom_type_id"] else None
+        if custom:
+            bg, fg, kind = *CUSTOM_CHIP, custom["name"]
         detail = describe_when(item, settings.timezone)
         if row["amount"]:
             detail += f" · {row['currency']} {row['amount']}"
@@ -217,8 +265,18 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             detail += f" · {row['location']}"
         sender = db.conn.execute("SELECT sender FROM processed_emails WHERE message_id = ?",
                                  (row["gmail_id"],)).fetchone()
+        remind = wants_reminder(row["type"]) and item.start_at is not None
+        first, times = defaults_for(row["type"])
+        draft = remind and row["type"] == ItemType.REMINDER and from_chat(row["gmail_id"])
         return {
             "row": row, "detail": detail, "chip_bg": bg, "chip_fg": fg, "kind": kind,
+            "type_value": f"custom:{custom['id']}" if custom else row["type"],
+            "remind": remind, "first": first, "times": times, "max_times": MAX_TIMES,
+            # a reminder you asked for in chat: its card is a form you fill in, not a suggestion to confirm
+            "draft": draft,
+            # a draft offers every step, since you might add a time to it; all-day items use whole days
+            "steps": TIMED_STEPS if draft else steps_for(item) if remind else [],
+            "reminders": [short_time(datetime.fromisoformat(r["remind_at"]), tz) for r in db.reminders(row["id"])],
             "sender": sender["sender"] if sender else "",
             "is_travel": row["type"] in TRAVEL,
             "date": local.date().isoformat() if local else "",
@@ -293,7 +351,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             "current": None,
             "gmail_connected": Path(settings.google_token).exists(),
             "account": settings.user_emails[0] if settings.user_emails else "",
-            "types": [t.value for t in ItemType],
+            "types": type_options(),
             "asset_version": asset_version(),
             **context,
         })
@@ -301,13 +359,20 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     def render_messages(request: Request, ids: list[int]) -> str:
         rows = [r for r in (db.conn.execute("SELECT * FROM chat_messages WHERE id = ?", (i,)).fetchone() for i in ids) if r]
         tpl = TEMPLATES.get_template("_message_list.html")
-        return tpl.render(messages=[message_view(r) for r in rows], types=[t.value for t in ItemType])
+        return tpl.render(messages=[message_view(r) for r in rows], types=type_options())
 
-    def answer(request: Request, agent: str, back: str, text: str, mood: str = "idle", remove: bool = False):
-        """An action's result, said by the agent in its chat."""
+    def render_card(item_id: int, back: str) -> str:
+        """One item's card as it is now, to swap in for the old one after an edit."""
+        tpl = TEMPLATES.env.from_string('{% from "_macros.html" import item_card %}{{ item_card(c, types, back) }}')
+        return tpl.render(c=card(db.get("item", item_id)), types=type_options(), back=back)
+
+    def answer(request: Request, agent: str, back: str, text: str, mood: str = "idle", remove: bool = False,
+               refresh: int | None = None):
+        """An action's result, said by the agent in its chat. `refresh`: an item whose card changed."""
         msg_id = db.add_message(agent, "agent", text)
         if wants_json(request):
-            return JSONResponse({"html": render_messages(request, [msg_id]), "mood": mood, "remove": remove})
+            return JSONResponse({"html": render_messages(request, [msg_id]), "mood": mood, "remove": remove,
+                                 **({"card": render_card(refresh, back)} if refresh else {})})
         path = back if back.startswith("/") and not back.startswith("//") else f"/chat/{agent}"
         if not path.startswith("/chat/"):  # list pages show it too; chat pages already have it in the thread
             path += ("&" if "?" in path else "?") + "msg=" + quote(text)
@@ -343,6 +408,42 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             return f"Saved “{title}”, but I couldn't add it to Google Calendar ({text[:160]}). Ask me to retry from Upcoming."
         db.set_calendar_event(item_id, event_id)
         return f"Added “{title}” to your Doraemon calendar. 🔔"
+
+    # --- Telegram reminders ---------------------------------------------------
+
+    def set_reminders(item_id: int, first: str, times: int) -> tuple[bool, str]:
+        """Plan the item's reminders. Returns (any planned, what Dorae-2 says about it)."""
+        row = db.get("item", item_id)
+        item, now = item_model(row), datetime.now(tz)
+        planned, passed = plan(item, settings.timezone, first, times, now)
+        title = row["title"]
+        if not planned:
+            return False, (f"Those reminder times for “{title}” have already passed. "
+                           "Pick a closer one, like 1 hour before or at the time.")
+        db.set_reminders(item_id, planned)
+        whens = [f"{short_time(r['at'], tz)} ({r['label']})" for r in planned]
+        listed = whens[0] if len(whens) == 1 else ", ".join(whens[:-1]) + " and " + whens[-1]
+        times_text = "once" if len(planned) == 1 else "twice" if len(planned) == 2 else f"{len(planned)} times"
+        text = f"I'll remind you about “{title}” on Telegram {times_text}: {listed}. 🔔"
+        if passed:
+            text += f" (Skipped {', '.join(passed)}: that's already passed.)"
+        bot = get_messenger()
+        if bot is None:
+            text += (" Telegram isn't connected yet, so connect it before then: set DORAEMON_TELEGRAM_TOKEN "
+                     "and run python -m doraemon.telegram connect.")
+        else:
+            try:  # the reminders are saved either way; this just lets you know on your phone
+                bot.send(created_text(item, settings.timezone, planned, now, updated=row["status"] == "confirmed"))
+            except Exception as e:
+                text += f" (I couldn't send the confirmation on Telegram: {str(e)[:120]}. The reminders are still set.)"
+        return True, text
+
+    def first_and_times(first: str, times: str) -> tuple[str, int]:
+        try:
+            n = int(times)
+        except ValueError:
+            n = DEFAULT_TIMES
+        return first or DEFAULT_FIRST, max(1, min(n, MAX_TIMES))
 
     # --- agent chats ----------------------------------------------------------
 
@@ -417,6 +518,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         every = f"Every {settings.poll_minutes} min" if settings.poll_minutes > 0 else "When you press Run now"
         return {"kind": "calendar", "waiting": len(upcoming), "passed": len(past), "week": week,
                 "calendar_connected": get_calendar() is not None, "checking": job.running,
+                "telegram": get_messenger() is not None,
                 "check_when": every + (f" · last {local_time(checked)}" if checked else "")}
 
     @app.post("/chat/{agent_id}/ask")
@@ -461,11 +563,57 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
 
     @app.post("/items/{item_id}/confirm")
     def confirm(request: Request, item_id: int, back: str = Form("/chat/calendar")):
+        row = db.get("item", item_id)
+        if wants_reminder(row["type"]) and row["start_at"]:  # bills, deadlines, deliveries: Telegram, not Calendar
+            first, times = defaults_for(row["type"])
+            return remind(request, item_id, first=first, times=str(times), back=back, title="", day="", at="",
+                          type="", new_type="", new_base="reminder")
         db.update("item", item_id, "confirm", status="confirmed")
-        msg = add_to_calendar(item_id)
+        msg = add_to_calendar(item_id) if not wants_reminder(row["type"]) else             f"Saved “{row['title']}”. It has no date, so I can't set a reminder: add one under Edit."
         if not db.counts().get("proposed", 0):
             msg += " That's everything. All clear!"
         return answer(request, "calendar", back, msg, mood="happy", remove=True)
+
+    @app.post("/items/{item_id}/remind")
+    def remind(request: Request, item_id: int, first: str = Form(DEFAULT_FIRST), times: str = Form(str(DEFAULT_TIMES)),
+               back: str = Form("/chat/calendar"), title: str = Form(""), day: str = Form(""), at: str = Form(""),
+               type: str = Form(""), new_type: str = Form(""), new_base: str = Form("reminder")):
+        """Confirm the item with Telegram reminders, or change the reminders of one already confirmed.
+        A reminder drafted in chat also sends the title, type, date and time you may have edited on its card."""
+        row = db.get("item", item_id)
+        if row is None:
+            raise HTTPException(404)
+        made = ""
+        if type:
+            picked, made = pick_type(type, new_type, new_base)
+            if picked is None:
+                return answer(request, "calendar", back, made, refresh=item_id)
+            if not wants_reminder(picked["type"]):  # now a calendar event: saved, and the card shows Confirm
+                db.update("item", item_id, "edit", **picked, edited=1)
+                return answer(request, "calendar", back, f"“{row['title']}” is now a Google Calendar event.{made} "
+                              "Press Confirm to add it.", refresh=item_id)
+            if {k: row[k] for k in picked} != picked:
+                db.update("item", item_id, "edit", **picked, edited=1)
+        if day:
+            try:
+                start = datetime.combine(date.fromisoformat(day), time.fromisoformat(at) if at else time(0),
+                                         ZoneInfo(row["timezone"]))
+            except ValueError:
+                return answer(request, "calendar", back, "That date or time doesn't look right. Please check the card.")
+            changes = {"title": title.strip()[:80] or row["title"], "start_at": start.isoformat(), "all_day": 0 if at else 1}
+            changed = {k: v for k, v in changes.items() if row[k] != v}
+            if changed:
+                db.update("item", item_id, "edit", **changed, edited=1)
+        ok, msg = set_reminders(item_id, *first_and_times(first, times))
+        msg += made
+        if not ok:
+            return answer(request, "calendar", back, msg)
+        newly = row["status"] != "confirmed"
+        if newly:
+            db.update("item", item_id, "confirm", status="confirmed")
+            if not db.counts().get("proposed", 0):
+                msg += " That's everything. All clear!"
+        return answer(request, "calendar", back, msg, mood="happy", remove=newly)
 
     @app.post("/items/{item_id}/dismiss")
     def dismiss(request: Request, item_id: int, ignore_sender: str = Form(""), back: str = Form("/chat/calendar")):
@@ -483,26 +631,56 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return answer(request, "calendar", back,
                       f"Skipped “{row['title']}”{extra}. I won't read emails from {rule.match} again.", remove=True)
 
+    def pick_type(value: str, new_type: str = "", new_base: str = "reminder") -> tuple[dict | None, str]:
+        """The Type dropdown's choice as item fields ({"type", "custom_type_id"}), plus a note if you made a
+        new type. On a problem: (None, what to tell you)."""
+        made = ""
+        if value == NEW_TYPE:  # your own type: kept by name, and works like the built-in type you picked
+            name = " ".join(new_type.split())[:30]
+            if not name:
+                return None, "Give your new type a name, like Study or Gym."
+            builtin = next((v for v, label in TYPE_LABELS.items() if name.lower() in (v, label.lower())), None)
+            if builtin:  # "Bill" is already a type
+                value = builtin
+            else:
+                is_new = name.lower() not in {t["name"].lower() for t in db.custom_types()}
+                custom = db.add_custom_type(name, new_base if new_base in CUSTOM_BASES else "reminder")
+                value = f"custom:{custom['id']}"
+                if is_new:
+                    made = f" New type “{custom['name']}” saved: it works like a {CUSTOM_BASES[custom['base']]}."
+        if value.startswith("custom:"):
+            custom = db.custom_type(int(value.split(":", 1)[1]))
+            if custom is None:
+                return None, "That type was deleted. Please pick another."
+            return {"type": custom["base"], "custom_type_id": custom["id"]}, made
+        try:
+            return {"type": ItemType(value).value, "custom_type_id": None}, made
+        except ValueError:
+            return None, "I don't know that type. Please pick one from the list."
+
     @app.post("/items/{item_id}/edit")
     def edit(request: Request, item_id: int, title: str = Form(...), type: str = Form(...),
-             day: str = Form(""), at: str = Form(""), zone: str = Form(""), back: str = Form("/chat/calendar")):
+             day: str = Form(""), at: str = Form(""), zone: str = Form(""), back: str = Form("/chat/calendar"),
+             new_type: str = Form(""), new_base: str = Form("reminder")):
         row = db.get("item", item_id)
         zone = zone.strip() or row["timezone"]
         try:
             item_tz = ZoneInfo(zone)
         except (ZoneInfoNotFoundError, ValueError):
             return answer(request, "calendar", back, f"I don't know the timezone {zone!r}. Try a name like Asia/Tokyo.")
-        changes = {"title": title.strip() or row["title"], "type": ItemType(type).value,
-                   "timezone": zone, "edited": 1}
+        picked, made = pick_type(type, new_type, new_base)
+        if picked is None:
+            return answer(request, "calendar", back, made, refresh=item_id)
+        changes = {"title": title.strip() or row["title"], **picked, "timezone": zone, "edited": 1}
         if day:
             start = datetime.combine(date.fromisoformat(day), time.fromisoformat(at) if at else time(0), item_tz)
             changes |= {"start_at": start.isoformat(), "all_day": 0 if at else 1}
         db.update("item", item_id, "edit", **changes)
-        msg = f"Updated “{changes['title']}”."
+        msg = f"Updated “{changes['title']}”." + made
         if row["type"] in TRAVEL and row["departs_from"] and zone != row["timezone"]:
             rule = rules.add("travel_timezone", row["departs_from"], zone, created_from=f"item #{item_id}")
             msg += f" I'll remember departures from {rule.match} are in {zone_name(zone)} time."
-        return answer(request, "calendar", back, msg)
+        return answer(request, "calendar", back, msg, refresh=item_id)
 
     @app.post("/items/{item_id}/sync")
     def sync_item(request: Request, item_id: int):
@@ -559,7 +737,8 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     @app.get("/upcoming", response_class=HTMLResponse)
     def upcoming_page(request: Request):
         cards = [c for c in (card(r) for r in db.items(("confirmed",))) if c["upcoming"]]
-        return render(request, "upcoming.html", cards=cards, calendar_connected=get_calendar() is not None)
+        return render(request, "upcoming.html", cards=cards, calendar_connected=get_calendar() is not None,
+                      telegram_connected=get_messenger() is not None)
 
     @app.get("/spending", response_class=HTMLResponse)
     def spending(request: Request, month: str = ""):
@@ -597,6 +776,8 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         msg = f"Undid '{entry['action']}'. Rules it created are kept; delete them in Learned rules."
         if entry["kind"] == "item" and entry["action"] == "confirm":
             row = db.get("item", entry["row_id"])
+            if row and db.cancel_reminders(row["id"]):
+                msg = f"Undid confirming “{row['title']}” and cancelled its reminders."
             if row and row["calendar_event_id"]:
                 cal = get_calendar()
                 try:
@@ -612,7 +793,15 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
 
     @app.get("/rules", response_class=HTMLResponse)
     def rules_page(request: Request):
-        return render(request, "rules.html", mine=rules.user_rules(), n_defaults=len(rules.defaults))
+        return render(request, "rules.html", mine=rules.user_rules(), n_defaults=len(rules.defaults),
+                      custom_types=db.custom_types(), bases=CUSTOM_BASES)
+
+    @app.post("/types/{type_id}/delete")
+    def delete_type(type_id: int):
+        row = db.custom_type(type_id)
+        db.delete_custom_type(type_id)
+        text = f"Deleted the type “{row['name']}”. Its items keep working as before." if row else "Type deleted."
+        return RedirectResponse("/rules?msg=" + quote(text), status_code=303)
 
     @app.post("/rules/{rule_id}/delete")
     def delete_rule(rule_id: int):

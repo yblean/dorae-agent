@@ -1,19 +1,21 @@
 {% extends "base.html" %}{% set title = "Upcoming" %}
+{% from "_macros.html" import remind_form %}
 {% block content %}
 <div class="panel-box">
-  {% if calendar_connected %}
-  <p class="note" style="margin-top: 0">Things you confirmed. They're in the <strong>Doraemon</strong> calendar in Google Calendar, with reminders.</p>
-  {% else %}
-  <p class="note" style="margin-top: 0">Things you confirmed. To also put them in Google Calendar, connect it once by running
-    <code>python -m doraemon.calendar_sync connect</code>, then press “Add to calendar”.</p>
-  {% endif %}
+  <p class="note" style="margin-top: 0">Things you confirmed. Bills, deadlines, deliveries and RSVPs
+    {{ 'remind you on Telegram' if telegram_connected else 'remind you on Telegram once you connect it (set DORAEMON_TELEGRAM_TOKEN, then run python -m doraemon.telegram connect)' }};
+    {% if calendar_connected %}the rest are in the <strong>Doraemon</strong> calendar in Google Calendar.
+    {% else %}to put the rest in Google Calendar, connect it once by running <code>python -m doraemon.calendar_sync connect</code>, then press “Add to calendar”.{% endif %}</p>
   <table>
     {% for c in cards %}{% set r = c.row %}
     <tr>
       <td style="width: 1%"><span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span></td>
-      <td><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div></td>
+      <td><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div>
+        {% if c.remind and not r.calendar_event_id %}<div class="note">{{ ('🔔 ' ~ c.reminders|join(' · ')) if c.reminders else 'No reminders left' }}</div>{% endif %}</td>
       <td class="num">
         {% if r.calendar_event_id %}<span class="note">✓ In calendar</span>
+        {% elif c.remind %}
+        <details class="more"><summary>{{ 'Change reminders' if c.reminders else 'Set reminders' }}</summary>{{ remind_form(c, '/upcoming', 'Save') }}</details>
         {% elif r.start_at %}
         <form method="post" action="/items/{{ r.id }}/sync"><button class="btn btn-white btn3d">Add to calendar</button></form>
         {% else %}<span class="note">No date</span>{% endif %}

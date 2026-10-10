@@ -64,7 +64,7 @@ def test_confirm_then_undo(client):
 def test_buttons_answer_in_the_agents_chat(client):
     body = client.post("/items/1/confirm", headers={"x-requested-with": "fetch"}).json()
     assert "SIT tuition fees" in body["html"] and body["remove"] and body["mood"] == "happy"
-    assert "Saved “SIT tuition fees”" in client.get("/chat/calendar").text  # kept in Dorae-2's history
+    assert "remind you about “SIT tuition fees” on Telegram" in client.get("/chat/calendar").text  # kept in Dorae-2's history
 
 
 def test_category_change_creates_rule_and_fixes_other_payments(client):
@@ -152,3 +152,71 @@ def test_budget_question_is_answered_honestly(client):
     assert "I can&#39;t save budgets yet" in html and "SGD 300.00" in html
     html = client.post("/chat/money/ask", data={"q": "set a budget"}).json()["html"]
     assert "Tell me an amount" in html
+
+
+# --- item types ----------------------------------------------------------------------------
+
+def edit(client, **form):
+    data = {"title": "SIT tuition fees", "type": "bill", **form}
+    return client.post("/items/1/edit", data=data, headers={"x-requested-with": "fetch"}).json()
+
+
+def test_type_dropdown_has_readable_labels_grouped_by_where_items_go(client):
+    page = client.get("/pocket").text
+    assert '<optgroup label="Telegram reminder">' in page and '<optgroup label="Google Calendar event">' in page
+    assert '<option value="other_travel" >Train, bus or ferry</option>' in page and "other travel" not in page
+    assert '<option value="bill" selected>Bill</option>' in page and '<option value="__new__">' in page
+
+
+def test_new_custom_type_is_saved_and_the_card_updates(client):
+    body = edit(client, type="__new__", new_type="Study", new_base="appointment")
+    assert "New type “Study” saved" in body["html"] and "Google Calendar event" in body["html"]
+    assert ">Study</span>" in body["card"]  # the chip on the refreshed card
+    assert 'action="/items/1/confirm"' in body["card"]  # works like a calendar event now: Confirm, not Remind me
+    row = client.app.state.db.get("item", 1)
+    assert row["type"] == "appointment" and row["custom_type_id"] == 1
+    assert '<option value="custom:1" selected>Study</option>' in body["card"]
+
+
+def test_custom_types_are_reused_by_name_and_builtins_win(client):
+    edit(client, type="__new__", new_type="Study", new_base="reminder")
+    body = edit(client, type="__new__", new_type="study", new_base="appointment")  # same name: no second type
+    assert "New type" not in body["html"] and len(client.app.state.db.custom_types()) == 1
+    assert client.app.state.db.get("item", 1)["type"] == "reminder"  # keeps how it first worked
+    edit(client, type="__new__", new_type="Bill")
+    assert client.app.state.db.get("item", 1)["type"] == "bill" and client.app.state.db.get("item", 1)["custom_type_id"] is None
+
+
+def test_new_type_needs_a_name(client):
+    assert "Give your new type a name" in edit(client, type="__new__", new_type="  ")["html"]
+
+
+def test_deleting_a_type_keeps_its_items(client):
+    edit(client, type="__new__", new_type="Study", new_base="reminder")
+    assert "Study" in client.get("/rules").text
+    client.post("/types/1/delete")
+    row = client.app.state.db.get("item", 1)
+    assert row["custom_type_id"] is None and row["type"] == "reminder"
+    assert "None yet." in client.get("/rules").text
+
+
+def test_chat_reminder_card_can_change_its_type(client):
+    from doraemon.reminders import draft_reminder
+    db = client.app.state.db
+    _, item_id = draft_reminder(db, "America/New_York", "DMY", "LeetCode", "tomorrow 2pm", "remind me", SOON - timedelta(days=4))
+    day = (SOON - timedelta(days=3)).date().isoformat()
+    form = {"title": "LeetCode", "day": day, "at": "14:00", "first": "0", "times": "1"}
+    body = client.post(f"/items/{item_id}/remind", data={**form, "type": "__new__", "new_type": "Study"},
+                       headers={"x-requested-with": "fetch"}).json()
+    assert "New type “Study” saved" in body["html"] and db.get("item", item_id)["status"] == "confirmed"
+    assert db.get("item", item_id)["custom_type_id"] and len(db.reminders(item_id)) == 1
+
+
+def test_chat_reminder_turned_into_a_calendar_event_waits_for_confirm(client):
+    from doraemon.reminders import draft_reminder
+    db = client.app.state.db
+    _, item_id = draft_reminder(db, "America/New_York", "DMY", "Dinner", "tomorrow 7pm", "remind me", SOON - timedelta(days=4))
+    body = client.post(f"/items/{item_id}/remind", data={"type": "appointment", "first": "0", "times": "1"},
+                       headers={"x-requested-with": "fetch"}).json()
+    assert "now a Google Calendar event" in body["html"] and f'action="/items/{item_id}/confirm"' in body["card"]
+    assert db.get("item", item_id)["status"] == "proposed" and db.reminders(item_id) == []

@@ -83,6 +83,8 @@ Rules:
 """
 
 _SCHEMA = RawExtraction.model_json_schema()
+# Reminders are only ones you ask for in chat; don't offer the model that type for emails
+_SCHEMA["$defs"]["ItemType"]["enum"] = [t for t in _SCHEMA["$defs"]["ItemType"]["enum"] if t != ItemType.REMINDER]
 
 
 def _clean_snippet(text: str) -> str:

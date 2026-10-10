@@ -3,6 +3,7 @@ import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -82,7 +83,7 @@ def test_each_agent_only_has_its_own_tools(chat):
     assert "no tool called 'find_items'" in money.seen[1]["messages"][-1]["content"]  # nothing leaked
     calendar = ScriptedModel("calendar", call("find_items", text="dentist"), say("Your dentist is on Friday."))
     html = chat("calendar", "when's my dentist?", calendar)
-    assert calendar.seen[0]["tools"] == ["find_items", "week_schedule", "propose_event"]
+    assert calendar.seen[0]["tools"] == ["find_items", "week_schedule", "propose_event", "propose_reminder"]
     assert "Dentist check-up" in html and "Your dentist is on Friday." in html
 
 
@@ -256,3 +257,72 @@ def test_a_month_in_the_question_wins_over_the_models_period(chat):
     model = ScriptedModel("spending", call("spending_summary", period="last_month"), say("..."))
     chat("money", "how much did I spend in September?", model)
     assert json.loads(model.seen[1]["messages"][-1]["content"])["period"] == "September"
+
+
+# --- reminders you ask Dorae-2 for ----------------------------------------------------------
+
+GROCERIES = "create me a reminder to go to get groceries tmr"
+
+
+def test_clear_reminder_requests_are_drafted_without_the_model(chat):
+    model = ScriptedModel(RuntimeError("the model shouldn't be asked"))
+    html = chat("calendar", GROCERIES, model)
+    assert "your reminder: “Go to get groceries”" in html and "Create reminder" in html
+    assert 'name="title" value="Go to get groceries"' in html  # filled in, and you can edit it
+    row = chat.db.conn.execute("SELECT * FROM action_items WHERE type = 'reminder'").fetchone()
+    tomorrow = datetime.now(timezone.utc).astimezone(ZoneInfo(chat.settings.timezone)).date() + timedelta(days=1)
+    assert row["status"] == "proposed" and row["all_day"] == 1
+    assert datetime.fromisoformat(row["start_at"]).date() == tomorrow
+    assert model.seen == []
+
+
+def test_editing_the_draft_then_creating_it(chat):
+    chat("calendar", GROCERIES, ScriptedModel("calendar"))
+    item_id = chat.db.conn.execute("SELECT id FROM action_items WHERE type = 'reminder'").fetchone()["id"]
+    day = (datetime.now(timezone.utc) + timedelta(days=3)).astimezone(ZoneInfo(chat.settings.timezone)).date()
+    client = TestClient(create_app(chat.settings), headers={"x-requested-with": "fetch"})
+    html = client.post(f"/items/{item_id}/remind", data={"title": "Groceries at FairPrice", "day": day.isoformat(),
+                                                         "at": "18:30", "first": "1h", "times": "2"}).json()["html"]
+    assert "“Groceries at FairPrice”" in html and "twice" in html
+    row = chat.db.get("item", item_id)
+    assert row["title"] == "Groceries at FairPrice" and row["status"] == "confirmed" and not row["all_day"]
+    assert [r["label"] for r in chat.db.reminders(item_id)] == ["1 hour before", "at the time"]
+    assert "18:30" in row["start_at"]
+
+
+def test_reminder_without_a_date_asks_when(chat):
+    model = ScriptedModel("calendar", call("propose_reminder", title="Buy milk"), say("When should I remind you?"))
+    chat("calendar", "remind me to buy milk", model)  # no date: the model handles it, and the tool asks back
+    result = json.loads(model.seen[-1]["messages"][-1]["content"])
+    assert "When should I remind you to buy milk?" in result["error"]
+    assert chat.db.conn.execute("SELECT COUNT(*) FROM action_items WHERE type = 'reminder'").fetchone()[0] == 0
+
+
+def test_model_drafts_reminders_it_understands(chat):
+    model = ScriptedModel("calendar", call("propose_reminder", title="Dentist", when="fri 5pm"),
+                          say("I'll remind you on Friday at 5pm. Check the card and press Create reminder."))
+    html = chat("calendar", "pls ping me abt the dentist fri 5pm", model)
+    assert "Create reminder" in html
+    row = chat.db.conn.execute("SELECT * FROM action_items WHERE type = 'reminder'").fetchone()
+    start = datetime.fromisoformat(row["start_at"])
+    assert (start.strftime("%a"), start.hour) == ("Fri", 17)
+
+
+def test_reminders_work_without_the_model(chat):
+    html = chat("calendar", "remind me to call mom at 5pm tomorrow", None)
+    assert "your reminder: “Call mom”" in html
+    assert "When should I remind you to buy milk?" in chat("calendar", "remind me to buy milk", None)
+
+
+def test_reminder_requests_never_become_events_even_if_the_model_picks_that_tool(chat):
+    # no date in the message, so the model answers; it reaches for propose_event, as the 4B model did
+    model = ScriptedModel("calendar", call("propose_event", title="LeetCode", when="tomorrow 2pm"),
+                          say("Done. Press Confirm."))
+    html = chat("calendar", "can you remind me later about leetcode", model)
+    row = chat.db.conn.execute("SELECT * FROM action_items WHERE title = 'LeetCode'").fetchone()
+    assert row["type"] == "reminder" and "Create reminder" in html and "/confirm" not in html
+
+
+def test_ping_me_counts_as_a_reminder(chat):
+    html = chat("calendar", "ping me to do leetcode tomorrow 2pm", ScriptedModel(RuntimeError("not needed")))
+    assert "your reminder: “Do leetcode”" in html

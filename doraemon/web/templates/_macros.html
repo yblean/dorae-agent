@@ -50,7 +50,57 @@
 </svg>
 {% endmacro %}
 
-{# One thing found in an email, with Confirm / Dismiss and an Edit drawer. #}
+{# When to send an item's Telegram reminders and how many. Also used to change them on Upcoming. #}
+{% macro remind_form(c, back, label='Remind me') %}{% set r = c.row %}
+<form class="remind" method="post" action="/items/{{ r.id }}/remind" data-ajax>
+  <input type="hidden" name="back" value="{{ back }}">
+  <select class="field" name="first" aria-label="First reminder for {{ r.title }}">
+    {% for s in c.steps %}<option value="{{ s.key }}" {{ 'selected' if s.key == c.first }}>{{ s.label }}</option>{% endfor %}
+  </select>
+  <select class="field" name="times" aria-label="How many reminders for {{ r.title }}">
+    {% for n in range(1, c.max_times + 1) %}<option value="{{ n }}" {{ 'selected' if n == c.times }}>{{ 'once' if n == 1 else (n ~ ' times') }}</option>{% endfor %}
+  </select>
+  <button class="btn btn-primary btn3d">{{ label }}</button>
+</form>
+{% endmacro %}
+
+{# The Type dropdown, grouped by where items go, with "+ New type…" for your own (needs a .edit-grid around it). #}
+{% macro type_picker(c, types) %}
+<label>Type
+  <select class="field" name="type" data-type-select>
+    {% for group, options in types %}<optgroup label="{{ group }}">{% for value, label in options %}<option value="{{ value }}" {{ 'selected' if value == c.type_value }}>{{ label }}</option>{% endfor %}</optgroup>{% endfor %}
+    <option value="__new__">+ New type…</option>
+  </select>
+</label>
+<div class="new-type" data-new-type hidden>
+  <label>New type name <input class="field" name="new_type" maxlength="30" placeholder="e.g. Study"></label>
+  <label>Works like
+    <select class="field" name="new_base"><option value="reminder">Telegram reminder</option><option value="appointment">Google Calendar event</option></select>
+  </label>
+</div>
+{% endmacro %}
+
+{# A reminder you asked Dorae-2 for: filled in from your message, every field editable before you create it. #}
+{% macro draft_form(c, types, back) %}{% set r = c.row %}
+<form class="draft" method="post" action="/items/{{ r.id }}/remind" data-ajax>
+  <input type="hidden" name="back" value="{{ back }}">
+  <div class="edit-grid">
+    <label class="wide">Remind me to <input class="field" name="title" value="{{ r.title }}" maxlength="80" required></label>
+    {{ type_picker(c, types) }}
+    <label>Date <input class="field" type="date" name="day" value="{{ c.date }}" required></label>
+    <label>Time (blank = 9am) <input class="field" type="time" name="at" value="{{ c.time }}"></label>
+    <label>Remind me
+      <select class="field" name="first">{% for s in c.steps %}<option value="{{ s.key }}" {{ 'selected' if s.key == c.first }}>{{ s.label }}</option>{% endfor %}</select>
+    </label>
+    <label>How many
+      <select class="field" name="times">{% for n in range(1, c.max_times + 1) %}<option value="{{ n }}" {{ 'selected' if n == c.times }}>{{ 'once' if n == 1 else (n ~ ' times') }}</option>{% endfor %}</select>
+    </label>
+  </div>
+  <div class="row"><button class="btn btn-primary btn3d">Create reminder</button></div>
+</form>
+{% endmacro %}
+
+{# One thing found in an email, with Confirm (or Remind me) / Dismiss and an Edit drawer. #}
 {% macro item_card(c, types, back='/chat/calendar') %}{% set r = c.row %}
 <div class="item" data-item="{{ r.id }}">
   <div class="item-body">
@@ -59,12 +109,19 @@
     <span class="item-detail">{{ c.detail }}</span>
     {% if r.evidence_snippet %}<span class="item-quote">{{ 'You asked' if r.gmail_id.startswith('chat:') else 'From email' }}: “{{ r.evidence_snippet }}”</span>{% endif %}
   </div>
-  {% if r.status == 'proposed' %}
+  {% if r.status == 'proposed' and c.draft %}
+  {{ draft_form(c, types, back) }}
+  <form method="post" action="/items/{{ r.id }}/dismiss" data-ajax class="row">
+    <input type="hidden" name="back" value="{{ back }}">
+    <button class="btn-link">Cancel this reminder</button>
+  </form>
+  {% elif r.status == 'proposed' %}
   <div class="item-actions">
+    {% if c.remind %}{{ remind_form(c, back) }}{% else %}
     <form method="post" action="/items/{{ r.id }}/confirm" data-ajax>
       <input type="hidden" name="back" value="{{ back }}">
       <button class="btn btn-primary btn3d">Confirm</button>
-    </form>
+    </form>{% endif %}
     <form method="post" action="/items/{{ r.id }}/dismiss" data-ajax>
       <input type="hidden" name="back" value="{{ back }}">
       <button class="btn btn-ghost">Dismiss</button>
@@ -76,9 +133,7 @@
       <input type="hidden" name="back" value="{{ back }}">
       <div class="edit-grid">
         <label>Title <input class="field" name="title" value="{{ r.title }}"></label>
-        <label>Type
-          <select class="field" name="type">{% for t in types %}<option value="{{ t }}" {{ 'selected' if t == r.type }}>{{ t.replace('_', ' ') }}</option>{% endfor %}</select>
-        </label>
+        {{ type_picker(c, types) }}
         <label>Date <input class="field" type="date" name="day" value="{{ c.date }}"></label>
         <label>Time (blank = all day) <input class="field" type="time" name="at" value="{{ c.time }}"></label>
         {% if c.is_travel %}<label>Departure timezone <input class="field" name="zone" value="{{ r.timezone }}" placeholder="Asia/Tokyo"></label>{% endif %}
@@ -96,10 +151,13 @@
     {% endif %}
   </details>
   {% else %}
-  <span class="status-pill">{{ '✓ In calendar' if r.calendar_event_id else ('✓ Confirmed' if r.status == 'confirmed' else 'Dismissed') }}</span>
+  <span class="status-pill">{{ status_text(c) }}</span>
   {% endif %}
 </div>
 {% endmacro %}
+
+{# Where a confirmed item went: Google Calendar, Telegram reminders, or just saved. #}
+{% macro status_text(c) %}{% set r = c.row %}{% if r.calendar_event_id %}✓ In calendar{% elif r.status == 'confirmed' and c.reminders %}🔔 Reminder{{ 's' if c.reminders|length > 1 }} set{% elif r.status == 'confirmed' %}✓ Confirmed{% else %}Dismissed{% endif %}{% endmacro %}
 
 {# One chat message, with its card if it has one. #}
 {% macro message(m, types) %}
@@ -148,7 +206,7 @@
     <div class="agenda-row">
       <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
       <div><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div></div>
-      <span class="note nowrap">{{ '✓ In calendar' if r.calendar_event_id else ('✓ Confirmed' if r.status == 'confirmed' else 'Needs your OK') }}</span>
+      <span class="note nowrap" title="{{ c.reminders|join(' · ') }}">{{ status_text(c) if r.status == 'confirmed' else 'Needs your OK' }}</span>
     </div>
     {% endfor %}
   </div>
