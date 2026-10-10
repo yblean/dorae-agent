@@ -68,6 +68,11 @@ _ADDED_COLUMNS = {
     "action_items": {"calendar_event_id": "TEXT"},
 }
 _TABLES = {"item": "action_items", "transaction": "transactions"}
+CHAT_ID_PREFIX = "chat:"  # gmail_id of items you asked for in chat rather than found in an email
+
+
+def from_chat(gmail_id: str) -> bool:
+    return gmail_id.startswith(CHAT_ID_PREFIX)
 
 
 def _now() -> str:
@@ -171,10 +176,20 @@ class Database:
             self._insert("transactions", row)
         self.conn.commit()
 
-    def _insert(self, table: str, row: dict) -> None:
+    def add_item(self, source_id: str, item: ActionItem) -> int:
+        """An item that didn't come from an email, e.g. an event you asked Dorae-2 to add. Returns its id."""
+        row = item.model_dump(mode="json", exclude={"message_id", "status"})
+        row["gmail_id"] = source_id
+        item_id = self._insert("action_items", row)
+        self.conn.commit()
+        return item_id
+
+    def _insert(self, table: str, row: dict) -> int:
         row = {k: (int(v) if isinstance(v, bool) else v) for k, v in row.items()}
         cols = ", ".join(row)
-        self.conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in row)})", list(row.values()))
+        cur = self.conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in row)})",
+                                list(row.values()))
+        return cur.lastrowid
 
     # --- reading ------------------------------------------------------------
 

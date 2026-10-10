@@ -18,7 +18,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from doraemon.config import Settings
-from doraemon.db import Database, item_model
+from doraemon.db import Database, from_chat, item_model
 from doraemon.google_auth import ALL_SCOPES, CALENDAR, CALENDAR_READ, load_credentials
 from doraemon.schema import ActionItem, ItemType
 
@@ -51,16 +51,20 @@ def event_body(item: ActionItem, item_id: int, gmail_id: str) -> dict:
         lines.append(f"Departs: {item.departs_from}")
     if item.booking_ref:
         lines.append(f"Booking ref: {item.booking_ref}")
-    if item.evidence_snippet:
-        lines.append(f"From the email: “{item.evidence_snippet}”")
-    lines += ["", f"Open the email: {gmail_link(gmail_id)}", "Added by Doraemon after you confirmed it."]
+    if from_chat(gmail_id):
+        lines += ["", "Added by Doraemon: you asked Dorae-2 for it and confirmed it."]
+    else:
+        if item.evidence_snippet:
+            lines.append(f"From the email: “{item.evidence_snippet}”")
+        lines += ["", f"Open the email: {gmail_link(gmail_id)}", "Added by Doraemon after you confirmed it."]
 
     body = {
         "summary": f"{EMOJI.get(item.type.value, '•')} {item.title}",
         "description": "\n".join(lines),
-        "source": {"title": "Open email in Gmail", "url": gmail_link(gmail_id)},
         "extendedProperties": {"private": {"doraemon_item_id": str(item_id)}},
     }
+    if not from_chat(gmail_id):
+        body["source"] = {"title": "Open email in Gmail", "url": gmail_link(gmail_id)}
     if item.location:
         body["location"] = item.location
 

@@ -38,6 +38,9 @@ CASES = [
     ("calendar", "any bills due this month?", "calendar", "find_items"),
     ("calendar", "what's on my schedule this week", "calendar", "week_schedule"),
     ("calendar", "do I have any trips coming up?", "calendar", "find_items"),
+    ("calendar", "hi dorae-2 can you help me to add event date night on 26/10 19:00 thanks", "calendar", "propose_event"),
+    ("calendar", "add dinner with mum next friday 7pm at Jumbo Seafood", "calendar", "propose_event"),
+    ("money", "add date night on 26/10 19:00", "calendar", None),
     ("calendar", "how much did I spend on groceries?", "spending", None),
     ("calendar", "what's the capital of France?", "other", None),
 ]

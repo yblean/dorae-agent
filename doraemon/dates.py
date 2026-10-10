@@ -74,3 +74,55 @@ def resolve(
     if not has_time:
         parsed = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
     return parsed, has_time
+
+
+# --- how people write dates in chat ("tmr 5pm", "in 2 hours", "next monday at 9am") ---------
+
+_SLANG = [(re.compile(r"\b(tmr|tmrw|tmw|tml|2moro|2mrw|tomoro|tomorow|tomorro)\b", re.I), "tomorrow"),
+          (re.compile(r"\b(tdy|tday|tonight|tonite)\b", re.I), "today")]
+_IN_RE = re.compile(r"^in\s+(\d+|an?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)$", re.I)
+_CLOCK_RE = re.compile(r"(?:\bat\s+)?\b(?:(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?|(\d{1,2}):(\d{2})\b|(noon|midnight)\b)", re.I)
+
+
+def unslang(text: str) -> str:
+    for pattern, word in _SLANG:
+        text = pattern.sub(word, text)
+    return text
+
+
+def resolve_spoken(text: str | None, now: datetime, tz: str, date_order: str = "DMY") -> tuple[datetime | None, bool]:
+    """Like resolve(), for dates typed in chat. Reads the clock time separately from the day, since
+    dateparser misreads "next monday at 9am" and puts a bare "8pm" on tomorrow even when it's still 3pm.
+    """
+    if not text or not text.strip():
+        return None, False
+    text = re.sub(r"^(?:on|at|by|this coming|coming)\s+", "", unslang(text.strip()), flags=re.I)
+    zone = ZoneInfo(tz)
+    now = now.astimezone(zone)
+    inside = _IN_RE.match(text)
+    if inside:
+        n = 1 if inside[1].lower() in ("a", "an") else int(inside[1])
+        unit = inside[2].lower()[0]
+        if unit in "mh":
+            return (now + timedelta(minutes=n if unit == "m" else 60 * n)).replace(second=0, microsecond=0), True
+        day = now + timedelta(days=n if unit == "d" else 7 * n)
+        return day.replace(hour=0, minute=0, second=0, microsecond=0), False
+    clock = _CLOCK_RE.search(text)
+    if clock is None or _ISO_RE.match(text):
+        return resolve(text, now, tz, date_order)
+    if clock[6]:
+        hour, minute = (12, 0) if clock[6].lower() == "noon" else (0, 0)
+    elif clock[3]:
+        hour, minute = int(clock[1]) % 12 + (12 if clock[3].lower() == "p" else 0), int(clock[2] or 0)
+    else:
+        hour, minute = int(clock[4]), int(clock[5])
+    if hour > 23 or minute > 59:
+        return None, False
+    rest = re.sub(r"^\s*(on|at|by)\s+|\s+(on|at|by)\s*$", "", (text[:clock.start()] + " " + text[clock.end():]).strip(" ,"))
+    if rest.strip():
+        day, _ = resolve(rest, now, tz, date_order)
+        if day is None:
+            return None, False
+        return day.replace(hour=hour, minute=minute, second=0, microsecond=0), True
+    at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return (at if at > now else at + timedelta(days=1)), True  # a bare time: today, or tomorrow if it's passed

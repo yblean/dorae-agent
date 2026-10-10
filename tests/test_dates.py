@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
-from doraemon.dates import resolve
+import pytest
+
+from doraemon.dates import resolve, resolve_spoken
 
 TZ = "America/New_York"
 SENT = datetime(2026, 10, 4, 9, 15, tzinfo=timezone.utc)  # a Sunday
@@ -51,3 +53,23 @@ def test_year_first_slash_dates():
 def test_garbage_and_empty():
     assert resolve("whenever you like", SENT, TZ) == (None, False)
     assert resolve(None, SENT, TZ) == (None, False)
+
+
+# --- dates typed in chat ------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, expected, has_time", [
+    ("tmr", "Sun 11 Oct 00:00", False),
+    ("tmr 5pm", "Sun 11 Oct 17:00", True),
+    ("in 2 hours", "Sat 10 Oct 17:00", True),
+    ("next monday at 9am", "Mon 12 Oct 09:00", True),  # dateparser alone reads this as last Friday
+    ("8pm", "Sat 10 Oct 20:00", True),                  # a bare time later today stays today...
+    ("2pm", "Sun 11 Oct 14:00", True),                  # ...and one that has passed is tomorrow
+    ("by friday", "Fri 16 Oct 00:00", False),
+    ("on 1/11 9am", "Sun 01 Nov 09:00", True),
+    ("sometime soon", None, False),
+])
+def test_chat_dates(text, expected, has_time):
+    from zoneinfo import ZoneInfo
+    now = datetime(2026, 10, 10, 15, 0, tzinfo=ZoneInfo("Asia/Singapore"))
+    dt, timed = resolve_spoken(text, now, "Asia/Singapore")
+    assert (dt.strftime("%a %d %b %H:%M") if dt else None, timed) == (expected, has_time)

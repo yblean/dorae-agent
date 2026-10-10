@@ -108,13 +108,18 @@ or "any bills due this month?". The local model (`DORAEMON_CHAT_MODEL`, default:
 calls read-only tools over your database and Google calendars; the card under each answer is built
 from the tool results, not from the model's words.
 
+Ask Dorae-2 to add an event ("add date night on 26/10 19:00") and it drafts a card waiting for your OK;
+**Confirm** puts it in your Doraemon calendar. The app reads the date from your own wording (day first,
+per `DORAEMON_DATE_ORDER`), not the model, and keeps an end time only if you typed one.
+
 Guardrails: a topic check runs first, so Dorae-1 points calendar questions to Dorae-2 (and the other
 way round) and declines anything else; each agent only has its own tools; chat can't change
-anything (the card buttons do). If the model isn't running, the agents fall back to fixed answers.
-Set `DORAEMON_CHAT_MODEL=off` to always use those.
+existing items, and a drafted event only reaches Google Calendar when you press Confirm. If the
+model isn't running, the agents fall back to fixed answers. Set `DORAEMON_CHAT_MODEL=off` to always
+use those.
 
 ```
-python -m evals.chat_eval      # 18 questions: right topic, right tool, stays in its lane
+python -m evals.chat_eval      # 21 questions: right topic, right tool, stays in its lane
 ```
 
 ## Rules

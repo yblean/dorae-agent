@@ -57,7 +57,7 @@
     <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
     <span class="item-title">{{ r.title }}{% if r.confidence < 0.6 %} <span class="check">· please check</span>{% endif %}</span>
     <span class="item-detail">{{ c.detail }}</span>
-    {% if r.evidence_snippet %}<span class="item-quote">From email: “{{ r.evidence_snippet }}”</span>{% endif %}
+    {% if r.evidence_snippet %}<span class="item-quote">{{ 'You asked' if r.gmail_id.startswith('chat:') else 'From email' }}: “{{ r.evidence_snippet }}”</span>{% endif %}
   </div>
   {% if r.status == 'proposed' %}
   <div class="item-actions">

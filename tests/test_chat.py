@@ -82,7 +82,7 @@ def test_each_agent_only_has_its_own_tools(chat):
     assert "no tool called 'find_items'" in money.seen[1]["messages"][-1]["content"]  # nothing leaked
     calendar = ScriptedModel("calendar", call("find_items", text="dentist"), say("Your dentist is on Friday."))
     html = chat("calendar", "when's my dentist?", calendar)
-    assert calendar.seen[0]["tools"] == ["find_items", "week_schedule"]
+    assert calendar.seen[0]["tools"] == ["find_items", "week_schedule", "propose_event"]
     assert "Dentist check-up" in html and "Your dentist is on Friday." in html
 
 
@@ -139,6 +139,64 @@ def test_find_items_forgives_small_model_habits(chat):
     chat("calendar", "any appointments this month?", model)
     result = json.loads(model.seen[1]["messages"][-1]["content"])
     assert [i["title"] for i in result["items"]] == ["Dentist check-up"]
+
+
+# --- adding events by chatting with Dorae-2 ---------------------------------------------
+
+DATE_NIGHT = "hi dorae-2 can you help me to add event date night on 26/10 19:00 thanks"
+
+
+def test_dorae2_drafts_an_event_and_confirm_adds_it_to_google(chat):
+    from tests.test_calendar import FakeCalendar
+    model = ScriptedModel("calendar", call("propose_event", title="Date night", when="26/10 19:00", end="22:00"),
+                          say("I've drafted Date night for 26 Oct at 7pm. Press Confirm to add it."))
+    html = chat("calendar", DATE_NIGHT + " till 22:00", model)
+    assert "Press Confirm to add it." in html and "Date night" in html and "/confirm" in html  # card with Confirm
+    assert "You asked: “hi dorae-2 can you help me" in html  # the card quotes you, not an email
+    row = chat.db.conn.execute("SELECT * FROM action_items WHERE title = 'Date night'").fetchone()
+    start, end = datetime.fromisoformat(row["start_at"]), datetime.fromisoformat(row["end_at"])
+    assert (start.month, start.day, start.hour, start.minute) == (10, 26, 19, 0)  # read by the app, day first
+    assert (end.day, end.hour) == (26, 22) and row["status"] == "proposed" and not row["all_day"]
+    assert row["calendar_event_id"] is None  # nothing in Google until you press Confirm
+
+    cal = FakeCalendar()
+    client = TestClient(create_app(chat.settings, calendar=cal), headers={"x-requested-with": "fetch"})
+    assert "Added “Date night” to your Doraemon calendar" in client.post(f"/items/{row['id']}/confirm").json()["html"]
+    body = cal.events["evt1"]
+    assert body["summary"] == "📌 Date night" and "source" not in body and "Open the email" not in body["description"]
+
+
+def test_unreadable_or_past_dates_are_sent_back_to_ask(chat):
+    model = ScriptedModel("calendar", call("propose_event", title="Date night", when="sometime soon"),
+                          call("propose_event", title="Date night", when="1/1/2020 19:00"),
+                          say("What date and time?"))
+    chat("calendar", "add date night", model)
+    results = [json.loads(m["content"]) for m in model.seen[-1]["messages"] if m["role"] == "tool"]
+    assert "Couldn't read a date" in results[0]["error"] and "has passed" in results[1]["error"]
+    assert chat.db.conn.execute("SELECT COUNT(*) FROM action_items WHERE title = 'Date night'").fetchone()[0] == 0
+
+
+def test_asking_twice_shows_the_same_event(chat):
+    for _ in range(2):
+        chat("calendar", DATE_NIGHT, ScriptedModel("calendar", call("propose_event", title="Date night",
+                                                                    when="26/10 19:00"), say("Done.")))
+    assert chat.db.conn.execute("SELECT COUNT(*) FROM action_items WHERE title = 'Date night'").fetchone()[0] == 1
+
+
+def test_dorae1_cannot_add_events(chat):
+    model = ScriptedModel("spending", call("propose_event", title="Date night", when="26/10 19:00"), say("I can't."))
+    chat("money", "add date night on 26/10 19:00 and how much did I spend", model)
+    assert "no tool called 'propose_event'" in model.seen[1]["messages"][-1]["content"]
+    assert chat.db.conn.execute("SELECT COUNT(*) FROM action_items WHERE title = 'Date night'").fetchone()[0] == 0
+
+
+def test_end_times_the_user_never_gave_are_dropped(chat):
+    model = ScriptedModel("calendar", call("propose_event", title="Date night", when="26/10 19:00", end="26/10 21:00",
+                                           type="other_travel"), say("Done."))
+    chat("calendar", DATE_NIGHT, model)
+    row = chat.db.conn.execute("SELECT * FROM action_items WHERE title = 'Date night'").fetchone()
+    assert row["end_at"] is None  # Google gets the default hour instead of a made-up end
+    assert row["type"] == "appointment"  # not a trip, whatever the model picked
 
 
 # --- periods: the model names one, the app works out the days ----------------------------

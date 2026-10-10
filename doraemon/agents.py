@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from doraemon.assistant import last_full_month, month_name, spending as spending_text
 from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
 from doraemon.config import Settings
-from doraemon.db import Database, item_model, transaction_model
+from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
 from doraemon.ledger import build_ledger, spending_totals
 from doraemon.rules import name_key
@@ -334,7 +334,8 @@ class Brain:
             timed = not (item.all_day or item.type in ALL_DAY_TYPES)
             events.append({"title": r["title"], "first": day.isoformat(), "last": day.isoformat(),
                            "start": item.start_at.astimezone(self.tz).strftime("%H:%M") if timed else "", "end": "",
-                           "calendar": "From your email", "color": color, "location": r["location"] or "",
+                           "calendar": "Added in chat" if from_chat(r["gmail_id"]) else "From your email",
+                           "color": color, "location": r["location"] or "",
                            "link": "", "waiting": r["status"] == "proposed"})
             waiting += r["status"] == "proposed"
         events.sort(key=lambda ev: (ev["first"], ev["start"]))
