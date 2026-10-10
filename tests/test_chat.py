@@ -79,7 +79,8 @@ def test_latest_purchase_comes_from_the_database(chat):
 def test_each_agent_only_has_its_own_tools(chat):
     money = ScriptedModel("spending", call("find_items", text="dentist"), say("I can't see that."))
     chat("money", "how much did I spend?", money)
-    assert money.seen[0]["tools"] == ["list_payments", "spending_summary", "top_merchants"]
+    assert money.seen[0]["tools"] == ["list_payments", "spending_summary", "top_merchants", "budget_status",
+                                      "spending_trend", "propose_budget"]
     assert "no tool called 'find_items'" in money.seen[1]["messages"][-1]["content"]  # nothing leaked
     calendar = ScriptedModel("calendar", call("find_items", text="dentist"), say("Your dentist is on Friday."))
     html = chat("calendar", "when's my dentist?", calendar)
@@ -326,3 +327,47 @@ def test_reminder_requests_never_become_events_even_if_the_model_picks_that_tool
 def test_ping_me_counts_as_a_reminder(chat):
     html = chat("calendar", "ping me to do leetcode tomorrow 2pm", ScriptedModel(RuntimeError("not needed")))
     assert "your reminder: “Do leetcode”" in html
+
+
+# --- budgets and trends ---------------------------------------------------------------------
+
+def pay_today(db, merchant="Toast Box", amount="7.02", category="dining"):
+    txn = Transaction(message_id="m", source="bank_alert", merchant=merchant, order_ref=None, purchased_at=NOW,
+                      amount=Decimal(amount), currency="SGD", amount_home=None, category=category, is_refund=False)
+    db.save_result(f"today-{merchant}", "t", email(), Extraction(message_id="m", transactions=[txn]), "extracted")
+
+
+def test_budget_advice_numbers_come_from_the_app(chat):
+    pay_today(chat.db)
+    chat.db.set_budget("dining", Decimal("1"))  # over, whatever day of the month it is
+    model = ScriptedModel("spending", call("budget_status"), say("You're over on dining."))
+    html = chat("money", "how can I stay within my budget?", model)
+    facts = json.loads(model.seen[1]["messages"][-1]["content"])
+    assert facts["budgets"][0]["budget"] == "Dining" and facts["budgets"][0]["status"] == "over"
+    tip = facts["tips"][0]
+    assert tip.startswith("Dining is already SGD") and "Toast Box (SGD 7.02)" in tip and "Hold off on more dining" in tip
+    assert "up to 5 sentences" in model.seen[0]["messages"][0]["content"]  # room for tips
+    assert 'class="meters"' in html and "Over" in html
+
+
+def test_budget_tool_without_budgets_says_how_to_set_one(chat):
+    model = ScriptedModel("spending", call("budget_status"), say("You have no budgets yet."))
+    chat("money", "am I overspending?", model)
+    assert "no_budgets_set" in json.loads(model.seen[1]["messages"][-1]["content"])
+
+
+def test_proposed_budget_waits_for_save_and_uses_the_users_words(chat):
+    model = ScriptedModel("spending", call("propose_budget", category="total", amount=30),
+                          say("Press Save to set it."))
+    html = chat("money", "please make my dining budget 300", model)
+    assert chat.db.budgets() == {}  # nothing saved until Save
+    assert 'name="draft_amount"' in html and 'value="300.00"' in html
+    assert '<option value="dining" selected>' in html
+
+
+def test_spending_trend_tool_shows_a_chart(chat):
+    model = ScriptedModel("spending", call("spending_trend", months=3), say("Spending is level."))
+    html = chat("money", "is my spending going up?", model)
+    result = json.loads(model.seen[1]["messages"][-1]["content"])
+    assert result["months"][-1]["so_far"] is True
+    assert '<svg class="viz columns"' in html

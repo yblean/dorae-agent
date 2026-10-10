@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 
 import re
 
+from doraemon import budgets as bud
 from doraemon.agents import AGENTS, COLORS, Brain, shades, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
@@ -39,6 +40,7 @@ from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messeng
 from doraemon.rules import RuleStore, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.telegram import Command, CommandListener, connect_telegram
+from doraemon.web import charts
 
 HERE = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=HERE / "templates")
@@ -64,6 +66,7 @@ TYPE_GROUPS = [
     ("Google Calendar event", [("appointment", "Appointment"), ("flight", "Flight"), ("hotel", "Hotel"),
                                ("other_travel", "Train, bus or ferry")]),
 ]
+BUDGET_OPTIONS = [(bud.TOTAL, "All spending")] + [(c.value, c.value.capitalize()) for c in Category]
 TYPE_LABELS = {value: label for _, options in TYPE_GROUPS for value, label in options}
 # What your own types can work like: the group they join in the dropdown
 CUSTOM_BASES = {"reminder": "Telegram reminder", "appointment": "Google Calendar event"}
@@ -83,6 +86,7 @@ class CheckJob:
         self.lock = threading.Lock()
         self.running = False
         self.last_problem = ""
+        self.after_payments = None  # e.g. budget alerts; called when a check brings in new payments
 
     def start(self, auto: bool = False) -> bool:
         with self.lock:
@@ -127,6 +131,8 @@ class CheckJob:
                                 else "Checked your inbox just now. Nothing new since my last look.")
         if txns:
             self.db.add_message("money", "agent", f"{txns} new payment(s) came in with Dorae-2's inbox check.")
+            if self.after_payments:
+                self.after_payments()
 
     def problem(self, auto: bool, text: str) -> None:
         if auto and text == self.last_problem:
@@ -205,6 +211,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             chat_backend = None  # unknown backend: the fixed answers still work
     if chat_backend is not None:
         brain.chat = AgentChat(brain, chat_backend)
+    job.after_payments = brain.budget_alerts
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -289,11 +296,6 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return {"row": row, "day": row["purchased_at"][:10], "category": row["category"],
                 "home_amount": fx.to_home(txn, home) if fx and row["currency"] != home else None}
 
-    def bars(rows: list[list[str]]) -> list[tuple[str, Decimal, int]]:
-        amounts = [(c, Decimal(a)) for c, a in rows]
-        biggest = max((a for _, a in amounts), default=Decimal(1)) or Decimal(1)
-        return [(c, a, max(2, int(a / biggest * 100)) if a > 0 else 0) for c, a in amounts]
-
     def message_view(row) -> dict:
         payload = json.loads(row["payload"]) if row["payload"] else None
         view = {"id": row["id"], "role": row["role"], "text": row["text"], "kind": row["kind"],
@@ -306,7 +308,11 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["lines"] = [payment_line(r) for r in (db.get("transaction", i) for i in payload["ids"]) if r]
             view["home"] = home
         elif row["kind"] == "breakdown" and payload:
-            view["bars"] = bars(payload["rows"])
+            view["donut"] = charts.donut(payload["rows"], payload["currency"])
+        elif row["kind"] == "trend" and payload:
+            view["chart"] = charts.columns(payload)
+        elif row["kind"] == "budgets" and payload:
+            view["budget_options"] = BUDGET_OPTIONS
         elif row["kind"] == "week" and payload:
             view["days"] = week_days(payload)
             view["calendars"] = {e["calendar"]: e["color"] for e in payload["events"]}
@@ -367,9 +373,10 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return tpl.render(c=card(db.get("item", item_id)), types=type_options(), back=back)
 
     def answer(request: Request, agent: str, back: str, text: str, mood: str = "idle", remove: bool = False,
-               refresh: int | None = None):
-        """An action's result, said by the agent in its chat. `refresh`: an item whose card changed."""
-        msg_id = db.add_message(agent, "agent", text)
+               refresh: int | None = None, reply_card: dict | None = None):
+        """An action's result, said by the agent in its chat. `refresh`: an item whose card changed.
+        `reply_card`: a card ({"kind", "payload"}) to show under the text."""
+        msg_id = db.add_message(agent, "agent", text, *((reply_card["kind"], reply_card["payload"]) if reply_card else ()))
         if wants_json(request):
             return JSONResponse({"html": render_messages(request, [msg_id]), "mood": mood, "remove": remove,
                                  **({"card": render_card(refresh, back)} if refresh else {})})
@@ -510,8 +517,10 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             b = brain.breakdown(month)["payload"]
             if not b["count"]:
                 b = brain.breakdown(last_full_month(settings))["payload"]
+            meters = brain.budget_card()["payload"]["rows"]
             return {"kind": "money", "label": b["label"], "total": Decimal(b["total"]), "count": b["count"],
-                    "bars": bars(b["rows"]), "currency": home}
+                    "donut": charts.donut(b["rows"], home), "currency": home, "meters": meters,
+                    "has_budgets": bool(meters)}
         upcoming, past = brain.pending()
         week = [card(db.get("item", i)) for i in brain.agenda(7)]
         checked = db.get_setting("gmail_checked_at")
@@ -757,9 +766,56 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                   "home_amount": converted.get(r["id"])}
                  for r in sorted(in_month, key=lambda r: r["purchased_at"], reverse=True)]
         return render(request, "spending.html", lines=lines, months=months, month=month, home=home,
-                      bars=bars([[c, str(a)] for c, a in sorted(sums.by_category.items(), key=lambda kv: -kv[1])]),
+                      donut=charts.donut([[c, str(a)] for c, a in sorted(sums.by_category.items(), key=lambda kv: -kv[1])], home),
+                      trend=charts.columns(brain.trend()["payload"]),
                       total=sums.total, foreign=sums.unconverted, n_converted=len(converted),
                       categories=[c.value for c in Category])
+
+    # --- budgets (Dorae-1) -------------------------------------------------------
+
+    @app.get("/budgets", response_class=HTMLResponse)
+    def budgets_page(request: Request):
+        current, avg = db.budgets(), brain.averages()
+        card = brain.budget_card()
+        spent = spending_totals(brain.ledger(brain.this_month()), home, fx)
+        fields = [{"category": c, "label": label, "amount": current.get(c),
+                   "average": avg.get(c), "spent": spent.total if c == bud.TOTAL else spent.by_category.get(c)}
+                  for c, label in BUDGET_OPTIONS]
+        return render(request, "budgets.html", meters=card["payload"]["rows"], month=card["payload"]["label"],
+                      fields=fields, home=home, trend=charts.columns(brain.trend()["payload"]),
+                      colors=charts.CATEGORY_COLORS, neutral=charts.NEUTRAL)
+
+    @app.post("/budgets")
+    async def save_budgets(request: Request):
+        """The Budgets page sends every field (blank removes that budget); a chat card sends one draft."""
+        form = await request.form()
+        back = str(form.get("back") or "/budgets")
+        wanted: dict[str, str] = {}
+        if form.get("draft_category"):
+            wanted[str(form["draft_category"])] = str(form.get("draft_amount", ""))
+        else:
+            wanted = {c: str(form[f"amount:{c}"]) for c, _ in BUDGET_OPTIONS if f"amount:{c}" in form}
+        changes = []
+        for category, raw in wanted.items():
+            if category not in dict(BUDGET_OPTIONS):
+                continue
+            try:
+                amount = bud.cents(Decimal(raw.replace(",", "").replace("$", "").strip())) if raw.strip() else None
+            except ArithmeticError:
+                return answer(request, "money", back, f"“{raw}” doesn't look like an amount. Try a number like 300.")
+            if amount is not None and amount < 0:
+                return answer(request, "money", back, "A budget can't be negative.")
+            before = db.budgets().get(category)
+            if (amount or None) != before:
+                db.set_budget(category, amount)
+                name = "overall" if category == bud.TOTAL else category
+                changes.append(f"{name} {home} {amount:,.2f}" if amount else f"no {name} budget")
+        if not changes:
+            return answer(request, "money", back, "No changes to your budgets.")
+        card = brain.budget_card()
+        text = "Saved: " + ", ".join(changes) + ". " + (card["text"] if card["payload"]["rows"] else "")
+        brain.budget_alerts(quiet=True)  # the card shows where you stand; alert only on later payments
+        return answer(request, "money", back, text.strip(), mood="happy", reply_card=card)
 
     @app.get("/history", response_class=HTMLResponse)
     def history(request: Request):

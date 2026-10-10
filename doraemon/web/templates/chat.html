@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import mascot, message %}
+{% from "_macros.html" import mascot, message, donut, meters %}
 {% block main %}{% set a = current %}
 <section class="main chat" style="--agent: {{ a.color }}">
   <header class="top-bar">
@@ -58,11 +58,8 @@
       <div class="screen-label">{{ panel.label }} so far</div>
       <div class="screen-big">{{ panel.currency }} {{ '{:,.2f}'.format(panel.total|float) }}</div>
       <div class="screen-sub">{{ panel.count }} payments from email</div>
-      <div class="screen-bars">
-        {% for category, amount, width in panel.bars[:6] %}
-        <div class="bar-row"><span>{{ category }}</span><span class="bar"><span style="width: {{ width }}%"></span></span><span class="num">{{ '{:,.0f}'.format(amount|float) }}</span></div>
-        {% endfor %}
-      </div>
+      {{ donut(panel.donut, panel.currency, small=True) }}
+      {% if panel.meters %}<div class="screen-meters">{{ meters(panel.meters[:3], panel.currency) }}</div>{% endif %}
     {% else %}
       <div class="screen-stats">
         <a href="/pocket"><strong>{{ panel.waiting }}</strong><span>need your OK</span></a>
@@ -76,19 +73,19 @@
     {% endif %}
   </div>
   <div class="screen-caption">
-    {% if panel.kind == 'money' %}<a href="/spending">{{ a.name }}'s screen · all payments</a>
+    {% if panel.kind == 'money' %}<a href="/spending">All payments</a> · <a href="/budgets">{{ 'Budgets' if panel.has_budgets else 'Set a budget' }}</a>
     {% else %}<a href="/upcoming">{{ a.name }}'s screen · {{ 'syncing to Google Calendar' if panel.calendar_connected else 'calendar not connected' }}</a>{% endif %}
   </div>
 
   <div class="routines">
     <div class="routines-head">Routines</div>
-    {% for name, when, status in a.routines %}{% set live = status in ('On', 'Run now') or (status == 'Telegram' and panel.telegram) %}
+    {% for name, when, status in a.routines %}{% set live = status in ('On', 'Run now') or (status == 'Telegram' and panel.telegram) or (status == 'Budgets' and panel.has_budgets) %}
     <div class="routine">
       <span class="routine-icon {{ 'on' if live else 'paused' }}" aria-hidden="true">
         {% if live %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>
         {% else %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>{% endif %}
       </span>
-      <span class="routine-text"><span class="routine-name">{{ name }}</span><span class="routine-when">{{ (panel.check_when or when) if status == 'Run now' else (when if live else when ~ (' · not connected' if status == 'Telegram' else ' · coming soon')) }}</span></span>
+      <span class="routine-text"><span class="routine-name">{{ name }}</span><span class="routine-when">{{ (panel.check_when or when) if status == 'Run now' else (when if live else when ~ (' · not connected' if status == 'Telegram' else ' · set a budget first' if status == 'Budgets' else ' · coming soon')) }}</span></span>
       {% if status == 'Run now' %}
         <button type="button" class="btn-small" data-check-now {{ 'disabled' if panel.checking }}>{{ 'Checking…' if panel.checking else 'Run now' }}</button>
       {% endif %}

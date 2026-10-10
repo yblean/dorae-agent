@@ -6,6 +6,7 @@ Email bodies are never stored: only ids, subject, sender and what was extracted
 import json
 import sqlite3
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from doraemon.email_parse import ParsedEmail
@@ -73,6 +74,11 @@ CREATE TABLE IF NOT EXISTS reminders (
     label TEXT NOT NULL,           -- e.g. '1 day before'
     status TEXT NOT NULL DEFAULT 'pending',   -- pending / sent / missed / cancelled
     sent_at TEXT
+);
+CREATE TABLE IF NOT EXISTS budgets (
+    category TEXT PRIMARY KEY,     -- 'total' for all spending, or a category like 'dining'
+    amount TEXT NOT NULL,          -- per calendar month, in the home currency
+    updated_at TEXT NOT NULL
 );
 """
 # Columns added after a table's first version: table -> {column: type}
@@ -167,6 +173,20 @@ class Database:
         """Items of this type keep working as the built-in type it was based on."""
         self.conn.execute("UPDATE action_items SET custom_type_id = NULL WHERE custom_type_id = ?", (type_id,))
         self.conn.execute("DELETE FROM custom_types WHERE id = ?", (type_id,))
+        self.conn.commit()
+
+    # --- monthly budgets (changed on the Budgets page; not in the action log) ------
+
+    def budgets(self) -> dict[str, Decimal]:
+        return {r["category"]: Decimal(r["amount"]) for r in self.conn.execute("SELECT * FROM budgets")}
+
+    def set_budget(self, category: str, amount: Decimal | None) -> None:
+        """None (or zero) removes the budget."""
+        if not amount:
+            self.conn.execute("DELETE FROM budgets WHERE category = ?", (category,))
+        else:
+            self.conn.execute("INSERT OR REPLACE INTO budgets (category, amount, updated_at) VALUES (?, ?, ?)",
+                              (category, str(amount), _now()))
         self.conn.commit()
 
     # --- Telegram reminders (not in the action log: undoing the confirm cancels them) ---

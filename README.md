@@ -155,6 +155,20 @@ use those.
 python -m evals.chat_eval      # 21 questions: right topic, right tool, stays in its lane
 ```
 
+## Budgets and charts (Dorae-1)
+
+Set monthly budgets, for all spending or per category, on the **Budgets** page (the grey hints are your
+average over recent full months), or tell Dorae-1 "set my dining budget to 300" and press **Save** on the
+card. Each budget shows how much is used, with a tick for how far through the month you are. Ask
+"how can I stay within my budget?" and the app works out the tips (what you can spend a day, where the
+money went, categories heading above usual), which the model only puts into words. After each inbox
+check, Dorae-1 posts in its chat when a budget reaches 80% and 100% (once per level per month).
+
+Breakdowns are donut charts with every category listed below. "Is my spending going up or down?" shows
+spending per month as columns, with this month lighter because it isn't over yet; All payments and
+Budgets show the same chart. Months before your read email starts are left out of the chart and the
+averages, since they only hold a few payments from later statements.
+
 ## Rules
 
 Corrections are remembered as rules and applied in code, so the same mistake isn't made twice.

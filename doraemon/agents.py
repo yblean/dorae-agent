@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+from doraemon import budgets as bud
 from doraemon.assistant import last_full_month, month_name, spending as spending_text
 from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
 from doraemon.config import Settings
@@ -42,10 +43,11 @@ class Agent:
 
 MONEY = Agent(
     "money", "Dorae-1", "Spending", "#3B82F6",
-    ("What's my latest purchase?", "Show this month's breakdown", "Where did I spend the most?", "How was {last_month}?"),
+    ("What's my latest purchase?", "Show this month's breakdown", "How am I doing on my budget?",
+     "Is my spending going up or down?", "How was {last_month}?"),
     (("Check inbox for receipts", "With Dorae-2's check", "On"),
-     ("Monthly summary", "1st of each month, 9:00", "Coming soon"),
-     ("Overspend alerts", "When a budget is passed", "Coming soon")),
+     ("Budget alerts", "At 80% and 100% of a budget", "Budgets"),
+     ("Monthly summary", "1st of each month, 9:00", "Coming soon")),
 )
 CALENDAR = Agent(
     "calendar", "Dorae-2", "Calendar & reminders", "#EC4899",
@@ -189,7 +191,11 @@ class Brain:
             card["text"] = f"No payments in {month_name(month)} yet. Here's {month_name(last)}:"
         last_total = spending_totals(self.ledger(last), self.home, self.fx).total
         extra = f" {month_name(last)} came to {money(last_total, self.home)}." if card["payload"]["month"] != last else ""
-        card["text"] += extra + " Ask me for any month, category or merchant."
+        card["text"] += extra
+        overall = next((s for s in self.budget_statuses() if s.category == bud.TOTAL), None)
+        if overall:
+            card["text"] += " " + bud.describe(overall, self.home)
+        card["text"] += " Ask me for any month, category, merchant or your budgets."
         return [card]
 
     def payments(self, month: str, category: str | None = None, limit: int = 40) -> dict:
@@ -208,7 +214,8 @@ class Brain:
     def top_merchants(self, month: str) -> dict:
         return self.top_merchants_of(self.ledger(month), month_name(month), month)
 
-    def top_merchants_of(self, kept, label: str, month: str | None = None) -> dict:
+    def merchants(self, kept, n: int = 5) -> list[tuple[str, Decimal, int]]:
+        """The merchants most money went to, as (name, total in the home currency, payments)."""
         sums = spending_totals(kept, self.home, self.fx)
         by_merchant: dict[str, list] = {}
         for t in kept:
@@ -218,7 +225,10 @@ class Brain:
             entry = by_merchant.setdefault(key, [t.merchant, Decimal(0), 0])
             entry[1] += -sums.home_amounts[id(t)] if t.is_refund else sums.home_amounts[id(t)]
             entry[2] += 1
-        top = sorted(by_merchant.values(), key=lambda e: -e[1])[:5]
+        return [tuple(e) for e in sorted(by_merchant.values(), key=lambda e: -e[1])[:n]]
+
+    def top_merchants_of(self, kept, label: str, month: str | None = None) -> dict:
+        top = self.merchants(kept)
         if not top:
             return {"text": f"No payments in {label}.", "kind": "text", "payload": None}
         lines = [f"{i}. {name}: {money(total, self.home)}" + (f" ({n} payments)" if n > 1 else "")
@@ -227,34 +237,263 @@ class Brain:
         card["text"] = f"Where your money went in {label}:\n" + "\n".join(lines)
         return card
 
-    def budget_check(self, q: str) -> dict:
-        """Budgets can't be saved yet; compare the amount you mention with this month instead."""
-        text = "I can't save budgets yet. That's coming together with overspend alerts."
-        found = re.search(r"(\d[\d,]*(?:\.\d+)?)", q)
-        if not found:
-            return {"text": text + " Tell me an amount, like \"a budget of $300\", and I'll check this month against it.",
-                    "kind": "text", "payload": None}
-        limit = Decimal(found.group(1).replace(",", ""))
-        month = self.this_month()
-        spent = spending_totals(self.ledger(month), self.home, self.fx).total
-        day = self.today().day
-        next_month = (date.fromisoformat(month + "-01") + timedelta(days=32)).replace(day=1)
-        days_in_month = (next_month - timedelta(days=1)).day
-        if spent > limit:
-            status = f"you're already {money(spent - limit, self.home)} over"
+    # --- monthly trend ------------------------------------------------------------
+
+    def month_shift(self, month: str, n: int) -> str:
+        y, m = divmod(int(month[:4]) * 12 + int(month[5:]) - 1 + n, 12)
+        return f"{y}-{m + 1:02d}"
+
+    def first_month(self) -> str | None:
+        """The first month your payments are complete for: the month your read email starts in, or the next one
+        if it starts after the 7th. A payment from before then (say, on a later statement) is all that month has."""
+        row = self.db.conn.execute("SELECT MIN(sent_at) FROM processed_emails WHERE sent_at IS NOT NULL").fetchone()
+        if row[0]:
+            start = datetime.fromisoformat(row[0]).astimezone(self.tz).date()
+            month = start.strftime("%Y-%m")
+            return month if start.day <= 7 else self.month_shift(month, 1)
+        months = [r["purchased_at"][:7] for r in self.db.transactions() if r["status"] == "counted"]
+        return min(months) if months else None
+
+    def month_total(self, month: str, category: str | None = None) -> Decimal:
+        sums = spending_totals(self.ledger(month), self.home, self.fx)
+        return sums.by_category.get(category, Decimal(0)) if category else sums.total
+
+    def trend(self, months: int = 6, category: str | None = None) -> dict:
+        """Spending per month for the last few months (this one so far), as a column chart card."""
+        this = self.this_month()
+        start = self.month_shift(this, -(max(2, min(months, 12)) - 1))
+        start = max(start, min(self.first_month() or this, this))
+        series = []
+        month = start
+        while month <= this:
+            series.append({"month": month, "label": month_name(month)[:3], "name": month_name(month),
+                           "total": str(self.month_total(month, category)), "partial": month == this})
+            month = self.month_shift(month, 1)
+        limit = self.db.budgets().get(category or bud.TOTAL)
+        what = f"{category.capitalize()} spending" if category else "Spending"
+        payload = {"label": f"{what} by month", "currency": self.home, "category": category,
+                   "budget": str(limit) if limit else None, "months": series}
+        return {"text": self.trend_text(payload), "kind": "trend", "payload": payload}
+
+    def trend_text(self, p: dict) -> str:
+        """Is spending going up or down: the last full month against the one before, and this month's pace."""
+        months, home = p["months"], self.home
+        full = [m for m in months if not m["partial"]]
+        parts = []
+        if len(full) >= 2:
+            last, before = Decimal(full[-1]["total"]), Decimal(full[-2]["total"])
+            if before > 0:
+                change = int((last - before) / before * 100)
+                way = "up" if change > 0 else "down" if change < 0 else "level"
+                parts.append(f"{full[-1]['name']} came to {money(last, home)}, {way}"
+                             + (f" {abs(change)}%" if change else "") + f" on {full[-2]['name']}.")
+            else:
+                parts.append(f"{full[-1]['name']} came to {money(last, home)}.")
+        elif full:
+            parts.append(f"{full[-1]['name']} came to {money(Decimal(full[-1]['total']), home)}.")
+        now = months[-1]
+        spent = Decimal(now["total"])
+        pace = bud.cents(spent / self.today().day * bud.days_in(now["month"]))
+        parts.append(f"{now['name']} so far: {money(spent, home)}, on pace for about {money(pace, home)}.")
+        if direction := self.direction(p):
+            parts.append(direction)
+        if len(full) < 2:
+            parts.append("A trend needs a couple more months of payments.")
+        if p["budget"]:
+            parts.append(f"Your monthly budget is {money(Decimal(p['budget']), home)}.")
+        return " ".join(parts)
+
+    def direction(self, p: dict) -> str:
+        """This month's pace against last month, worked out here so the model never has to compare numbers."""
+        full = [m for m in p["months"] if not m["partial"]]
+        if not full or Decimal(full[-1]["total"]) <= 0:
+            return ""
+        now, last = p["months"][-1], Decimal(full[-1]["total"])
+        pace = Decimal(now["total"]) / self.today().day * bud.days_in(now["month"])
+        change = int((pace - last) / last * 100)
+        early = " (early in the month, so this can still change a lot)" if self.today().day < 10 else ""
+        if abs(change) < 5:
+            return f"So {now['name']} is heading for about the same as {full[-1]['name']}{early}."
+        way = "UP" if change > 0 else "DOWN"
+        return f"So spending is going {way}: {now['name']} is on pace for {abs(change)}% {'more' if change > 0 else 'less'} than {full[-1]['name']}{early}."
+
+    # --- budgets -------------------------------------------------------------
+
+    def budget_statuses(self, month: str | None = None) -> list[bud.Status]:
+        month = month or self.this_month()
+        sums = spending_totals(self.ledger(month), self.home, self.fx)
+        return bud.statuses(self.db.budgets(), sums.by_category, sums.total, month, self.today())
+
+    def averages(self, months: int = 3) -> dict[str, Decimal]:
+        """Average spending per category (and TOTAL) over the last few full months that have payments."""
+        first = self.first_month()
+        sums = []
+        month = last_full_month(self.settings)
+        while len(sums) < months and first and month >= first:
+            sums.append(spending_totals(self.ledger(month), self.home, self.fx))
+            month = self.month_shift(month, -1)
+        if not sums:
+            return {}
+        out: dict[str, Decimal] = {}
+        for t in sums:
+            for c, a in [*t.by_category.items(), (bud.TOTAL, t.total)]:
+                out[c] = out.get(c, Decimal(0)) + a
+        return {c: bud.cents(a / len(sums)) for c, a in out.items()}
+
+    def budget_card(self, month: str | None = None, draft: tuple[str, Decimal] | None = None) -> dict:
+        """Every budget's progress this month as a card; `draft`: a budget you asked for, waiting for Save."""
+        month = month or self.this_month()
+        stats = self.budget_statuses(month)
+        budgets = self.db.budgets()
+        spent = spending_totals(self.ledger(month), self.home, self.fx).by_category
+        unbudgeted = sorted(((c, a) for c, a in spent.items() if c not in budgets and a > 0),
+                            key=lambda kv: -kv[1])[:3]
+        rows = [{"category": s.category, "label": s.label, "limit": str(s.limit), "spent": str(s.spent),
+                 "left": str(s.left), "used": s.used, "pace": s.pace, "state": s.state, "days_left": s.days_left,
+                 "per_day": str(s.per_day) if s.per_day is not None else None} for s in stats]
+        payload = {"month": month, "label": month_name(month), "currency": self.home, "rows": rows,
+                   "unbudgeted": [[c, str(a)] for c, a in unbudgeted],
+                   "draft": {"category": draft[0], "amount": str(draft[1])} if draft else None}
+        if draft:
+            name = "overall" if draft[0] == bud.TOTAL else draft[0]
+            current = budgets.get(draft[0])
+            text = (f"Here's a monthly {name} budget of {money(draft[1], self.home)}"
+                    + (f" (it's {money(current, self.home)} now)" if current else "")
+                    + ". Press Save on the card to set it.")
+            avg = self.averages().get(draft[0])
+            if avg:
+                text += f" Lately you've spent {money(avg, self.home)} a month on average."
+        elif not stats:
+            text = ("You haven't set any budgets yet. Set a monthly budget for all your spending or a category "
+                    "on the Budgets page, or tell me, like “set my dining budget to 300”.")
         else:
-            on_track = limit * Decimal(day) / Decimal(days_in_month)
-            status = (f"{money(limit - spent, self.home)} left for the rest of the month"
-                      + (", and ahead of a steady pace" if spent > on_track else ", on track so far"))
-        card = self.breakdown(month)
-        card["text"] = (f"{text} For now, here's {month_name(month)} against {money(limit, self.home)}: "
-                        f"{money(spent, self.home)} spent by day {day}, so {status}.")
-        return card
+            text = self.budget_advice(stats, month)
+        return {"text": text, "kind": "budgets", "payload": payload}
+
+    def budget_facts(self, month: str | None = None) -> dict:
+        """What the chat model gets to give advice from: every number is worked out here, not by the model."""
+        month = month or self.this_month()
+        stats = self.budget_statuses(month)
+        kept = self.ledger(month)
+        home, avg, budgets = self.home, self.averages(), self.db.budgets()
+        fmt = lambda a: f"{home} {a:,.2f}"
+        spent = spending_totals(kept, home, self.fx).by_category
+        day = self.today().day if month == self.this_month() else bud.days_in(month)
+        facts: dict = {"month": month_name(month), "day": f"day {day} of {bud.days_in(month)}",
+                       "tips": self.budget_tips(stats, kept, spent, avg if month == self.this_month() else {},
+                                                          budgets)}
+        if not stats:
+            facts["no_budgets_set"] = ("Tell the user they can set budgets on the Budgets page or by asking, e.g. "
+                                       "'set my dining budget to 300'. Suggest amounts near their monthly averages.")
+        facts["budgets"] = []
+        for s in stats:
+            entry = {"budget": s.label, "status": s.state.replace("_", " "), "summary": bud.describe(s, home),
+                     "limit": fmt(s.limit), "spent": fmt(s.spent), "used": f"{s.used}%", "month_gone": f"{s.pace}%"}
+            if s.per_day is not None:
+                entry["can_spend_per_day_to_stay_within"] = fmt(s.per_day)
+            if (usual := self.vs_usual(s.label, s.projected if s.days_left > 0 else s.spent, avg.get(s.category))):
+                entry["compared_with_usual"] = usual
+            facts["budgets"].append(entry)
+        facts["spending_without_a_budget"] = {c: fmt(a) for c, a in sorted(spent.items(), key=lambda kv: -kv[1])
+                                              if c not in budgets and a > 0}
+        if avg:
+            facts["usual_monthly_spending"] = {c: fmt(a) for c, a in avg.items()}
+        return facts
+
+    def vs_usual(self, label: str, heading_for: Decimal, usual: Decimal | None) -> str:
+        """'Dining is heading for SGD 58.00, below your usual SGD 69.00 a month.' Empty without a usual amount."""
+        if not usual:
+            return ""
+        way = ("above" if heading_for > usual * Decimal("1.1") else
+               "below" if heading_for < usual * Decimal("0.9") else "about the same as")
+        return (f"{label} is heading for {money(heading_for, self.home)}, {way} your usual "
+                f"{money(usual, self.home)} a month.")
+
+    def budget_tips(self, stats: list[bud.Status], kept, spent: dict[str, Decimal], avg: dict[str, Decimal],
+                    budgets: dict[str, Decimal]) -> list[str]:
+        """Concrete things to do, most urgent first, worked out from the numbers (the model only words them)."""
+        home, tips = self.home, []
+        order = {"over": 0, "at_risk": 1, "on_track": 2}
+        for s in sorted(stats, key=lambda s: (order[s.state], -s.used)):
+            mine = kept if s.category == bud.TOTAL else [t for t in kept if t.category.value == s.category]
+            top = self.merchants(mine, 2)
+            where = (" Most of it went to " + " and ".join(f"{n} ({money(a, home)})" for n, a, _ in top) + "."
+                     if top else "")
+            what = "spending" if s.category == bud.TOTAL else s.category
+            if s.state == "over":
+                tips.append(f"{s.label} is already {money(-s.left, home)} over its {money(s.limit, home)} budget."
+                            f"{where} Hold off on more {what} until next month.")
+            elif s.state == "at_risk":
+                tips.append(f"{s.label} is ahead of pace: keep {what} to {money(s.per_day, home)} a day for the "
+                            f"{s.days_left} days left to stay within {money(s.limit, home)}.{where}")
+        for c, a in sorted(spent.items(), key=lambda kv: -kv[1]):
+            usual = avg.get(c)
+            if c not in budgets and a > 0 and usual and self.today().day >= 5:
+                heading = bud.cents(a / self.today().day * bud.days_in(self.this_month()))
+                if heading > usual * Decimal("1.2"):
+                    tips.append(self.vs_usual(c.capitalize(), heading, usual) + " It has no budget yet: setting one "
+                                "would help.")
+        if not tips and stats:
+            overall = next((s for s in stats if s.category == bud.TOTAL), stats[0])
+            tips.append("Everything is on track." + (f" Keep {'spending' if overall.category == bud.TOTAL else overall.category}"
+                        f" to about {money(overall.per_day, home)} a day." if overall.per_day else ""))
+        return tips[:4]
+
+    def budget_advice(self, stats: list[bud.Status], month: str) -> str:
+        """The fixed-answer version of the advice: the budget most at risk, and where its money went."""
+        order = {"over": 0, "at_risk": 1, "on_track": 2}
+        worst = sorted(stats, key=lambda s: (order[s.state], -s.used))[0]
+        text = bud.describe(worst, self.home)
+        if worst.state == "on_track":
+            return text + (" All your budgets are on track. Keep it up! 🎉" if len(stats) > 1 else " You're on track. 🎉")
+        kept = self.ledger(month)
+        mine = kept if worst.category == bud.TOTAL else [t for t in kept if t.category.value == worst.category]
+        top = self.merchants(mine, 2)
+        if top:
+            text += " Most went to " + " and ".join(f"{n} ({money(a, self.home)})" for n, a, _ in top) + "."
+        behind = [s for s in stats if s is not worst and s.state != "on_track"]
+        if behind:
+            text += " Also keep an eye on " + ", ".join(s.label.lower() for s in behind) + "."
+        return text
+
+    def budget_alerts(self, quiet: bool = False) -> list[int]:
+        """Post a message when a budget passes 80% or 100% this month, once per level. Returns message ids.
+        `quiet`: start over from where each budget is now, e.g. right after you changed one and saw its card,
+        so raising a budget lets its alerts come again."""
+        month = self.this_month()
+        key = f"budget_alerts:{month}"
+        stats = self.budget_statuses(month)
+        if quiet:
+            seen = {s.category: lv for s, lv in bud.new_alerts(stats, {})}
+            self.db.set_setting(key, ",".join(f"{k}={v}" for k, v in seen.items()) or None)
+            return []
+        seen = {k: int(v) for k, v in (p.split("=") for p in (self.db.get_setting(key) or "").split(",") if p)}
+        ids = []
+        found = bud.new_alerts(stats, seen)
+        for s, level in found:
+            seen[s.category] = level
+            name = "your overall budget" if s.category == bud.TOTAL else f"your {s.category} budget"
+            if level >= 100:
+                text = f"⚠️ You've gone over {name}. " + bud.describe(s, self.home)
+            else:
+                text = f"Heads up: you've used {s.used}% of {name}. " + bud.describe(s, self.home)
+            card = self.budget_card(month)
+            ids.append(self.db.add_message("money", "agent", text, card["kind"], card["payload"]))
+        if found:
+            self.db.set_setting(key, ",".join(f"{k}={v}" for k, v in seen.items()))
+        return ids
 
     def money_reply(self, q: str) -> list[dict]:
+        asked = bud.parse_request(q)
+        if asked:
+            return [self.budget_card(draft=asked)]
         q = q.lower()
-        if re.search(r"budget|overspen|spending limit|\bcap\b", q):
-            return [self.budget_check(q)]
+        if re.search(r"budget|overspen|spending limit|\bcap\b|stay within|save money|cut back|spend less", q):
+            return [self.budget_card()]
+        if re.search(r"trend|going up|going down|over time|by month|per month|monthly|month to month|"
+                     r"increas|decreas|compared? to last|chart", q):
+            category = next((c for word, c in _CATEGORY_WORDS.items() if re.search(rf"\b{word}", q)), None)
+            return [self.trend(category=category if category in bud.CATEGORIES else None)]
         named = next((p for p in ("today", "yesterday", "this week", "last week") if re.search(rf"\b{p}\b", q)), None)
         if named:
             first, last, label = self.period_range(named.replace(" ", "_"))

@@ -146,12 +146,74 @@ def test_time_separators_between_messages(client):
     assert '<div class="sep">Today ' in page
 
 
-def test_budget_question_is_answered_honestly(client):
+def payments_this_month(client):
+    """The fixture's payments are 5 days old; budgets count this month, so move them to now (any day of the month)."""
+    db = client.app.state.db
+    db.conn.execute("UPDATE transactions SET purchased_at = ?", (datetime.now(timezone.utc).isoformat(),))
+    db.conn.commit()
+
+
+def test_budget_request_drafts_a_card_and_save_sets_it(client):
+    payments_this_month(client)
     client.headers["x-requested-with"] = "fetch"
-    html = client.post("/chat/money/ask", data={"q": "help me set a budget of $300 per month"}).json()["html"]
-    assert "I can&#39;t save budgets yet" in html and "SGD 300.00" in html
-    html = client.post("/chat/money/ask", data={"q": "set a budget"}).json()["html"]
-    assert "Tell me an amount" in html
+    html = client.post("/chat/money/ask", data={"q": "set my groceries budget to $10"}).json()["html"]
+    assert "Press Save" in html and 'value="10.00"' in html
+    db = client.app.state.db
+    assert db.budgets() == {}
+    html = client.post("/budgets", data={"draft_category": "groceries", "draft_amount": "10",
+                                         "back": "/chat/money"}).json()["html"]
+    assert db.budgets() == {"groceries": Decimal("10.00")}
+    assert "Saved: groceries SGD 10.00" in html and "Over" in html  # 14.94 spent of 10
+
+
+def test_budgets_page_sets_and_clears_budgets(client):
+    payments_this_month(client)
+    page = client.get("/budgets").text
+    assert "No budgets yet" in page and 'name="amount:total"' in page
+    page = client.post("/budgets", data={"amount:total": "500", "amount:dining": "", "back": "/budgets"}).text
+    assert "Saved: overall SGD 500.00" in page and "SGD 485.06 left" in page
+    client.post("/budgets", data={"amount:total": "", "back": "/budgets"})
+    assert client.app.state.db.budgets() == {}
+    page = client.post("/budgets", data={"amount:total": "lots", "back": "/budgets"}).text
+    assert "look like an amount" in page
+
+
+def test_budget_questions_without_the_model(client):
+    client.headers["x-requested-with"] = "fetch"
+    html = client.post("/chat/money/ask", data={"q": "how am I doing on my budget?"}).json()["html"]
+    assert "set any budgets yet" in html
+    html = client.post("/chat/money/ask", data={"q": "is my spending going up or down?"}).json()["html"]
+    assert '<svg class="viz columns"' in html and "so far" in html
+
+
+def test_budget_alert_once_per_level(client):
+    payments_this_month(client)
+    db, job = client.app.state.db, client.app.state.job
+    db.set_budget("total", Decimal("16"))  # 14.94 spent: 93%
+    for _ in range(2):
+        job.report({"items": 0, "transactions": [1], "processed": 1, "counts": {}}, auto=True)
+    alerts = [r for r in db.messages("money") if r["text"].startswith("Heads up")]
+    assert len(alerts) == 1 and "93%" in alerts[0]["text"] and alerts[0]["kind"] == "budgets"
+
+
+def test_months_before_your_email_starts_are_left_out_of_trends(client):
+    from doraemon.agents import Brain
+    db, settings = client.app.state.db, client.app.state.settings
+    brain = Brain(db, settings)
+    first = brain.this_month()
+    db.conn.execute("UPDATE processed_emails SET sent_at = ?", (first + "-20T09:00:00+00:00",))
+    db.conn.commit()  # email starts on the 20th: this month isn't complete, so the chart starts next month
+    assert brain.first_month() == brain.month_shift(first, 1)
+    db.conn.execute("UPDATE processed_emails SET sent_at = ?", (first + "-03T09:00:00+00:00",))
+    db.conn.commit()
+    assert brain.first_month() == first and brain.averages() == {}  # no full month has passed yet
+
+
+def test_breakdown_and_spending_page_draw_charts(client):
+    assert '<svg class="viz donut"' in client.get("/chat/money").text  # overview card and the panel
+    page = client.get("/spending").text
+    assert '<svg class="viz donut"' in page and '<svg class="viz columns"' in page
+    assert 'data-tip="groceries: SGD 14.94 (100.0%)"' in page
 
 
 # --- item types ----------------------------------------------------------------------------

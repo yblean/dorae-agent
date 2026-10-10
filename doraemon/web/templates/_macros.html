@@ -168,11 +168,34 @@
   {% if m.kind == 'breakdown' and m.payload %}{% set p = m.payload %}
   <div class="card">
     <div class="card-head"><span>{{ p.label }}</span><strong>{{ p.currency }} {{ '{:,.2f}'.format(p.total|float) }}</strong></div>
-    {% for category, amount, width in m.bars %}
-    <div class="bar-row"><span>{{ category }}</span><span class="bar"><span style="width: {{ width }}%"></span></span>
-      <span class="num">{{ '{:,.2f}'.format(amount|float) }}</span></div>
-    {% else %}<div class="note">No payments.</div>{% endfor %}
+    {{ donut(m.donut, p.currency, 'spent') }}
     <div class="note">{{ p.count }} payments{% if p.converted %} · {{ p.converted }} overseas, converted{% endif %}{% if p.unconverted %} · {{ p.unconverted }} without an exchange rate{% endif %}</div>
+  </div>
+
+  {% elif m.kind == 'trend' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ p.label }}</span>{% if m.chart.budget %}<span class="note key-line">{{ m.chart.budget.label }}</span>{% endif %}</div>
+    {{ columns(m.chart) }}
+    <div class="note">In {{ p.currency }}. Hover a month for the exact amount.</div>
+  </div>
+
+  {% elif m.kind == 'budgets' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ 'New budget' if p.draft else p.label ~ ' budgets' }}</span><a class="note" href="/budgets">Edit budgets</a></div>
+    {% if p.draft %}
+    <form class="budget-draft" method="post" action="/budgets" data-ajax>
+      <input type="hidden" name="back" value="/chat/money">
+      <label class="sr-only" for="draft-{{ m.id }}">Budget for</label>
+      <select class="field" id="draft-{{ m.id }}" name="draft_category">
+        {% for value, label in m.budget_options %}<option value="{{ value }}" {{ 'selected' if value == p.draft.category }}>{{ label }}</option>{% endfor %}
+      </select>
+      <label class="money-field"><span>{{ p.currency }}</span><input class="field" name="draft_amount" inputmode="decimal" value="{{ p.draft.amount }}" aria-label="Amount per month" required></label>
+      <span class="note">a month</span>
+      <button class="btn btn-primary btn3d">Save</button>
+    </form>
+    {% endif %}
+    {% if p.rows %}{{ meters(p.rows, p.currency) }}{% elif not p.draft %}<div class="note">No budgets yet.</div>{% endif %}
+    {% if p.unbudgeted and not p.draft %}<div class="note">No budget for {% for c, a in p.unbudgeted %}{{ c }} ({{ p.currency }} {{ '{:,.2f}'.format(a|float) }}){{ ', ' if not loop.last }}{% endfor %} this month.</div>{% endif %}
   </div>
 
   {% elif m.kind == 'payments' %}
@@ -232,5 +255,66 @@
     {% if m.calendars %}<div class="week-legend">{% for name, color in m.calendars.items() %}<span style="--c: {{ color }}">{{ name }}</span>{% endfor %}</div>{% endif %}
   </div>
   {% endif %}
+</div>
+{% endmacro %}
+
+{# --- charts (geometry from doraemon/web/charts.py) --- #}
+
+{# Category breakdown: a donut with the total in the middle, and the list that names every slice. #}
+{% macro donut(d, currency, caption='', small=False) %}
+<div class="donut-wrap{{ ' small' if small }}">
+  <svg class="viz donut" viewBox="0 0 120 120" role="img" aria-label="Spending by category: {% for l in d.legend %}{{ l.category }} {{ l.pct }}%{{ ', ' if not loop.last }}{% endfor %}">
+    {% if not d.segments %}<circle cx="60" cy="60" r="{{ d.r }}" fill="none" stroke="var(--line-soft)" stroke-width="14"/>{% endif %}
+    {% for s in d.segments %}
+    <circle cx="60" cy="60" r="{{ d.r }}" fill="none" stroke="{{ s.color }}" stroke-width="14" stroke-dasharray="{{ s.dash }}"
+            stroke-dashoffset="{{ s.offset }}" transform="rotate(-90 60 60)" data-tip="{{ s.tip }}" tabindex="0"/>
+    {% endfor %}
+    <text x="60" y="{{ 57 if caption else 64 }}" class="donut-total">{{ '{:,.0f}'.format(d.total|float) }}</text>
+    {% if caption %}<text x="60" y="72" class="donut-caption">{{ caption }}</text>{% endif %}
+  </svg>
+  <div class="legend-list">
+    {% for l in d.legend[:(4 if small else 99)] %}
+    <div class="legend-row"><span class="swatch-dot" style="background: {{ l.color }}"></span>
+      <span class="legend-name">{{ l.category }}{% if not small %}<span class="note">{{ l.pct }}% of total</span>{% endif %}</span>
+      <span class="num">{{ '{:,.2f}'.format(l.amount|float) if not small else l.pct ~ '%' }}</span></div>
+    {% else %}<div class="note">No payments.</div>{% endfor %}
+    {% if small and d.legend|length > 4 %}<div class="note">+{{ d.legend|length - 4 }} more</div>{% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+{# Spending per month as columns; this month lighter because it isn't over. The budget is a reference line. #}
+{% macro columns(c) %}
+<svg class="viz columns" viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="{% for col in c.cols %}{{ col.tip }}{{ '; ' if not loop.last }}{% endfor %}">
+  <line x1="0" x2="{{ c.w }}" y1="{{ c.base }}" y2="{{ c.base }}" class="axis"/>
+  {% if c.budget %}<line x1="0" x2="{{ c.w }}" y1="{{ c.budget.y }}" y2="{{ c.budget.y }}" class="budget-line"/>{% endif %}
+  {% for col in c.cols %}
+  <g class="col{{ ' partial' if col.partial }}" data-tip="{{ col.tip }}" tabindex="0">
+    <rect class="hit" x="{{ col.band_x }}" y="0" width="{{ col.band_w }}" height="{{ c.h }}"/>
+    {% if col.path %}<path d="{{ col.path }}"/>{% endif %}
+    <text x="{{ col.cx }}" y="{{ col.cap_y }}" class="cap">{{ col.cap }}</text>
+    <text x="{{ col.cx }}" y="{{ c.month_y }}" class="tick">{{ col.label }}</text>
+    {% if col.partial %}<text x="{{ col.cx }}" y="{{ c.note_y }}" class="tick-note">so far</text>{% endif %}
+  </g>
+  {% endfor %}
+</svg>
+{% endmacro %}
+
+{# Budget meters: the fill is how much is used, the tick is how much of the month has gone. #}
+{% macro meters(rows, currency) %}
+<div class="meters">
+  {% for b in rows %}
+  <div class="meter meter-{{ b.state }}" style="--used: {{ [b.used, 100]|min }}%; --pace: {{ b.pace }}%">
+    <div class="meter-top">
+      <span class="meter-name">{{ b.label }}
+        {% if b.state == 'over' %}<span class="meter-flag">✕ Over</span>{% elif b.state == 'at_risk' %}<span class="meter-flag">! Over pace</span>{% endif %}</span>
+      <span class="num">{% if b.left|float >= 0 %}{{ currency }} {{ '{:,.2f}'.format(b.left|float) }} left{% else %}{{ currency }} {{ '{:,.2f}'.format(-(b.left|float)) }} over{% endif %}</span>
+    </div>
+    <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ b.used }}" aria-label="{{ b.label }}: {{ b.used }}% used, {{ b.pace }}% of the month gone">
+      <span class="meter-fill"></span>{% if b.days_left > 0 %}<span class="meter-pace" title="Today: {{ b.pace }}% of the month gone"></span>{% endif %}
+    </div>
+    <div class="meter-sub note">{{ currency }} {{ '{:,.2f}'.format(b.spent|float) }} of {{ '{:,.2f}'.format(b.limit|float) }} · {{ b.used }}%{% if b.per_day %} · {{ currency }} {{ b.per_day }}/day keeps you within{% endif %}</div>
+  </div>
+  {% endfor %}
 </div>
 {% endmacro %}

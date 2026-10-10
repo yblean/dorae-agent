@@ -214,6 +214,31 @@
     maker.addEventListener('change', refresh);
   }
 
+  // Charts: hover or focus a slice, column or meter for its exact numbers
+  const tip = document.createElement('div');
+  tip.className = 'viz-tip';
+  tip.hidden = true;
+  document.body.append(tip);
+  const showTip = (el, x, y) => {
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = Math.max(8, Math.min(x - w / 2, window.innerWidth - w - 8)) + 'px';
+    tip.style.top = (y - h - 12 < 8 ? y + 16 : y - h - 12) + 'px';
+  };
+  document.addEventListener('pointermove', (e) => {
+    const el = e.target.closest && e.target.closest('.viz [data-tip]');
+    if (el) showTip(el, e.clientX, e.clientY); else tip.hidden = true;
+  });
+  document.addEventListener('focusin', (e) => {
+    const el = e.target.closest && e.target.closest('.viz [data-tip]');
+    if (!el) { tip.hidden = true; return; }
+    const r = el.getBoundingClientRect();
+    showTip(el, r.left + r.width / 2, r.top);
+  });
+  document.addEventListener('focusout', () => { tip.hidden = true; });
+  window.addEventListener('scroll', () => { tip.hidden = true; }, true);
+
   // Sidebar search filters the agent list
   const search = document.querySelector('[data-search]');
   if (search) search.addEventListener('input', () => {

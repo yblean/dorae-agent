@@ -1,18 +1,17 @@
-{% extends "base.html" %}{% set title = "All payments" %}
+{% extends "base.html" %}{% from "_macros.html" import donut as donut_chart, columns %}{% set title = "All payments" %}
 {% block content %}
+<div class="panel-box">
+  <div class="card-head"><span>Spending by month</span>{% if trend.budget %}<span class="note key-line">{{ trend.budget.label }}</span>{% endif %}</div>
+  {{ columns(trend) }}
+</div>
+
 <div class="tabs">
   <a href="/spending" class="tab" {{ 'aria-current=page' if not month }}>All</a>
   {% for m in months %}<a href="/spending?month={{ m }}" class="tab" {{ 'aria-current=page' if m == month }}>{{ m }}</a>{% endfor %}
 </div>
 
 <div class="panel-box">
-  {% for category, amount, width in bars %}
-  <div class="bar-row">
-    <span>{{ category }}</span>
-    <span class="bar"><span style="width: {{ width }}%"></span></span>
-    <span class="num">{{ home }} {{ amount }}</span>
-  </div>
-  {% endfor %}
+  {{ donut_chart(donut, home, 'spent') }}
   <div class="total-row"><span>Total</span><span class="num">{{ home }} {{ total }}</span></div>
   {% if n_converted %}
   <p class="note">{{ n_converted }} overseas payment{{ 's' if n_converted != 1 }} converted to {{ home }} at the

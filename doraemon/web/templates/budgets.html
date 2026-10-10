@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% from "_macros.html" import meters as budget_meters, columns %}{% set title = "Budgets" %}
+{% block content %}
+<div class="panel-box">
+  <div class="card-head"><span>{{ month }}</span><span class="note">Monthly budgets</span></div>
+  {% if meters %}{{ budget_meters(meters, home) }}
+  <p class="note">The tick on each bar is today: spending evenly through the month, the bar would end right there.
+    Dorae-1 tells you in chat when a budget reaches 80% and 100%.</p>
+  {% else %}<p class="empty">No budgets yet. Set one below, or tell Dorae-1 “set my dining budget to 300”.</p>{% endif %}
+</div>
+
+<form class="panel-box" method="post" action="/budgets">
+  <input type="hidden" name="back" value="/budgets">
+  <div class="card-head"><span>Set budgets</span><span class="note">per month, in {{ home }} · blank = no budget</span></div>
+  <div class="budget-form">
+    {% for f in fields %}
+    <label class="budget-field{{ ' overall' if loop.first }}">
+      <span class="budget-label">{% if not loop.first %}<span class="swatch-dot" style="background: {{ colors.get(f.category, neutral) }}"></span>{% endif %}{{ f.label }}</span>
+      <input class="field" name="amount:{{ f.category }}" inputmode="decimal" value="{{ '%.2f'|format(f.amount|float) if f.amount else '' }}"
+             placeholder="{{ '%.0f'|format(f.average|float) if f.average else '' }}" aria-label="{{ f.label }} budget per month">
+      <span class="note">{% if f.average %}avg {{ '{:,.0f}'.format(f.average|float) }}{% endif %}{% if f.spent %}{{ ' · ' if f.average }}{{ '{:,.0f}'.format(f.spent|float) }} so far{% endif %}</span>
+    </label>
+    {% endfor %}
+  </div>
+  <div class="row"><button class="btn btn-primary btn3d">Save budgets</button>
+    <span class="note">Grey suggestions are your average over the last few months.</span></div>
+</form>
+
+<div class="panel-box">
+  <div class="card-head"><span>Spending by month</span>{% if trend.budget %}<span class="note key-line">{{ trend.budget.label }}</span>{% endif %}</div>
+  {{ columns(trend) }}
+</div>
+{% endblock %}
