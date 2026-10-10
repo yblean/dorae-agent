@@ -118,17 +118,58 @@ class Brain:
 
     # --- money ---------------------------------------------------------------
 
+    PERIODS = ("today", "yesterday", "this_week", "last_week", "last_7_days", "this_month", "last_month")
+
+    def month_range(self, month: str) -> tuple[date, date]:
+        first = date.fromisoformat(month + "-01")
+        return first, (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+    def period_range(self, name: str | None) -> tuple[date, date, str] | None:
+        """A named period as (first day, last day, label) in your timezone. The app does the date maths, not the model."""
+        today = self.today()
+        monday = today - timedelta(days=today.weekday())
+        day = lambda d: f"{d:%a} {d.day} {d:%b}"
+        if name == "today":
+            return today, today, f"today ({day(today)})"
+        if name == "yesterday":
+            y = today - timedelta(days=1)
+            return y, y, f"yesterday ({day(y)})"
+        if name == "this_week":
+            return monday, today, f"this week ({day(monday)} to {day(today)})"
+        if name == "last_week":
+            first, last = monday - timedelta(days=7), monday - timedelta(days=1)
+            return first, last, f"last week ({day(first)} to {day(last)})"
+        if name == "last_7_days":
+            return today - timedelta(days=6), today, f"the last 7 days ({day(today - timedelta(days=6))} to {day(today)})"
+        if name == "this_month":
+            return today.replace(day=1), today, f"{month_name(self.this_month())} so far"
+        if name == "last_month":
+            month = last_full_month(self.settings)
+            return (*self.month_range(month), month_name(month))
+        return None
+
     def ledger(self, month: str):
         rows = [r for r in self.db.transactions() if r["status"] == "counted" and r["purchased_at"].startswith(month)]
         kept, _ = build_ledger([transaction_model(r) for r in rows])
         return kept
 
+    def ledger_between(self, first: date | None, last: date | None):
+        """Counted payments from the first to the last day (both included, your timezone), duplicates dropped."""
+        day = lambda r: datetime.fromisoformat(r["purchased_at"]).astimezone(self.tz).date()
+        rows = [r for r in self.db.transactions() if r["status"] == "counted"
+                and (first is None or day(r) >= first) and (last is None or day(r) <= last)]
+        kept, _ = build_ledger([transaction_model(r) for r in rows])
+        return kept
+
     def breakdown(self, month: str) -> dict:
-        kept = self.ledger(month)
+        return self.summary(self.ledger(month), month_name(month), month)
+
+    def summary(self, kept, label: str, month: str | None = None) -> dict:
+        """A breakdown card for any set of payments: total and split by category."""
         sums = spending_totals(kept, self.home, self.fx)
         rows = sorted(sums.by_category.items(), key=lambda kv: -kv[1])
         return {"text": "", "kind": "breakdown", "payload": {
-            "month": month, "label": month_name(month), "currency": self.home, "count": len(kept),
+            "month": month, "label": label, "currency": self.home, "count": len(kept),
             "total": str(sums.total), "rows": [[c, str(a)] for c, a in rows],
             "unconverted": len(sums.unconverted),
             "converted": sum(1 for t in kept if t.currency != self.home and id(t) in sums.home_amounts),
@@ -164,7 +205,9 @@ class Brain:
                 "kind": "payments", "payload": {"ids": [int(t.message_id) for t in kept[:limit]]}}
 
     def top_merchants(self, month: str) -> dict:
-        kept = self.ledger(month)
+        return self.top_merchants_of(self.ledger(month), month_name(month), month)
+
+    def top_merchants_of(self, kept, label: str, month: str | None = None) -> dict:
         sums = spending_totals(kept, self.home, self.fx)
         by_merchant: dict[str, list] = {}
         for t in kept:
@@ -176,11 +219,11 @@ class Brain:
             entry[2] += 1
         top = sorted(by_merchant.values(), key=lambda e: -e[1])[:5]
         if not top:
-            return {"text": f"No payments in {month_name(month)}.", "kind": "text", "payload": None}
+            return {"text": f"No payments in {label}.", "kind": "text", "payload": None}
         lines = [f"{i}. {name}: {money(total, self.home)}" + (f" ({n} payments)" if n > 1 else "")
                  for i, (name, total, n) in enumerate(top, 1)]
-        card = self.breakdown(month)
-        card["text"] = f"Where your money went in {month_name(month)}:\n" + "\n".join(lines)
+        card = self.summary(kept, label, month)
+        card["text"] = f"Where your money went in {label}:\n" + "\n".join(lines)
         return card
 
     def budget_check(self, q: str) -> dict:
@@ -211,6 +254,15 @@ class Brain:
         q = q.lower()
         if re.search(r"budget|overspen|spending limit|\bcap\b", q):
             return [self.budget_check(q)]
+        named = next((p for p in ("today", "yesterday", "this week", "last week") if re.search(rf"\b{p}\b", q)), None)
+        if named:
+            first, last, label = self.period_range(named.replace(" ", "_"))
+            kept = self.ledger_between(first, last)
+            card = self.summary(kept, label[0].upper() + label[1:])
+            total = Decimal(card["payload"]["total"])
+            card["text"] = (f"You spent {money(total, self.home)} {label} across {len(kept)} payment"
+                            f"{'s' if len(kept) != 1 else ''}." if kept else f"No payments {label}.")
+            return [card]
         month = self._month_in(q)
         category = next((c for word, c in _CATEGORY_WORDS.items() if re.search(rf"\b{word}", q)), None)
         if category and category in {c.value for c in Category}:

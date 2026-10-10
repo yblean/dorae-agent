@@ -80,54 +80,93 @@ def _text(value) -> str:
 
 # --- Dorae-1: spending ------------------------------------------------------------------
 
-def money_tools(brain: Brain) -> list[Tool]:
+# Words that must appear in the question for the model's `period` to count (small models add "today" unasked)
+PERIOD_WORDS = {"today": r"today|tonight|this morning|so far today", "yesterday": r"yesterday",
+                "this_week": r"this week|week so far", "last_week": r"last week|previous week",
+                "last_7_days": r"7 days|seven days|past week", "this_month": r"this month|month so far",
+                "last_month": r"last month|previous month"}
+
+
+def _span(brain: Brain, period=None, month=None, from_date=None, to_date=None, default=None, question=""):
+    """The days a question covers, as (first, last, label): explicit dates, else a named period,
+    else a whole month, else `default`. The model names the period; the app works out the dates."""
+    if period in PERIOD_WORDS and question and not re.search(PERIOD_WORDS[period], question, re.I):
+        period = None  # not something the user said
+    first, last = _day(from_date), _day(to_date)
+    if first or last:
+        last = last or brain.today()
+        return first, last, f"{first or 'the start'} to {last}"
+    named = brain.period_range(period if period in brain.PERIODS else None)
+    if named:
+        return named
+    month = brain._month_in(question.lower()) or _month(month)  # "in September": the user's words win
+    if month:
+        return (*brain.month_range(month), month_name(month))
+    return brain.period_range(default) or (None, None, "all time")
+
+
+def money_tools(brain: Brain, turn: dict) -> list[Tool]:
+    """`turn` holds the question being answered, to check the period the model picked against it."""
     home = brain.home
 
-    def list_payments(month=None, category=None, merchant=None, sort="newest", limit=5, **_):
-        month, category = _month(month), _choice(category, [c.value for c in Category])
-        merchant, limit = _text(merchant).lower(), _limit(limit, 5)
-        kept = [t for t in brain.ledger(month or "")
+    def list_payments(period=None, month=None, from_date=None, to_date=None, category=None, merchant=None,
+                      sort="newest", limit=10, **_):
+        first, last, label = _span(brain, period, month, from_date, to_date, question=turn.get("question", ""))
+        category = _choice(category, [c.value for c in Category])
+        merchant, limit = _text(merchant).lower(), _limit(limit, 10)
+        kept = [t for t in brain.ledger_between(first, last)
                 if (not category or t.category.value == category) and (not merchant or merchant in t.merchant.lower())]
         sums = spending_totals(kept, home, brain.fx)
         value = lambda t: sums.home_amounts.get(id(t), t.amount)
         kept.sort(key=(lambda t: value(t)) if sort == "largest" else (lambda t: t.purchased_at), reverse=True)
         shown = kept[:limit]
-        result = {"found": len(kept), "total": f"{home} {sums.total}", "showing": len(shown), "payments": [
+        result = {"period": label, "found": len(kept), "total_of_all_found": f"{home} {sums.total}",
+                  "showing": len(shown), "payments": [
             {"date": t.purchased_at.date().isoformat(), "merchant": t.merchant, "amount": f"{t.currency} {t.amount}",
              **({"in_" + home: str(sums.home_amounts[id(t)])} if t.currency != home and id(t) in sums.home_amounts else {}),
              "category": t.category.value, **({"refund": True} if t.is_refund else {})} for t in shown]}
         card = {"kind": "payments", "payload": {"ids": [int(t.message_id) for t in shown]}} if shown else None
         return result, card
 
-    def spending_summary(month=None, **_):
-        month = _month(month) or brain.this_month()
-        card = brain.breakdown(month)
+    def spending_summary(period=None, month=None, from_date=None, to_date=None, **_):
+        first, last, label = _span(brain, period, month, from_date, to_date, default="this_month",
+                                   question=turn.get("question", ""))
+        card = brain.summary(brain.ledger_between(first, last), label[0].upper() + label[1:])
         p = card["payload"]
-        result = {"month": month, "payments": p["count"], "total": f"{home} {p['total']}",
+        result = {"period": label, "payments": p["count"], "total": f"{home} {p['total']}",
                   "by_category": {c: f"{home} {a}" for c, a in p["rows"]}}
         if p["unconverted"]:
             result["not_in_total"] = f"{p['unconverted']} overseas payments without an exchange rate"
         return result, {"kind": card["kind"], "payload": p} if p["count"] else None
 
-    def top_merchants(month=None, **_):
-        month = _month(month) or brain.this_month()
-        card = brain.top_merchants(month)
-        return {"month": month, "top": card["text"]}, ({"kind": "breakdown", "payload": card["payload"]}
-                                                      if card["kind"] == "breakdown" else None)
+    def top_merchants(period=None, month=None, from_date=None, to_date=None, **_):
+        first, last, label = _span(brain, period, month, from_date, to_date, default="this_month",
+                                   question=turn.get("question", ""))
+        card = brain.top_merchants_of(brain.ledger_between(first, last), label)
+        return {"period": label, "top": card["text"]}, ({"kind": "breakdown", "payload": card["payload"]}
+                                                        if card["kind"] == "breakdown" else None)
 
-    month_param = {"type": "string", "description": "YYYY-MM"}
+    when = {"period": {"type": "string", "enum": [*brain.PERIODS, "all_time"],
+                       "description": "a named period; the app works out its dates"},
+            "month": {"type": "string", "description": "YYYY-MM, for a whole named month like September"},
+            "from_date": {"type": "string", "description": "YYYY-MM-DD, only for other date ranges"},
+            "to_date": {"type": "string", "description": "YYYY-MM-DD"}}
     return [
-        Tool("list_payments", "Find individual payments, newest or largest first. Use for 'latest purchase', "
-             "'biggest purchase', payments at a merchant or in a category.",
-             {"month": {**month_param, "description": "YYYY-MM; leave out for all time"},
+        Tool("list_payments", "Individual payments, newest or largest first. Use for 'latest purchase', "
+             "'biggest purchase', 'what did I buy today', payments at a merchant or in a category. "
+             "total_of_all_found adds up every payment found, not only the ones shown. Leave out the period "
+             "for all time.",
+             {**when,
               "category": {"type": "string", "enum": [c.value for c in Category]},
               "merchant": {"type": "string", "description": "part of the merchant's name"},
               "sort": {"type": "string", "enum": ["newest", "largest"]},
               "limit": {"type": "integer", "description": "how many to return, 1-20"}},
              list_payments),
-        Tool("spending_summary", "Total spending for a month and how it splits by category.",
-             {"month": month_param}, spending_summary),
-        Tool("top_merchants", "Where the most money went in a month, by merchant.", {"month": month_param}, top_merchants),
+        Tool("spending_summary", "How much was spent in a period and how it splits by category. Use for "
+             "'how much did I spend today / this week / in September'. Defaults to this month.",
+             when, spending_summary),
+        Tool("top_merchants", "Where the most money went in a period, by merchant. Defaults to this month.",
+             when, top_merchants),
     ]
 
 
@@ -218,14 +257,15 @@ Rules:
 - You can't change anything from chat. If asked to, say the buttons on the card do that.
 - Answer in plain text, 1 to 3 short sentences, no markdown. A card with the details is shown under your answer, so mention at most 3 items."""
 
-EXTRA = {"money": " Amounts are in {home} unless another currency is shown. Payments come only from emails, so cash is missing.",
+EXTRA = {"money": " For today, this week and other periods pass `period` and let the app work out the dates. Amounts are in {home} unless another currency is shown. Payments come only from emails, so cash is missing.",
          "calendar": " Items marked as needing the user's OK are suggestions from email they haven't confirmed yet."}
 
 
 class AgentChat:
     def __init__(self, brain: Brain, backend: ChatBackend) -> None:
         self.brain, self.backend = brain, backend
-        self.tools = {"money": money_tools(brain), "calendar": calendar_tools(brain)}
+        self.turn: dict = {}  # the question being answered, for tools that quote it
+        self.tools = {"money": money_tools(brain, self.turn), "calendar": calendar_tools(brain)}
         self.last_topic, self.last_tools = "", []  # what the latest answer did, for evals and debugging
 
     def answer(self, agent: str, question: str, history: list) -> list[dict]:
@@ -234,6 +274,7 @@ class AgentChat:
         other = styled(next(a for a in AGENTS.values() if a.id != agent), self.brain.db)
         turns = [("assistant" if r["role"] == "agent" else "user", r["text"]) for r in history[-HISTORY:] if r["text"]]
 
+        self.turn["question"] = question
         topic = self.last_topic = self.topic(question, turns)
         self.last_tools = []
         if topic == "hello":

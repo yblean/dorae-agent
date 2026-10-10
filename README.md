@@ -114,7 +114,7 @@ anything (the card buttons do). If the model isn't running, the agents fall back
 Set `DORAEMON_CHAT_MODEL=off` to always use those.
 
 ```
-python -m evals.chat_eval      # 16 questions: right topic, right tool, stays in its lane
+python -m evals.chat_eval      # 18 questions: right topic, right tool, stays in its lane
 ```
 
 ## Rules
