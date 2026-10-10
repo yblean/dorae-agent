@@ -159,6 +159,15 @@
 {# Where a confirmed item went: Google Calendar, Telegram reminders, or just saved. #}
 {% macro status_text(c) %}{% set r = c.row %}{% if r.calendar_event_id %}✓ In calendar{% elif r.status == 'confirmed' and c.reminders %}🔔 Reminder{{ 's' if c.reminders|length > 1 }} set{% elif r.status == 'confirmed' %}✓ Confirmed{% else %}Dismissed{% endif %}{% endmacro %}
 
+{# One item in a list: type chip, title and when, and where it went (or that it needs your OK). #}
+{% macro agenda_row(c) %}{% set r = c.row %}
+<div class="agenda-row">
+  <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
+  <div><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div></div>
+  <span class="note nowrap" title="{{ c.reminders|join(' · ') }}">{{ status_text(c) if r.status == 'confirmed' else 'Needs your OK' }}</span>
+</div>
+{% endmacro %}
+
 {# One chat message, with its card if it has one. #}
 {% macro message(m, types) %}
 {% if m.separator %}<div class="sep">{{ m.separator }}</div>{% endif %}
@@ -225,13 +234,25 @@
 
   {% elif m.kind == 'agenda' %}
   <div class="card">
-    {% for c in m.cards %}{% set r = c.row %}
-    <div class="agenda-row">
-      <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
-      <div><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div></div>
-      <span class="note nowrap" title="{{ c.reminders|join(' · ') }}">{{ status_text(c) if r.status == 'confirmed' else 'Needs your OK' }}</span>
+    {% for c in m.cards %}{{ agenda_row(c) }}{% endfor %}
+  </div>
+
+  {% elif m.kind == 'briefing' and m.payload %}
+  <div class="card briefing">
+    {% for d in m.days %}
+    <div class="brief-head">{{ d.label }}</div>
+    {% for e in d.events %}
+    <div class="brief-ev{{ ' ev-waiting' if e.waiting }}" style="--c: {{ e.color }}">
+      <span class="brief-time">{{ e.when }}</span>
+      <span class="brief-what">{% if e.link %}<a href="{{ e.link }}" target="_blank" rel="noopener noreferrer">{{ e.title }}</a>{% else %}{{ e.title }}{% endif %}
+        <span class="note">{{ e.calendar }}{% if e.location %} · {{ e.location }}{% endif %}{% if e.waiting %} · needs your OK{% endif %}</span></span>
     </div>
+    {% else %}<div class="note brief-empty">Nothing on.</div>{% endfor %}
     {% endfor %}
+    {% if m.bills %}<div class="brief-head">Bills due this week</div>{% for c in m.bills %}{{ agenda_row(c) }}{% endfor %}{% endif %}
+    {% if m.trips %}<div class="brief-head">Trips coming up</div>{% for c in m.trips %}{{ agenda_row(c) }}{% endfor %}{% endif %}
+    {% if m.payload.reminders %}<div class="brief-head">Telegram reminders today</div>
+    {% for r in m.reminders %}<div class="brief-ev" style="--c: #075985"><span class="brief-time">{{ r.when }}</span><span class="brief-what">🔔 {{ r.title }}</span></div>{% endfor %}{% endif %}
   </div>
 
   {% elif m.kind == 'week' and m.payload %}

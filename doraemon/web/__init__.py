@@ -24,7 +24,7 @@ from fastapi.templating import Jinja2Templates
 import re
 
 from doraemon import budgets as bud
-from doraemon.agents import AGENTS, COLORS, Brain, shades, styled
+from doraemon.agents import AGENTS, COLORS, Brain, shades, short_clock as clock, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
 from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, connect_schedule, event_body
@@ -159,12 +159,6 @@ def asset_version() -> str:
     return str(max(int(f.stat().st_mtime) for f in (HERE / "static").iterdir()))
 
 
-def clock(hhmm: str) -> str:
-    """'09:30' -> '9:30am', '14:00' -> '2pm'."""
-    t = time.fromisoformat(hhmm)
-    return f"{t.hour % 12 or 12}{f':{t.minute:02d}' if t.minute else ''}{'am' if t.hour < 12 else 'pm'}"
-
-
 def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                calendar: Calendar | None = None, schedule: Schedule | None = None, ingest=None,
                chat_backend=None, messenger: Messenger | None = None) -> FastAPI:
@@ -218,7 +212,9 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         stop = poll_every(job, settings.poll_minutes) if settings.poll_minutes > 0 else None
         stop_reminders = reminder_job.run_every(60)
         stop_commands = bot_commands.run()
+        stop_briefing = brain.run_briefing(60)
         yield
+        stop_briefing.set()
         stop_reminders.set()
         stop_commands.set()
         if stop:
@@ -313,10 +309,22 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["chart"] = charts.columns(payload)
         elif row["kind"] == "budgets" and payload:
             view["budget_options"] = BUDGET_OPTIONS
+        elif row["kind"] == "briefing" and payload:
+            view["days"] = [{**d, "events": [event_line(e, d["date"]) for e in d["events"]]} for d in payload["days"]]
+            view["bills"] = [card(r) for r in (db.get("item", i) for i in payload["bills"]) if r]
+            view["trips"] = [card(r) for r in (db.get("item", i) for i in payload["trips"]) if r]
+            view["reminders"] = [{**r, "when": clock(r["time"])} for r in payload["reminders"]]
         elif row["kind"] == "week" and payload:
             view["days"] = week_days(payload)
             view["calendars"] = {e["calendar"]: e["color"] for e in payload["events"]}
         return view
+
+    def event_line(e: dict, iso: str) -> dict:
+        """One event on one day of the briefing: its time there ('9am–10am' or 'All day') and the rest of it."""
+        timed = bool(e["start"]) and iso == e["first"]
+        when = (clock(e["start"]) + (f"–{clock(e['end'])}" if e["end"] and e["end"] != e["start"] else "")
+                if timed else "All day")
+        return {**e, "when": when}
 
     def week_days(payload: dict) -> list[dict]:
         """Seven day columns; an event spanning days shows on each, with its time only on the first."""
@@ -528,6 +536,8 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return {"kind": "calendar", "waiting": len(upcoming), "passed": len(past), "week": week,
                 "calendar_connected": get_calendar() is not None, "checking": job.running,
                 "telegram": get_messenger() is not None,
+                "briefing_when": f"Every day, {clock(brain.briefing_time().strftime('%H:%M'))}"
+                                 if brain.briefing_time() else "",
                 "check_when": every + (f" · last {local_time(checked)}" if checked else "")}
 
     @app.post("/chat/{agent_id}/ask")

@@ -79,13 +79,13 @@
 
   <div class="routines">
     <div class="routines-head">Routines</div>
-    {% for name, when, status in a.routines %}{% set live = status in ('On', 'Run now') or (status == 'Telegram' and panel.telegram) or (status == 'Budgets' and panel.has_budgets) %}
+    {% for name, when, status in a.routines %}{% set live = status in ('On', 'Run now') or (status == 'Telegram' and panel.telegram) or (status == 'Budgets' and panel.has_budgets) or (status == 'Briefing' and panel.briefing_when) %}
     <div class="routine">
       <span class="routine-icon {{ 'on' if live else 'paused' }}" aria-hidden="true">
         {% if live %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>
         {% else %}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>{% endif %}
       </span>
-      <span class="routine-text"><span class="routine-name">{{ name }}</span><span class="routine-when">{{ (panel.check_when or when) if status == 'Run now' else (when if live else when ~ (' · not connected' if status == 'Telegram' else ' · set a budget first' if status == 'Budgets' else ' · coming soon')) }}</span></span>
+      <span class="routine-text"><span class="routine-name">{{ name }}</span><span class="routine-when">{{ (panel.check_when or when) if status == 'Run now' else panel.briefing_when if status == 'Briefing' and live else (when if live else when ~ (' · not connected' if status == 'Telegram' else ' · set a budget first' if status == 'Budgets' else ' · turned off' if status == 'Briefing' else ' · coming soon')) }}</span></span>
       {% if status == 'Run now' %}
         <button type="button" class="btn-small" data-check-now {{ 'disabled' if panel.checking }}>{{ 'Checking…' if panel.checking else 'Run now' }}</button>
       {% endif %}

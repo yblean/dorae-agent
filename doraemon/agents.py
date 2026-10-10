@@ -11,8 +11,9 @@ are the fallback when it isn't running.
 """
 import logging
 import re
+import threading
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -53,7 +54,7 @@ CALENDAR = Agent(
     "calendar", "Dorae-2", "Calendar & reminders", "#EC4899",
     ("What needs my OK?", "Show my schedule this week", "What's due this week?", "My upcoming trips"),
     (("Check inbox", "Every 15 minutes", "Run now"),
-     ("Morning briefing", "Every day, 8:00", "Coming soon"),
+     ("Morning briefing", "Every day", "Briefing"),
      ("Telegram reminders", "Bills, deadlines, deliveries, RSVPs", "Telegram")),
 )
 AGENTS = {a.id: a for a in (MONEY, CALENDAR)}
@@ -93,12 +94,19 @@ def money(amount: Decimal, currency: str) -> str:
     return f"{currency} {amount:,.2f}"
 
 
+def short_clock(hhmm: str) -> str:
+    """'09:30' -> '9:30am', '14:00' -> '2pm'."""
+    t = time.fromisoformat(hhmm)
+    return f"{t.hour % 12 or 12}{f':{t.minute:02d}' if t.minute else ''}{'am' if t.hour < 12 else 'pm'}"
+
+
 class Brain:
     def __init__(self, db: Database, settings: Settings, fx=None,
                  schedule: Callable[[], Schedule | None] | None = None) -> None:
         self.db, self.settings, self.fx = db, settings, fx
         self.schedule = schedule  # your Google calendars, or None until reading them is approved
         self.chat = None  # doraemon.chat.AgentChat when a chat model is set
+        self.overview_lock = threading.Lock()  # the briefing timer and opening the chat can race
         self.tz = ZoneInfo(settings.timezone)
         self.home = settings.home_currency
 
@@ -549,27 +557,21 @@ class Brain:
                 and (not types or r["type"] in types)]
         return [r["id"] for r in sorted(rows, key=lambda r: r["start_at"])]
 
-    def week(self, q: str) -> dict:
-        """Your week (Monday to Sunday) from all your Google calendars, plus email items not in it yet."""
-        monday = self.today() - timedelta(days=self.today().weekday())
-        if "next week" in q:
-            monday += timedelta(days=7)
-        sunday = monday + timedelta(days=6)
+    def calendar_events(self, first: date, last: date) -> tuple[list[dict], str]:
+        """Events from all your Google calendars plus email and chat items not in Google yet, soonest first.
+        Returns (events, problem): without Google access, only the items, and the problem says why."""
+        events, problem = [], ""
         source = self.schedule() if self.schedule else None
-        if source is None:
-            return {"text": "To show your week I need to read your Google calendars (read-only). Run "
-                            "python -m doraemon.calendar_sync connect once and approve.", "kind": "text", "payload": None}
-        try:
-            events = source.events(monday, sunday)
-        except Exception as e:  # network, or the API turned off: say so instead of failing the chat
-            return {"text": f"Sorry, I couldn't read your Google Calendar ({str(e)[:160]}).", "kind": "text", "payload": None}
-
+        if source is not None:
+            try:
+                events = source.events(first, last)
+            except Exception as e:  # network, or the API turned off: say so instead of failing
+                problem = str(e)[:160]
         color = styled(CALENDAR, self.db).color
-        waiting = 0
         for r in self.db.items(("proposed", "confirmed")):
             day = self._dated(r)
-            if r["calendar_event_id"] or day is None or not monday <= day <= sunday:
-                continue  # already in Google Calendar, or not this week
+            if r["calendar_event_id"] or day is None or not first <= day <= last:
+                continue  # already in Google Calendar, or not in these days
             item = item_model(r)
             timed = not (item.all_day or item.type in ALL_DAY_TYPES)
             events.append({"title": r["title"], "first": day.isoformat(), "last": day.isoformat(),
@@ -577,8 +579,22 @@ class Brain:
                            "calendar": "Added in chat" if from_chat(r["gmail_id"]) else "From your email",
                            "color": color, "location": r["location"] or "",
                            "link": "", "waiting": r["status"] == "proposed"})
-            waiting += r["status"] == "proposed"
         events.sort(key=lambda ev: (ev["first"], ev["start"]))
+        return events, problem
+
+    def week(self, q: str) -> dict:
+        """Your week (Monday to Sunday) from all your Google calendars, plus email items not in it yet."""
+        monday = self.today() - timedelta(days=self.today().weekday())
+        if "next week" in q:
+            monday += timedelta(days=7)
+        sunday = monday + timedelta(days=6)
+        if self.schedule is None or self.schedule() is None:
+            return {"text": "To show your week I need to read your Google calendars (read-only). Run "
+                            "python -m doraemon.calendar_sync connect once and approve.", "kind": "text", "payload": None}
+        events, problem = self.calendar_events(monday, sunday)
+        if problem:
+            return {"text": f"Sorry, I couldn't read your Google Calendar ({problem}).", "kind": "text", "payload": None}
+        waiting = sum(1 for e in events if e.get("waiting"))
 
         span = f"{monday.day} {monday:%b}" if monday.month != sunday.month else str(monday.day)
         label = f"{'Next week' if 'next week' in q else 'This week'}, {span} – {sunday.day} {sunday:%b}"
@@ -588,23 +604,101 @@ class Brain:
             text += f" {waiting} from your email still need{'s' if waiting == 1 else ''} your OK (dashed)."
         return {"text": text, "kind": "week", "payload": {"first": monday.isoformat(), "label": label, "events": events}}
 
-    def calendar_overview(self) -> list[dict]:
+    BILL_DAYS, TRIP_DAYS = 7, 14  # how far ahead the briefing looks for bills and trips
+
+    def briefing(self) -> list[dict]:
+        """Dorae-2's daily briefing: today and tomorrow from all your calendars, bills due this week, trips coming
+        up, Telegram reminders going out today and what needs your OK. Fixed rules pick everything; no model."""
+        now = datetime.now(self.tz)
+        today = now.date()
+        tomorrow = today + timedelta(days=1)
+        events, problem = self.calendar_events(today, tomorrow)
+        on = lambda d: [e for e in events if e["first"] <= d.isoformat() <= e["last"]]
+        days = [{"label": "Today", "date": today.isoformat(), "events": on(today)},
+                {"label": "Tomorrow", "date": tomorrow.isoformat(), "events": on(tomorrow)}]
+        bills = self.agenda(self.BILL_DAYS, ("bill",))
+        trips = [i for i in self.agenda(self.TRIP_DAYS, ("flight", "hotel", "other_travel"))
+                 if self._dated(self.db.get("item", i)) > tomorrow]  # today's and tomorrow's are listed above
+        reminders = []
+        for r in self.db.upcoming_reminders():
+            at = datetime.fromisoformat(r["remind_at"]).astimezone(self.tz)
+            if at.date() == today and at >= now - timedelta(minutes=1):
+                reminders.append({"time": at.strftime("%H:%M"), "title": self.db.get("item", r["item_id"])["title"]})
         upcoming, past = self.pending()
-        week = self.agenda(7)
-        hour = datetime.now(self.tz).hour
-        hello = "Good morning!" if hour < 12 else "Good afternoon!" if hour < 18 else "Good evening!"
-        if upcoming:
-            text = f"{hello} {len(upcoming)} thing{'s' if len(upcoming) != 1 else ''} from your email need your OK."
-            if len(upcoming) > 5:
-                text += " Here are the soonest; ask \"What needs my OK?\" for all of them."
+
+        hello = "Good morning!" if now.hour < 12 else "Good afternoon!" if now.hour < 18 else "Good evening!"
+        parts = [f"{hello} Here's {today:%A} {today.day} {today:%B}."]
+        n_today, n_tomorrow = len(days[0]["events"]), len(days[1]["events"])
+        if n_today:
+            first = next((e for e in days[0]["events"] if e["start"]), days[0]["events"][0])
+            starts = f", starting with {first['title']} at {short_clock(first['start'])}" if first["start"] else ""
+            parts.append(f"{n_today} thing{'s' if n_today != 1 else ''} today{starts}.")
         else:
-            text = f"{hello} Nothing needs your OK right now."
-        text += f" {len(week)} thing{'s' if len(week) != 1 else ''} in the next 7 days."
+            parts.append("Nothing on today. 🌤️")
+        if n_tomorrow:
+            parts.append(f"{n_tomorrow} tomorrow.")
+        if bills:
+            rows = [self.db.get("item", i) for i in bills]
+            total = self.bill_total(rows)
+            parts.append(f"{len(bills)} bill{'s' if len(bills) != 1 else ''} due in the next {self.BILL_DAYS} days"
+                         + (f" ({total})." if total else "."))
+        if trips:
+            r = self.db.get("item", trips[0])
+            parts.append(f"Trip coming up: {r['title']} on {self._dated(r):%a} {self._dated(r).day} {self._dated(r):%b}"
+                         + (f", and {len(trips) - 1} more." if len(trips) > 1 else "."))
+        if reminders:
+            parts.append(f"{len(reminders)} Telegram reminder{'s' if len(reminders) != 1 else ''} going out today.")
+        if upcoming:
+            parts.append(f"{len(upcoming)} thing{'s' if len(upcoming) != 1 else ''} from your email need your OK.")
         if past:
-            text += f" ({len(past)} already passed: ask \"What already passed?\")"
-        msgs = [{"text": text, "kind": "items" if upcoming else "text",
-                 "payload": {"ids": upcoming[:5], "more": max(0, len(upcoming) - 5)} if upcoming else None}]
+            parts.append(f"({len(past)} already passed: ask \"What already passed?\")")
+        if problem:
+            parts.append(f"(I couldn't read your Google Calendar: {problem})")
+        msgs = [{"text": " ".join(parts), "kind": "briefing",
+                 "payload": {"days": days, "bills": bills, "trips": trips, "reminders": reminders}}]
+        if upcoming:
+            msgs.append({"text": "These need your OK, soonest first:" if len(upcoming) <= 5 else
+                         "The soonest that need your OK (ask \"What needs my OK?\" for all of them):",
+                         "kind": "items", "payload": {"ids": upcoming[:5], "more": max(0, len(upcoming) - 5)}})
         return msgs
+
+    def bill_total(self, rows) -> str:
+        """'SGD 120.50' when every bill has an amount in one currency, else ''."""
+        if not rows or any(not r["amount"] for r in rows) or len({r["currency"] for r in rows}) != 1:
+            return ""
+        return money(sum(Decimal(r["amount"]) for r in rows), rows[0]["currency"])
+
+    def briefing_time(self) -> time | None:
+        """When the briefing goes out each day, or None when it's turned off."""
+        value = self.settings.briefing_time.strip().lower()
+        if value in ("", "off"):
+            return None
+        try:
+            return time.fromisoformat(value)
+        except ValueError:
+            log.warning("DORAEMON_BRIEFING_TIME=%r isn't a time like 08:00; using 08:00", value)
+            return time(8)
+
+    def morning_tick(self, now: datetime | None = None) -> bool:
+        """Post the briefing once it's time and it hasn't gone out today. Returns whether it was posted."""
+        at = self.briefing_time()
+        now = (now or datetime.now(self.tz)).astimezone(self.tz)
+        if at is None or now.time() < at:
+            return False
+        return self.ensure_overview("calendar", scheduled=True)
+
+    def run_briefing(self, seconds: int = 60) -> threading.Event:
+        """Check every minute whether the briefing is due, while the web app runs. Set the event to stop."""
+        stop = threading.Event()
+
+        def loop() -> None:
+            while not stop.wait(seconds):
+                try:
+                    self.morning_tick()
+                except Exception:  # keep the loop alive; the next minute tries again
+                    log.exception("posting the briefing failed")
+        threading.Thread(target=loop, daemon=True, name="briefing").start()
+        return stop
 
     def reminder_reply(self, title: str, when: str, question: str) -> dict:
         """Draft the reminder you asked for as a card you can edit before pressing Create reminder."""
@@ -665,15 +759,23 @@ class Brain:
 
     # --- shared --------------------------------------------------------------
 
-    def ensure_overview(self, agent: str) -> None:
-        """Post today's overview once a day, so opening the chat shows where things stand."""
+    def ensure_overview(self, agent: str, scheduled: bool = False) -> bool:
+        """Post today's overview once a day, so opening the chat shows where things stand. Dorae-2's is the
+        briefing: before its time, opening the chat waits for it (unless the chat is empty, e.g. a new chat).
+        Returns whether one was posted."""
         key = f"overview:{agent}"
-        today = self.today().isoformat()
-        if self.db.get_setting(key) == today:
-            return
-        for msg in (self.money_overview() if agent == "money" else self.calendar_overview()):
-            self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"])
-        self.db.set_setting(key, today)
+        with self.overview_lock:
+            today = self.today().isoformat()
+            if self.db.get_setting(key) == today:
+                return False
+            at = self.briefing_time()
+            if (agent == "calendar" and not scheduled and at is not None and datetime.now(self.tz).time() < at
+                    and self.db.last_message(agent) is not None):
+                return False
+            for msg in (self.money_overview() if agent == "money" else self.briefing()):
+                self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"])
+            self.db.set_setting(key, today)
+            return True
 
     def reply(self, agent: str, question: str) -> list[int]:
         """Store your question and the agent's answer; returns the new message ids.

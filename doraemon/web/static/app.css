@@ -116,6 +116,17 @@ td select { max-width: 128px; }
 .agenda-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
 .agenda-row:last-child { border-bottom: none; }
 .agenda-row .note { display: block; }
+.briefing { display: flex; flex-direction: column; }
+.brief-head { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; }
+.brief-head:first-child { margin-top: 0; }
+.brief-ev { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 0 5px 9px;
+            border-left: 3px solid var(--c); margin: 2px 0; font-size: 13px; }
+.brief-ev.ev-waiting { border-left-style: dashed; }
+.brief-time { color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.brief-what { min-width: 0; overflow-wrap: anywhere; }
+.brief-what .note { display: block; }
+.brief-what a { color: var(--ink); }
+.brief-empty { padding: 2px 0 4px; }
 
 /* week view: seven day columns, or a list of days when the chat is narrow */
 .msg.wide { max-width: 100%; width: 100%; }

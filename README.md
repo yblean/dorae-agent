@@ -134,6 +134,16 @@ working as before.
 Send the bot **/reminders** to get a list of your upcoming reminders (each item with the times it will
 remind you). It only answers your own chat, and only while the web app is running.
 
+### Morning briefing
+
+Every day at `DORAEMON_BRIEFING_TIME` (default `08:00`, `off` to turn it off) Dorae-2 posts a briefing in
+its chat: today and tomorrow from all your Google calendars plus email and chat items not in Google yet,
+bills due in the next 7 days, trips in the next 14, Telegram reminders going out today, and what still
+needs your OK. Fixed rules pick everything and the text is a template, so no model is involved. It only
+goes out while the web app runs; if it wasn't running at that time, the briefing is posted when you
+next open Dorae-2's chat. Before the briefing time, opening the chat doesn't post an overview (except
+in an empty chat), so the day's briefing isn't used up early.
+
 ## Chat with the agents
 
 Dorae-1 (spending) and Dorae-2 (calendar) answer free-form questions like "what's my latest purchase?"
