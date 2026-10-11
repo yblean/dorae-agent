@@ -353,6 +353,44 @@ code { background: var(--hover); padding: 1px 5px; border-radius: 5px; font-size
 .budget-label { display: flex; align-items: center; gap: 7px; color: var(--ink-2); }
 .budget-field .field { text-align: right; font-variant-numeric: tabular-nums; }
 
+/* --- net worth and income --- */
+.worth-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+.worth-big { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); }
+.worth-change { font-size: 13px; font-weight: 500; }
+.worth-change.up { color: #006300; } .worth-change.down { color: #A3241F; }
+.screen-worth { display: block; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); color: inherit; }
+.screen-worth .worth-big { font-size: 18px; }
+.screen-worth .worth-change { font-size: 12px; }
+.line-chart { width: 100%; max-width: 520px; margin: 4px auto 8px; }
+.line-chart .axis { stroke: #E1E0D9; stroke-width: 1; }
+.line-chart .zero { stroke: var(--ink-2); stroke-width: 1; opacity: .35; }
+.line-chart .trace { fill: none; stroke: var(--agent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.line-chart .wash { fill: var(--agent); opacity: .1; }
+.line-chart .dot { fill: var(--agent); stroke: #FFFFFF; stroke-width: 2; }
+.line-chart .dot.partial { fill: #FFFFFF; stroke: var(--agent); }
+.line-chart .hit { fill: transparent; }
+.line-chart g:hover .hit, .line-chart g:focus-visible .hit { fill: rgba(0,0,0,.035); }
+.line-chart .tick { text-anchor: middle; font-size: 10.5px; }
+.line-chart .cap { text-anchor: middle; font-size: 10.5px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+.line-chart .cap.end { text-anchor: end; }
+.columns .pair .hit { fill: transparent; }
+.columns .pair:hover .hit, .columns .pair:focus-visible .hit { fill: rgba(0,0,0,.035); }
+.columns .pair.partial path { opacity: .55; }
+.chart-legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 2px 0 4px; }
+.chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.kind-list { margin-top: 6px; }
+.legend-name.as-is { text-transform: none; }  /* names you typed, shown as written */
+.kind-cash { background: #2A78D6; } .kind-cpf { background: #1BAF7A; } .kind-investment { background: #4A3AA7; }
+.kind-property { background: #EDA100; } .kind-other { background: #A8A7A0; } .kind-loan { background: #E34948; }
+.kept-row { display: flex; justify-content: space-between; padding-top: 4px; font-size: 13px; color: var(--ink-2); }
+.kept-row.strong { font-weight: 600; color: var(--ink); }
+.as-of { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
+.money-input { width: 120px; text-align: right; font-variant-numeric: tabular-nums; }
+.holding-row td { border-bottom: none; padding-top: 0; }
+.edit-grid label.check { flex-direction: row; align-items: center; gap: 6px; padding-top: 18px; color: var(--ink-2); }
+form.inline { display: inline; }
+.gain { color: #006300; } .loss { color: #A3241F; }
+
 /* --- narrower: the screen panel overlays from the right --- */
 @media (max-width: 1180px) {
   .shell.with-panel, .shell.panel-hidden { grid-template-columns: 280px minmax(0, 1fr); }

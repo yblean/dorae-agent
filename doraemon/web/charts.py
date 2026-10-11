@@ -86,3 +86,62 @@ def columns(payload: dict) -> dict:
         line = {"y": f"{base - float(budget / biggest) * plot:.1f}", "label": f"Budget {compact(budget)}"}
     return {"w": width, "h": height, "base": base, "cols": cols, "budget": line,
             "month_y": base + 15, "note_y": base + 27, "top": top}
+
+
+SERIES = ("#2A78D6", "#EB6834")  # two-series charts: the first two categorical colours (blue, orange)
+
+
+def line(points: list[dict], currency: str) -> dict:
+    """One value over time (net worth at each month's end) as a line with a light wash under it.
+    `points`: [{"label", "name", "total", "partial"}]; the last point carries its value as a label."""
+    width, height, top, bottom, side = 320, 150, 22, 28, 14
+    plot = height - top - bottom
+    values = [Decimal(p["total"]) for p in points]
+    lo, hi = (min(values), max(values)) if values else (Decimal(0), Decimal(1))
+    if lo == hi:
+        lo, hi = lo - abs(lo or 1) * Decimal("0.1"), hi + abs(hi or 1) * Decimal("0.1")
+    pad = (hi - lo) * Decimal("0.12")
+    lo, hi = lo - pad, hi + pad
+    step = (width - 2 * side) / max(len(points) - 1, 1)
+    x = lambda i: side + i * step if len(points) > 1 else width / 2
+    y = lambda v: top + float((hi - v) / (hi - lo)) * plot
+    dots = [{"cx": f"{x(i):.1f}", "cy": f"{y(v):.1f}", "label": p["label"], "partial": p["partial"],
+             "tip": f"{p['name']}{' so far' if p['partial'] else ''}: {money(v, currency)}",
+             "band_x": f"{x(i) - step / 2:.1f}", "band_w": f"{step:.1f}"} for i, (p, v) in enumerate(zip(points, values))]
+    path = " ".join(f"{'M' if i == 0 else 'L'}{d['cx']},{d['cy']}" for i, d in enumerate(dots))
+    base = top + plot
+    area = f"{path} L{dots[-1]['cx']},{base} L{dots[0]['cx']},{base} Z" if dots else ""
+    zero = f"{y(Decimal(0)):.1f}" if lo < 0 < hi else None
+    return {"w": width, "h": height, "path": path, "area": area, "dots": dots, "base": base, "zero": zero,
+            "end": {"x": dots[-1]["cx"], "y": f"{float(dots[-1]['cy']) - 9:.1f}", "text": compact(values[-1])} if dots else None,
+            "month_y": base + 16}
+
+
+def pairs(months: list[dict], currency: str) -> dict:
+    """Income against spending per month: two columns side by side, a 2px gap between them.
+    `months`: [{"label", "name", "income", "spent", "partial"}]."""
+    width, height, top, bottom = 320, 150, 18, 34
+    plot = height - top - bottom
+    biggest = max([Decimal(m[k]) for m in months for k in ("income", "spent")] + [Decimal(1)])
+    band = width / max(len(months), 1)
+    bar = min(18.0, band * 0.3)
+    base = top + plot
+    cols = []
+    for i, m in enumerate(months):
+        left = band * i + band / 2 - bar - 1
+        bars = []
+        for j, key in enumerate(("income", "spent")):
+            v = max(Decimal(m[key]), Decimal(0))
+            h = float(v / biggest) * plot
+            bx, by = left + j * (bar + 2), base - h
+            r = min(4.0, h, bar / 2)
+            path = (f"M{bx:.1f},{base} V{by + r:.1f} Q{bx:.1f},{by:.1f} {bx + r:.1f},{by:.1f} H{bx + bar - r:.1f} "
+                    f"Q{bx + bar:.1f},{by:.1f} {bx + bar:.1f},{by + r:.1f} V{base} Z") if h > 0 else ""
+            bars.append({"path": path, "color": SERIES[j]})
+        kept = Decimal(m["income"]) - Decimal(m["spent"])
+        cols.append({"bars": bars, "label": m["label"], "partial": m["partial"], "cx": f"{band * i + band / 2:.1f}",
+                     "band_x": f"{band * i:.1f}", "band_w": f"{band:.1f}",
+                     "tip": f"{m['name']}{' so far' if m['partial'] else ''}: income {money(Decimal(m['income']), currency)}, "
+                            f"spent {money(Decimal(m['spent']), currency)}, kept {money(kept, currency)}"})
+    return {"w": width, "h": height, "base": base, "cols": cols, "month_y": base + 15, "note_y": base + 27,
+            "colors": SERIES}

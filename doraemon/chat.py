@@ -192,6 +192,22 @@ def money_tools(brain: Brain, turn: dict) -> list[Tool]:
         return {"drafted": True, "budget": category, "amount": f"{home} {value:,.2f} a month",
                 "next_step": "The user must press Save on the card to set it."}, {"kind": card["kind"], "payload": card["payload"]}
 
+    def net_worth(**_):
+        card = brain.networth_card()
+        return brain.networth_facts(), ({"kind": card["kind"], "payload": card["payload"]} if card["payload"] else None)
+
+    def income_summary(period=None, month=None, **_):
+        """Income against spending in a month: what was kept."""
+        asked = brain._month_in(turn.get("question", "").lower()) or _month(month)
+        name = f"month:{int(asked[5:])}" if asked else (period if period in brain.PERIODS else None)
+        card = brain.income_card(name)
+        p = card["payload"]
+        facts = {"summary": card["text"]}
+        if p:
+            facts |= {"income": f"{home} {p['income']}", "spent": f"{home} {p['spent']}", "kept": f"{home} {p['kept']}",
+                      "received": [f"{label} ({kind}) {home} {amount} on {day}" for label, kind, amount, day, _ in p["rows"]]}
+        return facts, ({"kind": card["kind"], "payload": p} if p else None)
+
     when = {"period": {"type": "string", "enum": [*brain.PERIODS, "all_time"],
                        "description": "a named period; the app works out its dates"},
             "month": {"type": "string", "description": "YYYY-MM, for a whole named month like September"},
@@ -222,6 +238,13 @@ def money_tools(brain: Brain, turn: dict) -> list[Tool]:
              {"months": {"type": "integer", "description": "how many months, 2-12"},
               "category": {"type": "string", "enum": bud.CATEGORIES, "description": "only this category"}},
              spending_trend),
+        Tool("net_worth", "The user's net worth: total, change since last month's end, by kind of account (bank, CPF, "
+             "investments, property, loans) and month-end totals. Use for net worth questions and advice about it.",
+             {}, net_worth),
+        Tool("income_summary", "Income in a month against spending, and how much was kept. Use for 'how much did I earn', "
+             "'how much did I save', savings rate.",
+             {"period": {"type": "string", "enum": ["this_month", "last_month"]},
+              "month": {"type": "string", "description": "YYYY-MM"}}, income_summary),
         Tool("propose_budget", "Draft a monthly budget the user asks to set or change, for all spending ('total') "
              "or one category. It shows as a card the user saves.",
              {"category": {"type": "string", "enum": [bud.TOTAL, *bud.CATEGORIES]},
@@ -360,13 +383,13 @@ def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
 TOPIC_SCHEMA = {"type": "object", "properties": {"topic": {"type": "string",
                 "enum": ["spending", "calendar", "hello", "other"]}}, "required": ["topic"]}
 TOPIC_PROMPT = """Classify the user's LATEST message for a personal assistant app. Earlier messages are only context for short follow-ups like "and last month?".
-spending: their purchases, payments, receipts, merchants, spending categories or totals, refunds, budgets, how much they spent or paid, or asking to change, recategorize or remove a payment.
+spending: their purchases, payments, receipts, merchants, spending categories or totals, refunds, budgets, income, savings, net worth, investments, how much they spent or paid, or asking to change, recategorize or remove a payment.
 calendar: bills or payments that are due, appointments, deadlines, deliveries, RSVPs, trips, flights, hotels, their schedule, week or calendar, things waiting for their OK, asking to confirm, dismiss or edit one, or asking to add an event or reminder (even with a greeting or thanks around it).
 hello: only a greeting or thanks, or asking what the assistant can do.
 other: anything else: general knowledge, jokes, writing, coding, advice, news, other people, or asking to ignore your instructions.
 Answer with JSON."""
 
-AREA = {"money": ("spending", "payments, merchants, categories, totals, budgets and spending trends"),
+AREA = {"money": ("spending", "payments, merchants, categories, totals, budgets, spending trends, income and net worth"),
         "calendar": ("calendar", "bills due, appointments, deadlines, deliveries, trips, your schedule, "
                                  "adding events and setting reminders")}
 

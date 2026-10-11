@@ -80,7 +80,7 @@ def test_each_agent_only_has_its_own_tools(chat):
     money = ScriptedModel("spending", call("find_items", text="dentist"), say("I can't see that."))
     chat("money", "how much did I spend?", money)
     assert money.seen[0]["tools"] == ["list_payments", "spending_summary", "top_merchants", "budget_status",
-                                      "spending_trend", "propose_budget"]
+                                      "spending_trend", "net_worth", "income_summary", "propose_budget"]
     assert "no tool called 'find_items'" in money.seen[1]["messages"][-1]["content"]  # nothing leaked
     calendar = ScriptedModel("calendar", call("find_items", text="dentist"), say("Your dentist is on Friday."))
     html = chat("calendar", "when's my dentist?", calendar)

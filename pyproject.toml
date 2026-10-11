@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+webull = ["webull-openapi-python-sdk"]  # Webull SG brokerage linking (pip install -e ".[webull]")
 
 [build-system]
 requires = ["hatchling"]

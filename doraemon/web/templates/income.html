@@ -1,0 +1,60 @@
+{% extends "base.html" %}{% from "_macros.html" import pairs_chart %}{% set title = "Income" %}
+{% block content %}
+{% if chart %}
+<div class="panel-box">
+  <div class="card-head"><span>Income and spending</span><span class="note">by month, in {{ home }}</span></div>
+  {{ pairs_chart(chart) }}
+</div>
+{% endif %}
+
+<div class="tabs">
+  {% for m in months %}<a href="/income?month={{ m }}" class="tab" {{ 'aria-current=page' if m == month }}>{{ m }}</a>{% endfor %}
+</div>
+
+<div class="panel-box">
+  <div class="card-head"><span>{{ label }}</span></div>
+  <table>
+    {% for r in received %}
+    <tr><td>{{ r.label }}<div class="note">{{ categories[r.category] }}{{ ' · monthly' if r.monthly }} · {{ r.day }}</div></td>
+      <td class="num">{{ r.currency }} {{ '{:,.2f}'.format(r.amount|float) }}{% if r.currency != home and r.home is not none %}<div class="note">≈ {{ home }} {{ '{:,.2f}'.format(r.home|float) }}</div>{% endif %}</td></tr>
+    {% else %}
+    <tr><td colspan="2" class="empty">No income in {{ label }}. Add your salary below (tick “every month”).</td></tr>
+    {% endfor %}
+  </table>
+  <div class="total-row"><span>Income</span><span class="num">{{ home }} {{ '{:,.2f}'.format(got|float) }}</span></div>
+  <div class="kept-row"><span>Spent</span><span class="num">− {{ '{:,.2f}'.format(spent|float) }}</span></div>
+  <div class="kept-row strong"><span>Kept</span><span class="num">{{ '−' if kept < 0 }}{{ home }} {{ '{:,.2f}'.format(kept|float|abs) }}{% if got > 0 and kept >= 0 %} <span class="note">({{ (kept / got * 100)|int }}%)</span>{% endif %}</span></div>
+</div>
+
+<form class="panel-box" method="post" action="/income">
+  <div class="card-head"><span>Add income</span></div>
+  <div class="edit-grid">
+    <label>What <input class="field" name="label" maxlength="60" placeholder="e.g. Salary"></label>
+    <label>Kind
+      <select class="field" name="category">{% for k, l in categories.items() %}<option value="{{ k }}">{{ l }}</option>{% endfor %}</select>
+    </label>
+    <label>Amount <input class="field" name="amount" inputmode="decimal" placeholder="0.00" required></label>
+    <label>Currency <input class="field" name="currency" maxlength="3" value="{{ home }}"></label>
+    <label>Date <input class="field" type="date" name="day" value="{{ today }}"></label>
+    <label class="check"><input type="checkbox" name="monthly" value="1"> Every month (salary)</label>
+  </div>
+  <div class="row"><button class="btn btn-primary btn3d">Add</button></div>
+</form>
+
+{% if entries %}
+<div class="panel-box">
+  <div class="card-head"><span>Everything you've added</span></div>
+  <table>
+    {% for e in entries %}
+    <tr><td>{{ e.label }}<div class="note">{{ categories[e.category] }} ·
+        {% if e.monthly %}every month from {{ e.received_on }}{% if e.ended_on %}, stopped {{ e.ended_on }}{% endif %}{% else %}{{ e.received_on }}{% endif %}</div></td>
+      <td class="num">{{ e.currency }} {{ '{:,.2f}'.format(e.amount|float) }}</td>
+      <td class="num">
+        {% if e.monthly and not e.ended_on %}<form method="post" action="/income/{{ e.id }}/stop" class="inline"><button class="btn-link">Stop</button></form>{% endif %}
+        <form method="post" action="/income/{{ e.id }}/delete" class="inline"><button class="btn-link">Delete</button></form>
+      </td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

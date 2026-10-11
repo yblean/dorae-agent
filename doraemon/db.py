@@ -75,6 +75,47 @@ CREATE TABLE IF NOT EXISTS reminders (
     status TEXT NOT NULL DEFAULT 'pending',   -- pending / sent / missed / cancelled
     sent_at TEXT
 );
+CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,            -- cash / cpf / investment / property / other / loan (a loan counts against you)
+    currency TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',   -- manual, or the brokerage that syncs it: webull / ibkr
+    external_id TEXT,              -- the brokerage's account id
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS balances (
+    account_id INTEGER NOT NULL,
+    as_of TEXT NOT NULL,           -- the day this was the balance (YYYY-MM-DD); one per account per day
+    value TEXT NOT NULL,           -- in the account's currency; what you owe for a loan
+    source TEXT NOT NULL,          -- manual / webull / ibkr
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, as_of)
+);
+CREATE TABLE IF NOT EXISTS holdings (
+    account_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT,
+    quantity TEXT NOT NULL,
+    price TEXT,
+    market_value TEXT NOT NULL,
+    cost TEXT,                     -- total cost basis, when the brokerage gives it
+    currency TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    PRIMARY KEY (account_id, symbol)
+);
+CREATE TABLE IF NOT EXISTS income (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,           -- e.g. 'Salary', 'Dividends from SPY'
+    category TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    received_on TEXT NOT NULL,     -- YYYY-MM-DD; for a monthly one, the first time and its day of the month
+    monthly INTEGER NOT NULL DEFAULT 0,
+    ended_on TEXT,                 -- a monthly one stops after this day
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS budgets (
     category TEXT PRIMARY KEY,     -- 'total' for all spending, or a category like 'dining'
     amount TEXT NOT NULL,          -- per calendar month, in the home currency

@@ -19,12 +19,15 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from doraemon import budgets as bud
+from doraemon import income
+from doraemon.income import CATEGORIES
 from doraemon.assistant import last_full_month, month_name, spending as spending_text
 from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
 from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
 from doraemon.ledger import build_ledger, spending_totals
+from doraemon.networth import KINDS, NetWorth, shift_month
 from doraemon.reminders import draft_reminder, short_time, split_request
 from doraemon.router import route
 from doraemon.rules import name_key
@@ -118,6 +121,7 @@ class Brain:
         self.last_route = ""  # how the latest question was answered: a router intent, "model", ...
         self.tz = ZoneInfo(settings.timezone)
         self.home = settings.home_currency
+        self.nw = NetWorth(db, self.home, fx)
 
     def today(self) -> date:
         return datetime.now(self.tz).date()
@@ -505,6 +509,12 @@ class Brain:
         if asked:
             return [self.budget_card(draft=asked)]
         q = q.lower()
+        if re.search(r"net ?worth|how much am i worth|my assets", q):
+            return [self.networth_card()]
+        if re.search(r"income|earn|salary|how much did i make|did i save|savings rate", q):
+            return [self.income_card("last_month" if "last month" in q else None)]
+        if re.search(r"investment|holding|portfolio|stocks|positions", q):
+            return [self.holdings_card()]
         if re.search(r"budget|overspen|spending limit|\bcap\b|stay within|save money|cut back|spend less", q):
             return [self.budget_card()]
         if re.search(r"trend|going up|going down|over time|by month|per month|monthly|month to month|"
@@ -780,6 +790,85 @@ class Brain:
         return [{"text": "I look after your calendar. Try: \"What needs my OK?\", \"Show my schedule this week\", "
                          "\"My upcoming trips\" or \"What's on tomorrow?\"", "kind": "text", "payload": None}]
 
+    # --- net worth and income ----------------------------------------------------------------------
+
+    def networth_card(self) -> dict:
+        """Net worth now, its change since last month's end, by kind of account, and the monthly trend."""
+        nw, home = self.nw, self.home
+        ch = nw.change(self.today())
+        now = ch["now"]
+        if not now.counted:
+            return {"text": "You haven't added any accounts yet. Add your bank accounts, CPF, investments and loans "
+                            "on the Net worth page, and I'll track how the total changes each month.",
+                    "kind": "text", "payload": None}
+        months = nw.months(12, self.today())
+        stale = [a["row"]["name"] for a in now.accounts if a["as_of"] and a["row"]["source"] == "manual"
+                 and (self.today() - date.fromisoformat(a["as_of"])).days > 40]
+        payload = {"currency": home, "total": str(now.total), "assets": str(now.assets), "liabilities": str(now.liabilities),
+                   "change": str(ch["change"]) if ch["had_before"] else None, "pct": str(ch["pct"]) if ch["pct"] is not None else None,
+                   "by_kind": [[k, KINDS[k], str(v)] for k, v in sorted(now.by_kind.items(), key=lambda kv: -kv[1])],
+                   "months": [{"month": m["month"], "label": month_name(m["month"])[:3], "name": month_name(m["month"]),
+                               "total": str(m["total"]), "partial": m["partial"]} for m in months],
+                   "unconverted": now.unconverted, "stale": stale}
+        text = f"Your net worth is {money(now.total, home)}"
+        if ch["had_before"]:
+            way = "up" if ch["change"] > 0 else "down" if ch["change"] < 0 else "unchanged"
+            text += (f", {way} {money(abs(ch['change']), home)}" + (f" ({ch['pct']:+}%)" if ch["pct"] is not None else "")
+                     + f" since the end of {month_name(shift_month(self.this_month(), -1))}." if way != "unchanged"
+                     else f", the same as at the end of {month_name(shift_month(self.this_month(), -1))}.")
+        else:
+            text += ". Next month I can show how it changed."
+        if stale:
+            text += f" Not updated in over a month: {', '.join(stale[:3])}."
+        if now.unconverted:
+            text += f" Left out (no exchange rate yet): {', '.join(now.unconverted)}."
+        return {"text": text, "kind": "networth", "payload": payload}
+
+    def income_card(self, period: str | None = None) -> dict:
+        """Income in a month against spending: what you kept."""
+        first, last, label = self.span(period)
+        month = (first or self.today()).strftime("%Y-%m")
+        received = income.in_month(self.db, month, self.home, self.fx, self.today())
+        got = income.total(received)
+        spent = spending_totals(self.ledger(month), self.home, self.fx).total
+        kept = got - spent
+        if not received:
+            return {"text": f"No income recorded {label_in(label)}. Add your salary (it can repeat monthly) on the "
+                            "Income page.", "kind": "text", "payload": None}
+        rate = int(kept / got * 100) if got > 0 else None
+        text = (f"You received {money(got, self.home)} {label_in(label)} and spent {money(spent, self.home)}, so you "
+                + (f"kept {money(kept, self.home)}" if kept >= 0 else f"spent {money(-kept, self.home)} more than came in")
+                + (f" ({rate}% of your income)." if rate is not None and kept >= 0 else "."))
+        return {"text": text, "kind": "income", "payload": {
+            "month": month, "label": month_name(month), "currency": self.home, "income": str(got), "spent": str(spent),
+            "kept": str(kept), "rows": [[r.label, CATEGORIES[r.category], str(r.home if r.home is not None else r.amount),
+                                         r.day.isoformat(), r.monthly] for r in received]}}
+
+    def holdings_card(self) -> dict:
+        rows = self.nw.holdings()
+        if not rows:
+            return {"text": "No investments synced yet. Connect Webull (see the Net worth page) and I'll list what "
+                            "you hold.", "kind": "text", "payload": None}
+        total = sum((Decimal(r["market_value"]) for r in rows), Decimal(0))
+        top = rows[0]
+        return {"text": f"You hold {len(rows)} position{'s' if len(rows) != 1 else ''}; the biggest is {top['symbol']} "
+                        f"({top['currency']} {Decimal(top['market_value']):,.2f}).",
+                "kind": "holdings", "payload": {"ids": [[r["account_id"], r["symbol"]] for r in rows[:20]],
+                                                "total": str(total), "currency": top["currency"]}}
+
+    def networth_facts(self) -> dict:
+        """For the model: the same numbers, worked out here."""
+        card = self.networth_card()
+        p = card["payload"]
+        if p is None:
+            return {"no_accounts": card["text"]}
+        facts = {"summary": card["text"], "net_worth": f"{self.home} {Decimal(p['total']):,.2f}",
+                 "by_kind": {label: f"{self.home} {Decimal(v):,.2f}" for _, label, v in p["by_kind"]},
+                 "month_ends": {m["name"]: f"{self.home} {Decimal(m['total']):,.2f}" for m in p["months"]}}
+        if p["change"] is not None:
+            facts["change_since_last_month_end"] = f"{self.home} {Decimal(p['change']):+,.2f}" + (f" ({p['pct']}%)" if p["pct"] else "")
+        return facts
+
     # --- instant answers (doraemon.router): everyday questions, straight from your data -----------
 
     def span(self, period: str | None, default: str | None = "this_month") -> tuple[date | None, date | None, str]:
@@ -843,6 +932,12 @@ class Brain:
             return self.top_merchants_of(self.ledger_between(first, last), label)
         if route.intent == "budget":
             return self.budget_card()
+        if route.intent == "networth":
+            return self.networth_card()
+        if route.intent == "income":
+            return self.income_card(s.get("period"))
+        if route.intent == "holdings":
+            return self.holdings_card()
         if route.intent == "trend":
             return self.trend(category=s.get("category"))
         if route.intent == "week":

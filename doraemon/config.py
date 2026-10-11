@@ -51,5 +51,9 @@ class Settings:
     # Everyday questions ("how much did I spend this week", "my reminders") answered from the data without
     # the model: instant instead of 10-20s. "off" sends every question to the model.
     fast_answers: bool = os.getenv("DORAEMON_FAST_ANSWERS", "on").lower() != "off"
+    # Webull SG OpenAPI keys (read-only use: account value and positions for net worth). Apply in Webull first.
+    webull_app_key: str = os.getenv("DORAEMON_WEBULL_APP_KEY", "")
+    webull_app_secret: str = os.getenv("DORAEMON_WEBULL_APP_SECRET", "")
+    webull_endpoint: str = os.getenv("DORAEMON_WEBULL_ENDPOINT", "api.webull.com.sg")
     # Reasoning before answering: slower, sometimes more accurate. Off for the per-email pipeline.
     think: bool = os.getenv("DORAEMON_THINK", "false").lower() == "true"

@@ -207,6 +207,42 @@
     {% if p.unbudgeted and not p.draft %}<div class="note">No budget for {% for c, a in p.unbudgeted %}{{ c }} ({{ p.currency }} {{ '{:,.2f}'.format(a|float) }}){{ ', ' if not loop.last }}{% endfor %} this month.</div>{% endif %}
   </div>
 
+  {% elif m.kind == 'networth' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    {{ worth_head(p.total, p.change, p.pct, p.currency) }}
+    {% if m.chart %}{{ line_chart(m.chart) }}{% endif %}
+    {% for kind, label, value in p.by_kind %}
+    <div class="legend-row"><span class="swatch-dot kind-{{ kind }}"></span><span class="legend-name as-is">{{ label }}</span>
+      <span class="num">{{ '−' if kind == 'loan' }}{{ '{:,.2f}'.format(value|float) }}</span></div>
+    {% endfor %}
+    <div class="note"><a href="/networth">Net worth page</a>{% if p.stale %} · not updated lately: {{ p.stale|join(', ') }}{% endif %}</div>
+  </div>
+
+  {% elif m.kind == 'income' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ p.label }}</span><a class="note" href="/income">Income page</a></div>
+    {% for label, kind, amount, day, monthly in p.rows %}
+    <div class="legend-row"><span class="swatch-dot" style="background: #2A78D6"></span>
+      <span class="legend-name as-is">{{ label }}<span class="note">{{ kind }}{{ ' · monthly' if monthly }} · {{ day }}</span></span>
+      <span class="num">{{ '{:,.2f}'.format(amount|float) }}</span></div>
+    {% endfor %}
+    <div class="total-row"><span>Income</span><span class="num">{{ p.currency }} {{ '{:,.2f}'.format(p.income|float) }}</span></div>
+    <div class="kept-row"><span>Spent</span><span class="num">− {{ '{:,.2f}'.format(p.spent|float) }}</span></div>
+    <div class="kept-row strong"><span>Kept</span><span class="num">{{ '−' if p.kept|float < 0 }}{{ p.currency }} {{ '{:,.2f}'.format(p.kept|float|abs) }}</span></div>
+  </div>
+
+  {% elif m.kind == 'holdings' and m.payload %}
+  <div class="card">
+    <table class="payments">
+      <tr><th>Holding</th><th class="num">Qty</th><th class="num">Value</th></tr>
+      {% for h in m.holdings %}
+      <tr><td><strong>{{ h.symbol }}</strong>{% if h.name %}<div class="note">{{ h.name }}</div>{% endif %}</td>
+        <td class="num">{{ '{:,.4g}'.format(h.quantity|float) }}</td>
+        <td class="num">{{ h.currency }} {{ '{:,.2f}'.format(h.market_value|float) }}{% if h.gain is not none %}<div class="note {{ 'gain' if h.gain >= 0 else 'loss' }}">{{ '+' if h.gain >= 0 }}{{ '{:,.2f}'.format(h.gain) }}</div>{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
   {% elif m.kind == 'payments' %}
   <div class="card">
     <table class="payments">
@@ -337,5 +373,49 @@
     <div class="meter-sub note">{{ currency }} {{ '{:,.2f}'.format(b.spent|float) }} of {{ '{:,.2f}'.format(b.limit|float) }} · {{ b.used }}%{% if b.per_day %} · {{ currency }} {{ b.per_day }}/day keeps you within{% endif %}</div>
   </div>
   {% endfor %}
+</div>
+{% endmacro %}
+
+{# Net worth over time: one line, a light wash under it, the latest value at its end. #}
+{% macro line_chart(c) %}
+<svg class="viz line-chart" viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="{% for d in c.dots %}{{ d.tip }}{{ '; ' if not loop.last }}{% endfor %}">
+  <line x1="0" x2="{{ c.w }}" y1="{{ c.base }}" y2="{{ c.base }}" class="axis"/>
+  {% if c.zero %}<line x1="0" x2="{{ c.w }}" y1="{{ c.zero }}" y2="{{ c.zero }}" class="zero"/>{% endif %}
+  {% if c.dots|length > 1 %}<path d="{{ c.area }}" class="wash"/><path d="{{ c.path }}" class="trace"/>{% endif %}
+  {% for d in c.dots %}
+  <g data-tip="{{ d.tip }}" tabindex="0">
+    <rect class="hit" x="{{ d.band_x }}" y="0" width="{{ d.band_w }}" height="{{ c.h }}"/>
+    <circle cx="{{ d.cx }}" cy="{{ d.cy }}" r="{{ 4.5 if loop.last else 3.5 }}" class="dot{{ ' partial' if d.partial }}"/>
+    <text x="{{ d.cx }}" y="{{ c.month_y }}" class="tick">{{ d.label }}</text>
+  </g>
+  {% endfor %}
+  {% if c.end %}<text x="{{ c.end.x }}" y="{{ c.end.y }}" class="cap end">{{ c.end.text }}</text>{% endif %}
+</svg>
+{% endmacro %}
+
+{# Income against spending each month: the legend names both colours. #}
+{% macro pairs_chart(c) %}
+<div class="chart-legend"><span><i style="background: {{ c.colors[0] }}"></i>Income</span><span><i style="background: {{ c.colors[1] }}"></i>Spending</span></div>
+<svg class="viz columns" viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="{% for col in c.cols %}{{ col.tip }}{{ '; ' if not loop.last }}{% endfor %}">
+  <line x1="0" x2="{{ c.w }}" y1="{{ c.base }}" y2="{{ c.base }}" class="axis"/>
+  {% for col in c.cols %}
+  <g class="pair{{ ' partial' if col.partial }}" data-tip="{{ col.tip }}" tabindex="0">
+    <rect class="hit" x="{{ col.band_x }}" y="0" width="{{ col.band_w }}" height="{{ c.h }}"/>
+    {% for b in col.bars %}{% if b.path %}<path d="{{ b.path }}" style="fill: {{ b.color }}"/>{% endif %}{% endfor %}
+    <text x="{{ col.cx }}" y="{{ c.month_y }}" class="tick">{{ col.label }}</text>
+    {% if col.partial %}<text x="{{ col.cx }}" y="{{ c.note_y }}" class="tick-note">so far</text>{% endif %}
+  </g>
+  {% endfor %}
+</svg>
+{% endmacro %}
+
+{# The net worth figure with its change since last month's end. #}
+{% macro worth_head(total, change, pct, currency, label='Net worth') %}
+<div class="worth-head">
+  <span class="screen-label">{{ label }}</span>
+  <span class="worth-big">{{ currency }} {{ '{:,.2f}'.format(total|float) }}</span>
+  {% if change is not none %}{% set up = change|float >= 0 %}
+  <span class="worth-change {{ 'up' if up else 'down' }}">{{ '▲' if up else '▼' }} {{ currency }} {{ '{:,.2f}'.format(change|float|abs) }}{% if pct %} ({{ pct }}%){% endif %} <span class="note">since last month</span></span>
+  {% endif %}
 </div>
 {% endmacro %}

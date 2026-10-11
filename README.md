@@ -213,6 +213,28 @@ spending per month as columns, with this month lighter because it isn't over yet
 Budgets show the same chart. Months before your read email starts are left out of the chart and the
 averages, since they only hold a few payments from later statements.
 
+## Net worth and income (Dorae-1)
+
+**Net worth** (sidebar → Net worth): add your accounts (bank & cash, CPF, investments, property, other,
+loans). Each balance is kept with its date, so net worth on any day is every account's latest balance up
+to then, in your home currency; loans count against you. The page shows the total, the change since last
+month's end (MoM), a 12-month line and the split by kind. On the 1st, Dorae-1 asks in its chat and on
+Telegram for the monthly check-in: balances typed in the first week count for the end of the month that
+just ended. Closing an account makes it 0 from today and keeps its past.
+
+**Income** (sidebar → Income): add income yourself; tick "every month" for salary and it counts each
+month on the same day until you stop it. The page shows income against spending each month and what you
+kept. Ask Dorae-1 "what's my net worth", "how did my net worth change", "how much did I earn last month",
+"how much did I save this month" or "my investments" (instant answers).
+
+**Webull SG** updates its account by itself, every 3 hours while Doraemon runs, with your positions.
+Apply for Webull OpenAPI access (approval takes a few business days), generate an App Key and App
+Secret, put them in `.env` as `DORAEMON_WEBULL_APP_KEY` / `DORAEMON_WEBULL_APP_SECRET`, run
+`pip install -e ".[webull]"` and restart Doraemon. Only the account list, balance and positions are read;
+the keys are never logged. Webull's SDK has renamed fields between versions, so check what your account
+returns first with `python -m doraemon.brokers.webull` (prints it, saves nothing). IBKR's Flex Web
+Service can plug into `doraemon/brokers` the same way later.
+
 ## Rules
 
 Corrections are remembered as rules and applied in code, so the same mistake isn't made twice.

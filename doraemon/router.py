@@ -62,6 +62,13 @@ PATTERNS: dict[str, list[tuple[str, str]]] = {  # agent -> [(intent, pattern)], 
         ("budget", r"how am i doing (?:on|with) (?:my )?budgets?|(?:my )?budgets?(?: status)?|"
                    r"am i (?:over|within|under|on track with|on track for) (?:my )?budgets?|"
                    r"how(?:'s| is) my budget(?: doing| going| looking)?"),
+        ("networth", r"(?:what(?:'s| is) )?(?:my )?(?:total )?net ?worth(?: now| today| (?:this|last) month)?|how much am i worth|"
+                     r"how(?:'s| is| did| has) my net ?worth(?: (?:doing|going|changed?|looking))?(?: (?:this month|since last month))?|"
+                     r"(?:my )?net ?worth (?:change|trend|this month|mom|month on month)"),
+        ("income", rf"how much (?:did|have) i (?:earn|earned|make|made|receive|received|get paid)(?: in total)?(?: {_P})?|"
+                   rf"(?:what(?:'s| is| was) )?{_MY}income(?: {_P})?|how much (?:did|have) i (?:save|saved)(?: {_P})?|"
+                   rf"(?:what(?:'s| is| was) )?(?:my )?sav(?:ings|ing) rate(?: {_P})?"),
+        ("holdings", r"(?:what are |show |list )?(?:my )?(?:investments|holdings|portfolio|positions|stocks)|what do i (?:hold|own)"),
         ("trend", rf"is my (?:{_C} )?spending going (?:up|down)(?: or (?:up|down))?|{_MY}(?:monthly )?(?:{_C} )?spending trend|"
                   rf"{_MY}(?:{_C} )?spending (?:by|per|each|every) month|{_MY}monthly spending"),
     ],
@@ -98,7 +105,7 @@ def _numbered(pattern: str) -> str:
 COMPILED = {agent: [(intent, re.compile(rf"{_POLITE_START}(?:{_numbered(pattern)}){_POLITE_END}"))
                     for intent, pattern in patterns] for agent, patterns in PATTERNS.items()}
 FOLLOW_UP = re.compile(rf"(?:and|what about|how about|ok and|and for|same for)? ?{_P}")
-TAKES_PERIOD = {"total", "breakdown", "biggest", "top", "payments", "how_was"}
+TAKES_PERIOD = {"total", "breakdown", "biggest", "top", "payments", "how_was", "income"}
 
 
 @dataclass

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import mascot, message, donut, meters %}
+{% from "_macros.html" import mascot, message, donut, meters, worth_head %}
 {% block main %}{% set a = current %}
 <section class="main chat" style="--agent: {{ a.color }}">
   <header class="top-bar">
@@ -60,6 +60,7 @@
       <div class="screen-sub">{{ panel.count }} payments from email</div>
       {{ donut(panel.donut, panel.currency, small=True) }}
       {% if panel.meters %}<div class="screen-meters">{{ meters(panel.meters[:3], panel.currency) }}</div>{% endif %}
+      {% if panel.networth %}<a class="screen-worth" href="/networth">{{ worth_head(panel.networth.total, panel.networth.change, panel.networth.pct, panel.currency) }}</a>{% endif %}
     {% else %}
       <div class="screen-stats">
         <a href="/pocket"><strong>{{ panel.waiting }}</strong><span>need your OK</span></a>
@@ -73,7 +74,7 @@
     {% endif %}
   </div>
   <div class="screen-caption">
-    {% if panel.kind == 'money' %}<a href="/spending">All payments</a> · <a href="/budgets">{{ 'Budgets' if panel.has_budgets else 'Set a budget' }}</a>
+    {% if panel.kind == 'money' %}<a href="/spending">All payments</a> · <a href="/budgets">{{ 'Budgets' if panel.has_budgets else 'Set a budget' }}</a> · <a href="/networth">Net worth</a>
     {% else %}<a href="/upcoming">{{ a.name }}'s screen · {{ 'syncing to Google Calendar' if panel.calendar_connected else 'calendar not connected' }}</a>{% endif %}
   </div>
 

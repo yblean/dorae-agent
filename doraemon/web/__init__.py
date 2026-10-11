@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 import re
 
 from doraemon import budgets as bud
+from doraemon import income
 from doraemon.agents import AGENTS, COLORS, Brain, shades, short_clock as clock, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
@@ -34,6 +35,7 @@ from doraemon.fx import FxRates
 from doraemon.jobs import CheckJob, Runtime  # noqa: F401 (CheckJob: used to live here)
 from doraemon.google_auth import NotConnected
 from doraemon.ledger import build_ledger, spending_totals
+from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
@@ -189,6 +191,11 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["donut"] = charts.donut(payload["rows"], payload["currency"])
         elif row["kind"] == "trend" and payload:
             view["chart"] = charts.columns(payload)
+        elif row["kind"] == "networth" and payload:
+            view["chart"] = charts.line(payload["months"], payload["currency"]) if len(payload["months"]) > 1 else None
+        elif row["kind"] == "holdings" and payload:
+            held = {(h["account_id"], h["symbol"]): h for h in brain.nw.holdings()}
+            view["holdings"] = [holding_view(held[(a, s)]) for a, s in payload["ids"] if (a, s) in held]
         elif row["kind"] == "budgets" and payload:
             view["budget_options"] = BUDGET_OPTIONS
         elif row["kind"] == "briefing" and payload:
@@ -200,6 +207,11 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["days"] = week_days(payload)
             view["calendars"] = {e["calendar"]: e["color"] for e in payload["events"]}
         return view
+
+    def holding_view(h) -> dict:
+        value = Decimal(h["market_value"])
+        return {"symbol": h["symbol"], "name": h["name"], "quantity": Decimal(h["quantity"]), "market_value": value,
+                "currency": h["currency"], "gain": float(value - Decimal(h["cost"])) if h["cost"] else None}
 
     def event_line(e: dict, iso: str) -> dict:
         """One event on one day of the briefing: its time there ('9am–10am' or 'All day') and the rest of it."""
@@ -410,7 +422,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             meters = brain.budget_card()["payload"]["rows"]
             return {"kind": "money", "label": b["label"], "total": Decimal(b["total"]), "count": b["count"],
                     "donut": charts.donut(b["rows"], home), "currency": home, "meters": meters,
-                    "has_budgets": bool(meters)}
+                    "has_budgets": bool(meters), "networth": panel_worth()}
         upcoming, past = brain.pending()
         week = [card(db.get("item", i)) for i in brain.agenda(7)]
         checked = db.get_setting("gmail_checked_at")
@@ -422,6 +434,12 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                                  if brain.briefing_time() else "",
                 "check_when": every + (f" · last {local_time(checked)}" if checked else ""),
                 "runner": runner_text()}
+
+    def panel_worth() -> dict | None:
+        ch = brain.nw.change(brain.today())
+        if not ch["now"].counted:
+            return None
+        return {"total": ch["now"].total, "change": ch["change"] if ch["had_before"] else None, "pct": ch["pct"]}
 
     def runner_text() -> str:
         """Which program runs the jobs, for Dorae-2's routines."""
@@ -723,6 +741,133 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         text = "Saved: " + ", ".join(changes) + ". " + (card["text"] if card["payload"]["rows"] else "")
         brain.budget_alerts(quiet=True)  # the card shows where you stand; alert only on later payments
         return answer(request, "money", back, text.strip(), mood="happy", reply_card=card)
+
+    # --- net worth and income (Dorae-1) ------------------------------------------------------
+
+    def money_value(raw: str) -> Decimal | None:
+        """'12,345.60' or '$500' -> Decimal; '' -> None. Raises ArithmeticError for anything else."""
+        raw = raw.replace(",", "").replace("$", "").strip()
+        return bud.cents(Decimal(raw)) if raw else None
+
+    @app.get("/networth", response_class=HTMLResponse)
+    def networth_page(request: Request):
+        nw, today = brain.nw, brain.today()
+        ch = nw.change(today)
+        months = brain.networth_card()["payload"] or {}
+        by_account: dict[int, list] = {}
+        for h in nw.holdings():
+            by_account.setdefault(h["account_id"], []).append(holding_view(h))
+        synced = db.get_setting("brokers:synced_at")
+        return render(request, "networth.html", ch=ch, home=home, kinds=KINDS,
+                      chart=charts.line(months["months"], home) if months.get("months") else None,
+                      check_in=check_in_day(today), late=today.day <= CHECK_IN_DAYS, holdings=by_account,
+                      webull=bool(settings.webull_app_key and settings.webull_app_secret),
+                      synced=local_time(synced) if synced else "",
+                      by_kind=months.get("by_kind", []))
+
+    @app.post("/networth/balances")
+    async def save_balances(request: Request):
+        form = await request.form()
+        try:
+            as_of = date.fromisoformat(str(form.get("as_of") or brain.today().isoformat()))
+        except ValueError:
+            return answer(request, "money", "/networth", "That date doesn't look right.")
+        saved = 0
+        for a in brain.nw.accounts():
+            raw = str(form.get(f"value:{a['id']}", ""))
+            try:
+                value = money_value(raw)
+            except ArithmeticError:
+                return answer(request, "money", "/networth", f"“{raw}” for {a['name']} doesn't look like an amount.")
+            if value is None:
+                continue
+            before = brain.nw.balance_at(a["id"], as_of)
+            if before is None or Decimal(before["value"]) != value or before["as_of"] != as_of.isoformat():
+                brain.nw.set_balance(a["id"], value, as_of)
+                saved += 1
+        if not saved:
+            return answer(request, "money", "/networth", "No balances changed.")
+        card = brain.networth_card()
+        return answer(request, "money", "/networth", f"Saved {saved} balance{'s' if saved != 1 else ''} as of "
+                      f"{as_of:%a} {as_of.day} {as_of:%b}. {card['text']}", mood="happy")
+
+    @app.post("/networth/accounts")
+    def add_account(request: Request, name: str = Form(...), kind: str = Form(...), currency: str = Form(""),
+                    balance: str = Form("")):
+        name = " ".join(name.split())
+        if not name or kind not in KINDS:
+            return answer(request, "money", "/networth", "Give the account a name and pick what kind it is.")
+        currency = (currency.strip() or home).upper()
+        if not re.fullmatch(r"[A-Z]{3}", currency):
+            return answer(request, "money", "/networth", f"“{currency}” isn't a currency code like SGD or USD.")
+        try:
+            value = money_value(balance)
+        except ArithmeticError:
+            return answer(request, "money", "/networth", f"“{balance}” doesn't look like an amount.")
+        account_id = brain.nw.add_account(name, kind, currency)
+        if value is not None:
+            brain.nw.set_balance(account_id, value, check_in_day(brain.today()))
+        return answer(request, "money", "/networth", f"Added {name} ({KINDS[kind]}).")
+
+    @app.post("/networth/accounts/{account_id}/archive")
+    def archive_account(request: Request, account_id: int):
+        row = brain.nw.account(account_id)
+        if row is None:
+            raise HTTPException(404)
+        brain.nw.archive(account_id, today=brain.today())
+        return answer(request, "money", "/networth", f"Closed {row['name']}: it counts as 0 from today, and its past "
+                                                     "balances still count for the months it was open.")
+
+    @app.post("/networth/sync")
+    def sync_now(request: Request):
+        lines = rt.sync_brokers()
+        text = ("Synced: " + "; ".join(lines) + ".") if lines else \
+               (rt.broker_problem or "No brokerage connected yet. See Connect Webull on this page.")
+        return answer(request, "money", "/networth", text)
+
+    @app.get("/income", response_class=HTMLResponse)
+    def income_page(request: Request, month: str = ""):
+        this = brain.this_month()
+        month = month if re.fullmatch(r"20\d\d-(0[1-9]|1[0-2])", month) else this
+        received = income.in_month(db, month, home, fx, brain.today())
+        series = []
+        for m in (shift_month(this, -i) for i in range(5, -1, -1)):
+            got = income.total(income.in_month(db, m, home, fx, brain.today()))
+            spent = brain.month_total(m)
+            if got or spent:
+                series.append({"label": month_name(m)[:3], "name": month_name(m), "income": str(got),
+                               "spent": str(spent), "partial": m == this})
+        got, spent = income.total(received), brain.month_total(month)
+        return render(request, "income.html", month=month, label=month_name(month), received=received, home=home,
+                      got=got, spent=spent, kept=got - spent, entries=income.entries(db), categories=income.CATEGORIES,
+                      chart=charts.pairs(series, home) if series else None, today=brain.today().isoformat(),
+                      months=[shift_month(this, -i) for i in range(6)])
+
+    @app.post("/income")
+    def add_income(request: Request, label: str = Form(""), category: str = Form("salary"), amount: str = Form(...),
+                   currency: str = Form(""), day: str = Form(""), monthly: str = Form("")):
+        try:
+            value = money_value(amount)
+            when = date.fromisoformat(day) if day else brain.today()
+        except (ArithmeticError, ValueError):
+            return answer(request, "money", "/income", "That amount or date doesn't look right.")
+        currency = (currency.strip() or home).upper()
+        if value is None or value <= 0 or category not in income.CATEGORIES or not re.fullmatch(r"[A-Z]{3}", currency):
+            return answer(request, "money", "/income", "Give an amount above zero, a category and a currency like SGD.")
+        income.add(db, label, category, value, currency, when, monthly=bool(monthly))
+        name = label.strip() or income.CATEGORIES[category]
+        return answer(request, "money", "/income", f"Added {name}: {currency} {value:,.2f}"
+                      + (f" every month from {when:%d %b}." if monthly else f" on {when:%d %b}."), mood="happy")
+
+    @app.post("/income/{entry_id}/stop")
+    def stop_income(request: Request, entry_id: int):
+        income.stop(db, entry_id, brain.today())
+        return answer(request, "money", "/income", "Stopped it: it won't count from next month.")
+
+    @app.post("/income/{entry_id}/delete")
+    def delete_income(request: Request, entry_id: int):
+        income.delete(db, entry_id)
+        return answer(request, "money", "/income", "Deleted. Past months no longer count it either.")
 
     @app.get("/history", response_class=HTMLResponse)
     def history(request: Request):

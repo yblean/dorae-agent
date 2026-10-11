@@ -1,5 +1,6 @@
 """Everything Doraemon does on its own: check Gmail, send Telegram reminders, answer the bot,
-post the morning briefing and budget alerts.
+post the morning briefing and budget alerts, sync brokerage accounts and ask for the monthly
+net worth check-in.
 
 Both the background service (python -m doraemon.service) and the web app can run these jobs,
 but only one at a time: whichever holds data/jobs.lock. The service comes first: a web app
@@ -11,10 +12,13 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
-from doraemon.agents import Brain
+from doraemon.agents import Brain, money
+from doraemon.assistant import month_name
+from doraemon.brokers import Broker, BrokerError, connected, sync
 from doraemon.calendar_sync import Schedule, connect_schedule
 from doraemon.config import Settings
 from doraemon.db import Database
@@ -29,6 +33,7 @@ OWNER_KEY = "jobs:owner"          # which program runs the jobs, and when it las
 SERVICE_KEY = "jobs:service"      # when the background service last said it's there (it gets the jobs first)
 HEARTBEAT = 30                    # seconds between looking for the lock / saying "still here"
 FRESH = timedelta(minutes=3)      # an owner not heard from for this long has stopped
+BROKER_HOURS = 3                  # how often brokerage accounts are synced
 
 
 class FileLock:
@@ -165,7 +170,7 @@ class Runtime:
     """The database, Dorae-1 and Dorae-2's brain, and the jobs, set up once for a web app or the service."""
 
     def __init__(self, settings: Settings, fx: FxRates | None = None, schedule: Schedule | None = None,
-                 ingest=None, messenger: Messenger | None = None) -> None:
+                 ingest=None, messenger: Messenger | None = None, brokers: list[Broker] | None = None) -> None:
         self.settings = settings
         # Pages only read cached rates, so they never wait on the network; ingest fetches them.
         self.fx = fx or (FxRates(settings.db_path, fetch=None) if settings.convert_currencies else None)
@@ -183,6 +188,8 @@ class Runtime:
                     ("remindars", "list")),
             Command("help", "What I can do", lambda: self.commands.help_text(), ("start",)),
         ], on_button=self.button)
+        self.brokers = brokers  # None: the ones set up in .env (doraemon.brokers.connected)
+        self.broker_problem = ""
         self.lock = FileLock(Path(settings.db_path).parent / "jobs.lock")
         self.stops: list[threading.Event] = []
         self.name = ""
@@ -240,6 +247,52 @@ class Runtime:
                                                              f"({str(e)[:120]}).")
         return posted
 
+    def sync_brokers(self) -> list[str]:
+        """Update brokerage accounts in your net worth. Problems are said once in Dorae-1's chat."""
+        brokers = self.brokers if self.brokers is not None else connected(self.settings)
+        if not brokers:
+            return []
+        online = FxRates(self.settings.db_path) if self.settings.convert_currencies else None  # caches today's rates
+        lines = []
+        for broker in brokers:
+            try:
+                lines += sync(self.brain.nw, broker, fx=online)
+            except BrokerError as e:
+                text = f"I couldn't update your {broker.label} account: {e}."
+                if text != self.broker_problem:
+                    self.broker_problem = text
+                    self.db.add_message("money", "agent", text)
+                continue
+            self.broker_problem = ""
+        self.db.set_setting("brokers:synced_at", datetime.now(timezone.utc).isoformat())
+        return lines
+
+    def check_in_tick(self, now: datetime | None = None) -> bool:
+        """On the 1st (from the briefing time), ask once for this month's balances: in Dorae-1's chat and on
+        Telegram. Returns whether it asked."""
+        now = (now or datetime.now(self.brain.tz)).astimezone(self.brain.tz)
+        at = self.brain.briefing_time() or dtime(9)
+        month = now.strftime("%Y-%m")
+        if now.day != 1 or now.time() < at or self.db.get_setting(f"checkin:{month}"):
+            return False
+        last = month_name((now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m"))
+        card = self.brain.networth_card()
+        text = (f"📊 It's the 1st: time for your monthly check-in. Update your bank, CPF and loan balances on the Net "
+                f"worth page; anything you enter this week counts for the end of {last}.")
+        if card["payload"]:
+            text += " " + card["text"]
+        self.db.add_message("money", "agent", text, card["kind"] if card["payload"] else "text", card["payload"])
+        self.db.set_setting(f"checkin:{month}", now.isoformat())
+        bot = self.get_messenger()
+        if bot is not None:
+            try:
+                total = card["payload"]["total"] if card["payload"] else None
+                bot.send(f"📊 Monthly check-in: update your balances in Doraemon (Net worth page) so {last}'s net worth "
+                         "is right." + (f" Net worth now: {money(Decimal(total), self.brain.home)}." if total else ""))
+            except Exception as e:  # it's in Dorae-1's chat either way
+                log.warning("check-in on Telegram: %s", e)
+        return True
+
     # --- running the jobs, in one program at a time -------------------------------------
 
     def start_jobs(self) -> None:
@@ -249,6 +302,8 @@ class Runtime:
         self.stops.append(every(60, self.reminders.tick, "reminders", first=5))
         self.stops.append(self.commands.run())
         self.stops.append(every(60, self.briefing_tick, "briefing", first=10))
+        self.stops.append(every(30 * 60, self.check_in_tick, "check-in", first=15))
+        self.stops.append(every(BROKER_HOURS * 3600, self.sync_brokers, "brokers", first=30))
 
     def stop_jobs(self) -> None:
         for stop in self.stops:

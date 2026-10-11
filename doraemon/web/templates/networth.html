@@ -1,0 +1,70 @@
+{% extends "base.html" %}{% from "_macros.html" import line_chart, worth_head %}{% set title = "Net worth" %}
+{% block content %}
+{% set now = ch.now %}
+<div class="panel-box">
+  {{ worth_head(now.total, ch.change if ch.had_before else none, ch.pct, home) }}
+  {% if chart %}{{ line_chart(chart) }}{% elif now.counted %}<p class="note">The trend starts once you have balances from two months.</p>{% endif %}
+  {% if by_kind %}
+  <div class="kind-list">
+    {% for kind, label, value in by_kind %}
+    <div class="legend-row"><span class="swatch-dot kind-{{ kind }}"></span><span class="legend-name as-is">{{ label }}</span>
+      <span class="num">{{ '−' if kind == 'loan' }}{{ home }} {{ '{:,.2f}'.format(value|float) }}</span></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if now.unconverted %}<p class="note">Not in the total (no exchange rate yet): {{ now.unconverted|join(', ') }}.</p>{% endif %}
+</div>
+
+<form class="panel-box" method="post" action="/networth/balances">
+  <div class="card-head"><span>Monthly check-in</span>
+    <label class="note as-of">Balances as of <input class="field" type="date" name="as_of" value="{{ check_in }}"></label></div>
+  {% if late %}<p class="note">It's the first week of the month, so these count for the end of last month.</p>{% endif %}
+  <table>
+    <tr><th>Account</th><th class="num">Last balance</th><th class="num">New balance</th><th></th></tr>
+    {% for a in now.accounts %}{% set r = a.row %}
+    <tr>
+      <td><strong>{{ r.name }}</strong><div class="note">{{ kinds[r.kind] }} · {{ r.currency }}{% if r.source != 'manual' %} · syncs from {{ r.source|capitalize }}{% endif %}</div></td>
+      <td class="num">{% if a.value is not none %}{{ '−' if r.kind == 'loan' }}{{ r.currency }} {{ '{:,.2f}'.format(a.value|float) }}<div class="note">{{ a.as_of }}</div>{% else %}<span class="note">none yet</span>{% endif %}</td>
+      <td class="num">{% if r.source == 'manual' %}<input class="field money-input" name="value:{{ r.id }}" inputmode="decimal" placeholder="{{ '%.2f'|format(a.value|float) if a.value is not none else '0.00' }}" aria-label="New balance for {{ r.name }}">{% else %}<span class="note">automatic</span>{% endif %}</td>
+      <td><button class="btn-link" formaction="/networth/accounts/{{ r.id }}/archive" formmethod="post" title="Closed it? It counts as 0 from today">Close</button></td>
+    </tr>
+    {% for h in holdings.get(r.id, []) %}
+    <tr class="holding-row"><td colspan="2"><span class="note">↳ {{ h.symbol }}{% if h.name %} · {{ h.name }}{% endif %} · {{ '{:,.4g}'.format(h.quantity|float) }}</span></td>
+      <td class="num note">{{ h.currency }} {{ '{:,.2f}'.format(h.market_value|float) }}</td><td></td></tr>
+    {% endfor %}
+    {% else %}
+    <tr><td colspan="4" class="empty">No accounts yet. Add your bank accounts, CPF, investments and loans below.</td></tr>
+    {% endfor %}
+  </table>
+  {% if now.accounts %}<div class="row"><button class="btn btn-primary btn3d">Save balances</button>
+    <span class="note">Leave a box empty to keep its last balance.</span></div>{% endif %}
+</form>
+
+<form class="panel-box" method="post" action="/networth/accounts">
+  <div class="card-head"><span>Add an account</span></div>
+  <div class="edit-grid">
+    <label>Name <input class="field" name="name" maxlength="60" placeholder="e.g. DBS Multiplier" required></label>
+    <label>Kind
+      <select class="field" name="kind">{% for k, label in kinds.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+    </label>
+    <label>Currency <input class="field" name="currency" maxlength="3" value="{{ home }}"></label>
+    <label>Balance now <input class="field" name="balance" inputmode="decimal" placeholder="0.00"></label>
+  </div>
+  <div class="row"><button class="btn btn-white btn3d">Add account</button>
+    <span class="note">For a loan, enter what you still owe; it counts against your net worth.</span></div>
+</form>
+
+<div class="panel-box">
+  <div class="card-head"><span>Brokerage</span>
+    {% if webull %}<form method="post" action="/networth/sync"><button class="btn-small">Sync now</button></form>{% endif %}</div>
+  {% if webull %}
+  <p class="note">Webull is connected and updates every 3 hours{% if synced %} (last {{ synced }}){% endif %}. Only your
+    account value and positions are read; nothing can trade.</p>
+  {% else %}
+  <p class="note"><strong>Connect Webull SG:</strong> apply for OpenAPI access in Webull (approval takes a few business days),
+    generate an App Key and App Secret, put them in <code>.env</code> as <code>DORAEMON_WEBULL_APP_KEY</code> and
+    <code>DORAEMON_WEBULL_APP_SECRET</code>, run <code>pip install -e ".[webull]"</code>, then restart Doraemon.
+    Your Webull account then appears here and updates by itself. Doraemon only reads your account value and positions.</p>
+  {% endif %}
+</div>
+{% endblock %}
