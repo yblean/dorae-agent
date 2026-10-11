@@ -4,10 +4,18 @@ v0 has one user (us), so these replace the `users` table for now.
 """
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT = Path(__file__).resolve().parents[1]  # where .env and data/ live
+load_dotenv(PROJECT / ".env")
+
+
+def in_project(path: str) -> str:
+    """Relative paths count from the project folder, not from wherever Doraemon was started: started from
+    another folder (say .venv/Scripts), it would otherwise make a second, empty database there."""
+    return str(path if Path(path).is_absolute() else PROJECT / path)
 
 
 @dataclass(frozen=True)
@@ -25,10 +33,10 @@ class Settings:
     model: str = os.getenv("DORAEMON_MODEL", "ollama:qwen3.5:4b")
     # The model behind the agents' chats (it calls read-only tools); "off" for fixed keyword answers
     chat_model: str = os.getenv("DORAEMON_CHAT_MODEL", os.getenv("DORAEMON_MODEL", "ollama:qwen3.5:4b"))
-    db_path: str = os.getenv("DORAEMON_DB", "data/doraemon.db")  # your rules; never committed
+    db_path: str = in_project(os.getenv("DORAEMON_DB", "data/doraemon.db"))  # your rules; never committed
     # OAuth client from Google Cloud, and the sign-in token saved after you approve access
-    google_credentials: str = os.getenv("DORAEMON_GOOGLE_CREDENTIALS", "data/google/credentials.json")
-    google_token: str = os.getenv("DORAEMON_GOOGLE_TOKEN", "data/google/token.json")
+    google_credentials: str = in_project(os.getenv("DORAEMON_GOOGLE_CREDENTIALS", "data/google/credentials.json"))
+    google_token: str = in_project(os.getenv("DORAEMON_GOOGLE_TOKEN", "data/google/token.json"))
     ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
     # While Doraemon runs (service or web app) it checks Gmail this often; 0 turns it off ("Run now" still works)
     poll_minutes: int = int(os.getenv("DORAEMON_POLL_MINUTES", "15"))

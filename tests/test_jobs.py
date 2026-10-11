@@ -182,3 +182,10 @@ def test_the_service_log_never_contains_the_bot_token(settings, tmp_path):
                 root.removeHandler(h)
     text = path.read_text(encoding="utf-8")
     assert "SECRET" not in text and "bot<token>/x" in text and "getUpdates" not in text
+
+
+def test_data_paths_dont_depend_on_the_folder_doraemon_starts_in(tmp_path, monkeypatch):
+    from doraemon.config import PROJECT, in_project
+    monkeypatch.chdir(tmp_path)  # e.g. started from .venv/Scripts
+    assert in_project("data/doraemon.db") == str(PROJECT / "data/doraemon.db")
+    assert in_project(str(tmp_path / "x.db")) == str(tmp_path / "x.db")  # absolute paths stay as they are

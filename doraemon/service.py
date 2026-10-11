@@ -25,7 +25,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from doraemon.config import Settings
-from doraemon.jobs import FileLock, Runtime
+from doraemon.jobs import OWNER_KEY, SERVICE_KEY, FileLock, Runtime
 
 PROJECT = Path(__file__).resolve().parents[1]  # where .env and data/ are
 STARTUP_NAME = "Doraemon.vbs"
@@ -144,6 +144,10 @@ def main() -> None:
         startup_file().unlink(missing_ok=True)
         print("Doraemon won't start at login any more. Stop the running one with: python -m doraemon.service stop")
     elif args.command == "start":
+        rt = Runtime(settings)
+        if rt.service_running() or (rt.owner() or {}).get("by") == "background service":
+            sys.exit("The background service is already running. To restart it: python -m doraemon.service stop, "
+                     "then start.")
         start_hidden()
         print("Started. Check with: python -m doraemon.service status")
     elif args.command == "stop":
@@ -151,6 +155,9 @@ def main() -> None:
         if not owner or owner["by"] != "background service":
             sys.exit("The background service isn't running.")
         os.kill(int(owner["pid"]), signal.SIGTERM)
+        rt = Runtime(settings)  # it can't say goodbye when killed: clear its notes so `start` works right away
+        rt.db.set_setting(SERVICE_KEY, None)
+        rt.db.set_setting(OWNER_KEY, None)
         print(f"Stopped the background service (pid {owner['pid']}).")
 
 
