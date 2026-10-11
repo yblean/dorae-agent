@@ -8,7 +8,6 @@ in the same chat. Local only. Email text shown here is untrusted, so templates
 escape everything, and form posts from other websites are rejected.
 """
 import json
-import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -27,19 +26,19 @@ from doraemon import budgets as bud
 from doraemon.agents import AGENTS, COLORS, Brain, shades, short_clock as clock, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
-from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, connect_schedule, event_body
+from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, event_body
 from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when, zone_name
 from doraemon.fx import FxRates
+from doraemon.jobs import CheckJob, Runtime  # noqa: F401 (CheckJob: used to live here)
 from doraemon.google_auth import NotConnected
 from doraemon.ledger import build_ledger, spending_totals
 from doraemon.llm import get_backend
-from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, ReminderJob, created_text,
-                                TIMED_STEPS, defaults_for, list_text, plan, short_time, steps_for, wants_reminder)
+from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
+                                TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
 from doraemon.rules import RuleStore, name_matches
 from doraemon.schema import Category, ItemType
-from doraemon.telegram import Command, CommandListener, connect_telegram
 from doraemon.web import charts
 
 HERE = Path(__file__).parent
@@ -73,87 +72,6 @@ CUSTOM_BASES = {"reminder": "Telegram reminder", "appointment": "Google Calendar
 NEW_TYPE = "__new__"
 
 
-class CheckJob:
-    """Checks Gmail in the background, one check at a time: every few minutes, or when you press Run now.
-
-    Reports back in the agents' chats. Automatic checks speak up only when there's something
-    new, and say each problem once instead of every 15 minutes.
-    """
-
-    def __init__(self, db: Database, settings: Settings, ingest=None) -> None:
-        self.db, self.settings = db, settings
-        self.ingest = ingest  # run_ingest; tests pass a fake
-        self.lock = threading.Lock()
-        self.running = False
-        self.last_problem = ""
-        self.after_payments = None  # e.g. budget alerts; called when a check brings in new payments
-
-    def start(self, auto: bool = False) -> bool:
-        with self.lock:
-            if self.running:
-                return False
-            self.running = True
-        threading.Thread(target=self.run, args=(auto,), daemon=True).start()
-        return True
-
-    def run(self, auto: bool) -> None:
-        if self.ingest is None:
-            from doraemon.ingest import run_ingest  # imports Google libraries only when needed
-            self.ingest = run_ingest
-        try:
-            # never opens a browser from here: an expired sign-in raises NotConnected instead
-            summary = self.ingest(self.settings, say=lambda _: None, interactive=False)
-        except NotConnected:
-            self.problem(auto, "I can't read your Gmail until you approve Google access again. "
-                               "Run: python -m doraemon.calendar_sync connect")
-        except FileNotFoundError:
-            self.problem(auto, "Gmail isn't connected yet. Run python -m doraemon.ingest once to sign in.")
-        except Exception as e:  # shown in the chat rather than crashing the page
-            self.problem(auto, f"Sorry, checking your inbox failed: {e}")
-        else:
-            self.report(summary, auto)
-        finally:
-            self.running = False
-
-    def report(self, summary: dict, auto: bool) -> None:
-        items, txns, n = summary["items"], len(summary["transactions"]), summary["processed"]
-        if summary.get("stopped"):
-            self.problem(auto, f"I read {n} new email(s), then stopped: {summary['stopped']} I'll try again later.")
-        elif summary["counts"].get("failed"):
-            self.problem(auto, f"{summary['counts']['failed']} email(s) couldn't be read just now. I'll try again later.")
-        else:
-            self.last_problem = ""
-        if items:
-            self.db.add_message("calendar", "agent", f"📬 {n} new email(s): {items} new thing(s) for you. "
-                                                     "Ask \"What needs my OK?\" to see them.")
-        elif not auto and not summary.get("stopped"):
-            self.db.add_message("calendar", "agent", f"Checked {n} new email(s): nothing that needs you." if n
-                                else "Checked your inbox just now. Nothing new since my last look.")
-        if txns:
-            self.db.add_message("money", "agent", f"{txns} new payment(s) came in with Dorae-2's inbox check.")
-            if self.after_payments:
-                self.after_payments()
-
-    def problem(self, auto: bool, text: str) -> None:
-        if auto and text == self.last_problem:
-            return
-        self.last_problem = text
-        self.db.add_message("calendar", "agent", text)
-
-
-def poll_every(job: CheckJob, minutes: int) -> threading.Event:
-    """Run the check soon after the app starts, then every few minutes. Set the returned event to stop."""
-    stop = threading.Event()
-
-    def loop() -> None:
-        wait = 20  # first look shortly after starting, so the app has settled
-        while not stop.wait(wait):
-            job.start(auto=True)
-            wait = minutes * 60
-    threading.Thread(target=loop, daemon=True, name="gmail-check").start()
-    return stop
-
-
 def asset_version() -> str:
     """Changes whenever app.css or app.js changes, so browsers fetch the new file instead of a cached one."""
     return str(max(int(f.stat().st_mtime) for f in (HERE / "static").iterdir()))
@@ -163,41 +81,11 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                calendar: Calendar | None = None, schedule: Schedule | None = None, ingest=None,
                chat_backend=None, messenger: Messenger | None = None) -> FastAPI:
     settings = settings or Settings()
-    # The page only reads cached rates, so it never waits on the network; ingest fetches them.
-    fx = fx or (FxRates(settings.db_path, fetch=None) if settings.convert_currencies else None)
-    db = Database(settings.db_path)
+    # The jobs (Gmail check, reminders, bot, briefing) run here unless the background service runs them
+    rt = Runtime(settings, fx=fx, schedule=schedule, ingest=ingest, messenger=messenger)
+    db, fx, brain, job, get_messenger = rt.db, rt.fx, rt.brain, rt.check, rt.get_messenger
     rules = RuleStore(settings.db_path)
-    job = CheckJob(db, settings, ingest)
     connected_calendar: list[Calendar] = [calendar] if calendar else []
-    connected_schedule: list[Schedule] = [schedule] if schedule else []
-    connected_bot: dict = {}  # chat id -> Telegram, so the bot is made once but connecting later still works
-
-    def get_messenger() -> Messenger | None:
-        """Your Telegram bot, or None until DORAEMON_TELEGRAM_TOKEN is set and `connect` has run."""
-        if messenger is not None:
-            return messenger
-        bot = connect_telegram(settings, db)
-        if bot is None:
-            return None
-        return connected_bot.setdefault(bot.chat_id, bot)
-
-    reminder_job = ReminderJob(db, settings.timezone, get_messenger)
-    # Commands you can send the bot. /remindars is a common misspelling, so it works too.
-    bot_commands = CommandListener(db, get_messenger, [
-        Command("reminders", "List your reminders", lambda: list_text(db, settings.timezone), ("remindars", "list")),
-        Command("help", "What I can do", lambda: bot_commands.help_text(), ("start",)),
-    ])
-
-    def get_schedule() -> Schedule | None:
-        """Your Google calendars (read-only), or None until you've approved reading them (never opens a browser)."""
-        if not connected_schedule:
-            try:
-                connected_schedule.append(connect_schedule(settings))
-            except (NotConnected, FileNotFoundError):
-                return None
-        return connected_schedule[0]
-
-    brain = Brain(db, settings, fx, schedule=get_schedule)
     if chat_backend is None and settings.chat_model != "off":
         try:
             chat_backend = get_backend(settings.chat_model, settings)
@@ -205,24 +93,16 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             chat_backend = None  # unknown backend: the fixed answers still work
     if chat_backend is not None:
         brain.chat = AgentChat(brain, chat_backend)
-    job.after_payments = brain.budget_alerts
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        stop = poll_every(job, settings.poll_minutes) if settings.poll_minutes > 0 else None
-        stop_reminders = reminder_job.run_every(60)
-        stop_commands = bot_commands.run()
-        stop_briefing = brain.run_briefing(60)
+        stop = rt.supervise("web app")
         yield
-        stop_briefing.set()
-        stop_reminders.set()
-        stop_commands.set()
-        if stop:
-            stop.set()
+        stop.set()
 
     app = FastAPI(title="Doraemon", lifespan=lifespan)
     app.state.db, app.state.rules, app.state.settings, app.state.job = db, rules, settings, job
-    app.state.reminders, app.state.bot_commands = reminder_job, bot_commands
+    app.state.reminders, app.state.bot_commands, app.state.runtime = rt.reminders, rt.commands, rt
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     tz = ZoneInfo(settings.timezone)
     home = settings.home_currency
@@ -538,7 +418,17 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                 "telegram": get_messenger() is not None,
                 "briefing_when": f"Every day, {clock(brain.briefing_time().strftime('%H:%M'))}"
                                  if brain.briefing_time() else "",
-                "check_when": every + (f" · last {local_time(checked)}" if checked else "")}
+                "check_when": every + (f" · last {local_time(checked)}" if checked else ""),
+                "runner": runner_text()}
+
+    def runner_text() -> str:
+        """Which program runs the jobs, for Dorae-2's routines."""
+        owner = rt.owner()
+        if owner is None:
+            return "Not running: no reminders or briefing will go out. Start python -m doraemon.service"
+        if owner["by"] == "background service":
+            return "Running in the background, even with this page closed"
+        return "Running while this web app is open. To keep them going without it: python -m doraemon.service install"
 
     @app.post("/chat/{agent_id}/ask")
     def ask(request: Request, agent_id: str, q: str = Form(...)):
@@ -700,6 +590,11 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             rule = rules.add("travel_timezone", row["departs_from"], zone, created_from=f"item #{item_id}")
             msg += f" I'll remember departures from {rule.match} are in {zone_name(zone)} time."
         return answer(request, "calendar", back, msg, refresh=item_id)
+
+    @app.post("/items/{item_id}/done")
+    def done(request: Request, item_id: int, back: str = Form("/upcoming")):
+        """Mark a reminder item done: its remaining reminders stop (same as Done on Telegram)."""
+        return answer(request, "calendar", back, mark_done(db, item_id), mood="happy")
 
     @app.post("/items/{item_id}/sync")
     def sync_item(request: Request, item_id: int):

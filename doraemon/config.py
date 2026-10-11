@@ -30,10 +30,13 @@ class Settings:
     google_credentials: str = os.getenv("DORAEMON_GOOGLE_CREDENTIALS", "data/google/credentials.json")
     google_token: str = os.getenv("DORAEMON_GOOGLE_TOKEN", "data/google/token.json")
     ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    # While the web app is open it checks Gmail this often; 0 turns it off ("Run now" still works)
+    # While Doraemon runs (service or web app) it checks Gmail this often; 0 turns it off ("Run now" still works)
     poll_minutes: int = int(os.getenv("DORAEMON_POLL_MINUTES", "15"))
-    # Dorae-2 posts a daily briefing in its chat at this time (while the web app runs); "off" to stop it
+    # Dorae-2 posts a daily briefing in its chat at this time (while Doraemon runs); "off" to stop it
     briefing_time: str = os.getenv("DORAEMON_BRIEFING_TIME", "08:00")
+    briefing_telegram: bool = os.getenv("DORAEMON_BRIEFING_TELEGRAM", "on").lower() != "off"  # also send it there
+    # Keep reminding (every few hours, in waking hours) until you press Done on Telegram; "off" for planned ones only
+    remind_until_done: bool = os.getenv("DORAEMON_REMIND_UNTIL_DONE", "on").lower() != "off"
     # Telegram bot that sends reminders (from @BotFather); `python -m doraemon.telegram connect` finds your chat
     telegram_token: str = os.getenv("DORAEMON_TELEGRAM_TOKEN", "")
     telegram_chat_id: str = os.getenv("DORAEMON_TELEGRAM_CHAT_ID", "")  # optional: skips `connect`

@@ -157,7 +157,7 @@
 {% endmacro %}
 
 {# Where a confirmed item went: Google Calendar, Telegram reminders, or just saved. #}
-{% macro status_text(c) %}{% set r = c.row %}{% if r.calendar_event_id %}✓ In calendar{% elif r.status == 'confirmed' and c.reminders %}🔔 Reminder{{ 's' if c.reminders|length > 1 }} set{% elif r.status == 'confirmed' %}✓ Confirmed{% else %}Dismissed{% endif %}{% endmacro %}
+{% macro status_text(c) %}{% set r = c.row %}{% if r.done_at %}✓ Done{% elif r.calendar_event_id %}✓ In calendar{% elif r.status == 'confirmed' and c.reminders %}🔔 Reminder{{ 's' if c.reminders|length > 1 }} set{% elif r.status == 'confirmed' %}✓ Confirmed{% else %}Dismissed{% endif %}{% endmacro %}
 
 {# One item in a list: type chip, title and when, and where it went (or that it needs your OK). #}
 {% macro agenda_row(c) %}{% set r = c.row %}

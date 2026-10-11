@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 
 from doraemon.db import Database
 from doraemon.email_parse import ParsedEmail
-from doraemon.reminders import ReminderJob, list_text, message_text, plan, send_due, split_request
+from doraemon.reminders import (ReminderJob, list_text, mark_done, message_text, plan, send_due, snooze,
+                                split_request)
 from doraemon.schema import ActionItem, Extraction
 from doraemon.telegram import Command, CommandListener, Telegram, TelegramError
 from doraemon.web import create_app
@@ -26,12 +27,13 @@ def item(type="bill", title="Electricity bill", start=datetime(2026, 10, 15, tzi
 
 class FakeBot:
     def __init__(self, fail=None):
-        self.sent, self.fail = [], fail
+        self.sent, self.buttons, self.fail = [], [], fail
 
-    def send(self, text):
+    def send(self, text, buttons=None):
         if self.fail:
             raise TelegramError(self.fail)
         self.sent.append(text)
+        self.buttons.append(buttons)
 
 
 def times(planned):
@@ -109,10 +111,70 @@ def test_after_the_app_was_closed_only_the_latest_goes_out(db):
     assert statuses(db) == ["missed", "sent", "pending"]
 
 
-def test_nothing_is_sent_once_the_day_is_over(db):
+def test_nothing_is_sent_once_the_day_is_over_without_until_done(db):
     bot = FakeBot()
-    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 16, 8, 0, tzinfo=SG))
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 16, 8, 0, tzinfo=SG), until_done=False)
     assert bot.sent == [] and statuses(db) == ["missed", "missed", "missed"]
+
+
+def test_a_late_reminder_still_goes_out_while_its_not_done(db):
+    bot = FakeBot()
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 16, 10, 0, tzinfo=SG))  # bill was due yesterday
+    assert bot.sent[0].startswith("🔁 Still not done: Electricity bill\nDue yesterday, Thu 15 Oct")
+    assert statuses(db) == ["missed", "missed", "sent", "pending"]  # + a follow-up at 1pm
+
+
+def test_after_two_days_it_stops_and_says_so(db):
+    job = ReminderJob(db, "Asia/Singapore", lambda: FakeBot())
+    assert job.tick(datetime(2026, 10, 17, 9, 30, tzinfo=SG))["sent"] == 0
+    said = [m["text"] for m in db.messages("calendar")]
+    assert said == ["Doraemon wasn't running when these were due, so I couldn't remind you in time: “Electricity bill”."]
+
+
+# --- Done, Snooze and following up until Done ------------------------------------------
+
+def test_reminders_have_done_and_snooze_buttons(db):
+    bot = FakeBot()
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 12, 9, 0, tzinfo=SG))
+    assert bot.buttons == [[[("✅ Done", "done:1"), ("⏰ Snooze 1h", "snooze:1")]]]
+
+
+def test_after_the_last_reminder_it_follows_up_in_waking_hours(db):
+    bot = FakeBot()
+    for day, hour in ((12, 9), (14, 9), (15, 9)):  # the three planned ones
+        send_due(db, bot, "Asia/Singapore", datetime(2026, 10, day, hour, 0, tzinfo=SG))
+    follow = db.reminders(1)
+    assert [(datetime.fromisoformat(r["remind_at"]).astimezone(SG).strftime("%d %H:%M"), r["label"]) for r in follow] \
+        == [("15 12:00", "still not done")]
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 15, 21, 0, tzinfo=SG))  # sent late in the evening...
+    nxt = datetime.fromisoformat(db.reminders(1)[0]["remind_at"]).astimezone(SG)
+    assert nxt.strftime("%d %H:%M") == "16 09:00"  # ...so the next one waits for the morning
+    assert bot.sent[-1].startswith("🔁 Still not done")
+
+
+def test_follow_ups_can_be_turned_off(db):
+    bot = FakeBot()
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 15, 9, 0, tzinfo=SG), until_done=False)
+    assert db.reminders(1) == []
+
+
+def test_done_stops_every_reminder(db):
+    assert mark_done(db, 1, NOW) == "✅ Done: Electricity bill"
+    assert statuses(db) == ["cancelled", "cancelled", "cancelled"]
+    assert mark_done(db, 1, NOW) == "Already done: Electricity bill"
+    bot = FakeBot()
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 15, 9, 0, tzinfo=SG))
+    assert bot.sent == []
+    db.undo(db.recent_actions(1)[0]["id"])  # Done is in Activity and can be undone
+    assert db.get("item", 1)["done_at"] is None
+
+
+def test_snooze_adds_one_more_an_hour_later(db):
+    at = datetime(2026, 10, 12, 9, 5, tzinfo=SG)
+    assert snooze(db, 1, "Asia/Singapore", at) == "⏰ Snoozed: I'll remind you again at 10:05am."
+    assert "snoozed" in [r["label"] for r in db.reminders(1)]
+    db.undo(1)  # no longer confirmed
+    assert snooze(db, 1, "Asia/Singapore", at) == "That reminder isn't active any more."
 
 
 def test_undone_items_are_cancelled_not_sent(db):
@@ -351,3 +413,32 @@ def test_anything_else_gets_the_command_list(db):
 ])
 def test_reminder_requests_split_into_title_and_when(text, expected):
     assert split_request(text) == expected
+
+
+# --- pressing the buttons on Telegram -----------------------------------------------------
+
+class ButtonBot(FakeChatBot):
+    def __init__(self, messages):
+        super().__init__(messages)
+        self.answers, self.edits = [], []
+
+    def answer_button(self, press_id, text):
+        self.answers.append((press_id, text))
+
+    def edit(self, message_id, text):
+        self.edits.append((message_id, text))
+
+
+def press(n, data, chat="42"):
+    return {"update_id": n, "callback_query": {"id": f"cb{n}", "data": data, "message": {
+        "message_id": 7, "chat": {"id": int(chat)}, "text": "🔔 Electricity bill"}}}
+
+
+def test_pressing_done_answers_and_edits_the_message(db):
+    pressed = []
+    bot = ButtonBot([press(1, "done:1"), press(2, "done:1", chat="999")])
+    listen = CommandListener(db, lambda: bot, [], on_button=lambda data: pressed.append(data) or "✅ Done: Electricity bill")
+    assert listen.poll_once() == 1  # the stranger's press is ignored
+    assert pressed == ["done:1"]
+    assert bot.answers == [("cb1", "✅ Done: Electricity bill")]
+    assert bot.edits == [(7, "🔔 Electricity bill\n\n✅ Done: Electricity bill")]

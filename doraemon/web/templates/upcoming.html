@@ -11,10 +11,12 @@
     <tr>
       <td style="width: 1%"><span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span></td>
       <td><strong>{{ r.title }}</strong><div class="note">{{ c.detail }}</div>
-        {% if c.remind and not r.calendar_event_id %}<div class="note">{{ ('🔔 ' ~ c.reminders|join(' · ')) if c.reminders else 'No reminders left' }}</div>{% endif %}</td>
+        {% if c.remind and not r.calendar_event_id and not r.done_at %}<div class="note">{{ ('🔔 ' ~ c.reminders|join(' · ')) if c.reminders else 'No reminders left' }}</div>{% endif %}</td>
       <td class="num">
         {% if r.calendar_event_id %}<span class="note">✓ In calendar</span>
+        {% elif r.done_at %}<span class="note">✓ Done</span>
         {% elif c.remind %}
+        <form method="post" action="/items/{{ r.id }}/done"><button class="btn btn-white btn3d">Mark done</button></form>
         <details class="more"><summary>{{ 'Change reminders' if c.reminders else 'Set reminders' }}</summary>{{ remind_form(c, '/upcoming', 'Save') }}</details>
         {% elif r.start_at %}
         <form method="post" action="/items/{{ r.id }}/sync"><button class="btn btn-white btn3d">Add to calendar</button></form>

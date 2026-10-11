@@ -554,7 +554,7 @@ class Brain:
         today = self.today()
         rows = [r for r in self.db.items(("proposed", "confirmed"))
                 if (d := self._dated(r)) is not None and today <= d <= today + timedelta(days=days)
-                and (not types or r["type"] in types)]
+                and (not types or r["type"] in types) and not r["done_at"]]
         return [r["id"] for r in sorted(rows, key=lambda r: r["start_at"])]
 
     def calendar_events(self, first: date, last: date) -> tuple[list[dict], str]:
@@ -570,8 +570,8 @@ class Brain:
         color = styled(CALENDAR, self.db).color
         for r in self.db.items(("proposed", "confirmed")):
             day = self._dated(r)
-            if r["calendar_event_id"] or day is None or not first <= day <= last:
-                continue  # already in Google Calendar, or not in these days
+            if r["calendar_event_id"] or r["done_at"] or day is None or not first <= day <= last:
+                continue  # already in Google Calendar, done, or not in these days
             item = item_model(r)
             timed = not (item.all_day or item.type in ALL_DAY_TYPES)
             events.append({"title": r["title"], "first": day.isoformat(), "last": day.isoformat(),
@@ -679,26 +679,40 @@ class Brain:
             log.warning("DORAEMON_BRIEFING_TIME=%r isn't a time like 08:00; using 08:00", value)
             return time(8)
 
-    def morning_tick(self, now: datetime | None = None) -> bool:
-        """Post the briefing once it's time and it hasn't gone out today. Returns whether it was posted."""
+    def morning_tick(self, now: datetime | None = None) -> list[dict]:
+        """Post the briefing once it's time and it hasn't gone out today. Returns what was posted."""
         at = self.briefing_time()
         now = (now or datetime.now(self.tz)).astimezone(self.tz)
         if at is None or now.time() < at:
-            return False
+            return []
         return self.ensure_overview("calendar", scheduled=True)
 
-    def run_briefing(self, seconds: int = 60) -> threading.Event:
-        """Check every minute whether the briefing is due, while the web app runs. Set the event to stop."""
-        stop = threading.Event()
-
-        def loop() -> None:
-            while not stop.wait(seconds):
-                try:
-                    self.morning_tick()
-                except Exception:  # keep the loop alive; the next minute tries again
-                    log.exception("posting the briefing failed")
-        threading.Thread(target=loop, daemon=True, name="briefing").start()
-        return stop
+    def briefing_telegram(self, msg: dict) -> str:
+        """The briefing as a plain-text Telegram message (titles come from email, so no formatting)."""
+        p = msg["payload"]
+        lines = ["☀️ " + msg["text"].split(". ")[0] + "."]
+        for day in p["days"]:
+            lines += ["", day["label"]]
+            for e in day["events"]:
+                timed = e["start"] and e["first"] == day["date"]
+                lines.append(f"• {short_clock(e['start']) if timed else 'All day'}  {e['title']}"
+                             + (" (needs your OK)" if e.get("waiting") else ""))
+            if not day["events"]:
+                lines.append("• Nothing on")
+        for label, ids in (("Bills due soon", p["bills"]), ("Trips coming up", p["trips"])):
+            rows = [r for r in (self.db.get("item", i) for i in ids) if r]
+            if rows:
+                lines += ["", label]
+                for r in rows:
+                    d = self._dated(r)
+                    lines.append(f"• {r['title']} · {d:%a} {d.day} {d:%b}"
+                                 + (f" · {r['currency']} {r['amount']}" if r["amount"] else ""))
+        if p["reminders"]:
+            lines += ["", "Reminders today"] + [f"• {short_clock(r['time'])}  {r['title']}" for r in p["reminders"]]
+        waiting = len(self.pending()[0])
+        if waiting:
+            lines += ["", f"{waiting} thing{'s' if waiting != 1 else ''} from your email need your OK: open Doraemon to check."]
+        return "\n".join(lines)
 
     def reminder_reply(self, title: str, when: str, question: str) -> dict:
         """Draft the reminder you asked for as a card you can edit before pressing Create reminder."""
@@ -759,23 +773,24 @@ class Brain:
 
     # --- shared --------------------------------------------------------------
 
-    def ensure_overview(self, agent: str, scheduled: bool = False) -> bool:
+    def ensure_overview(self, agent: str, scheduled: bool = False) -> list[dict]:
         """Post today's overview once a day, so opening the chat shows where things stand. Dorae-2's is the
         briefing: before its time, opening the chat waits for it (unless the chat is empty, e.g. a new chat).
-        Returns whether one was posted."""
+        Returns the messages posted (none if it had already gone out)."""
         key = f"overview:{agent}"
         with self.overview_lock:
             today = self.today().isoformat()
             if self.db.get_setting(key) == today:
-                return False
+                return []
             at = self.briefing_time()
             if (agent == "calendar" and not scheduled and at is not None and datetime.now(self.tz).time() < at
                     and self.db.last_message(agent) is not None):
-                return False
-            for msg in (self.money_overview() if agent == "money" else self.briefing()):
+                return []
+            msgs = self.money_overview() if agent == "money" else self.briefing()
+            for msg in msgs:
                 self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"])
             self.db.set_setting(key, today)
-            return True
+            return msgs
 
     def reply(self, agent: str, question: str) -> list[int]:
         """Store your question and the agent's answer; returns the new message ids.

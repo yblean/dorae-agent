@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS budgets (
 # Columns added after a table's first version: table -> {column: type}
 _ADDED_COLUMNS = {
     "processed_emails": {"subject": "TEXT", "sender": "TEXT", "sent_at": "TEXT", "notes": "TEXT"},
-    "action_items": {"calendar_event_id": "TEXT", "custom_type_id": "INTEGER"},
+    "action_items": {"calendar_event_id": "TEXT", "custom_type_id": "INTEGER", "done_at": "TEXT"},
 }
 _TABLES = {"item": "action_items", "transaction": "transactions"}
 CHAT_ID_PREFIX = "chat:"  # gmail_id of items you asked for in chat rather than found in an email
@@ -197,6 +197,12 @@ class Database:
         for r in planned:
             self.conn.execute("INSERT INTO reminders (item_id, remind_at, label) VALUES (?, ?, ?)",
                               (item_id, r["at"].astimezone(timezone.utc).isoformat(), r["label"]))
+        self.conn.commit()
+
+    def add_reminder(self, item_id: int, at: datetime, label: str) -> None:
+        """One more reminder, keeping the others (a snooze, or a follow-up until you press Done)."""
+        self.conn.execute("INSERT INTO reminders (item_id, remind_at, label) VALUES (?, ?, ?)",
+                          (item_id, at.astimezone(timezone.utc).isoformat(), label))
         self.conn.commit()
 
     def reminders(self, item_id: int, status: str = "pending") -> list[sqlite3.Row]:

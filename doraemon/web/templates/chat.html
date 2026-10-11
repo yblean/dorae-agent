@@ -79,6 +79,7 @@
 
   <div class="routines">
     <div class="routines-head">Routines</div>
+    {% if panel.runner %}<div class="routines-runner note">{{ panel.runner }}</div>{% endif %}
     {% for name, when, status in a.routines %}{% set live = status in ('On', 'Run now') or (status == 'Telegram' and panel.telegram) or (status == 'Budgets' and panel.has_budgets) or (status == 'Briefing' and panel.briefing_when) %}
     <div class="routine">
       <span class="routine-icon {{ 'on' if live else 'paused' }}" aria-hidden="true">

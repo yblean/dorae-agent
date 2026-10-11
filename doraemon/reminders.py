@@ -5,8 +5,11 @@ the time) and how many you want; later ones step down the same ladder, so "1 day
 means 1 day, 3 hours and 1 hour before. All-day items (a bill due on the 15th) count from 9am
 that day and only use whole days: the day before, then that morning.
 
-While the web app is open it sends what's due every minute. If it was closed when a reminder
-was due, it sends the latest missed one when it starts again, as long as the item hasn't passed.
+While Doraemon runs (the background service or the web app) it sends what's due every minute.
+If it was off when a reminder was due, it sends the latest missed one when it starts again.
+
+Each reminder has Done and Snooze 1h buttons. Until you press Done, the last reminder is followed
+up every few hours in waking hours, for up to two days after the item's time (DORAEMON_REMIND_UNTIL_DONE).
 """
 import logging
 import re
@@ -41,6 +44,10 @@ TIMED_STEPS = [Step("1w", "1 week before", 7 * 1440), Step("3d", "3 days before"
 ALL_DAY_STEPS = [Step("1w", "1 week before", 7 * 1440), Step("3d", "3 days before", 3 * 1440),
                  Step("1d", "the day before", 1440), Step("0", "that morning", 0)]
 DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES = "1d", 2, 4
+FOLLOW_UP, SNOOZED = "still not done", "snoozed"  # labels of reminders added after the planned ones
+FOLLOW_UP_HOURS, SNOOZE_MINUTES = 3, 60
+WAKING = (time(9), time(22))  # follow-ups only come between these times
+KEEP_ASKING = timedelta(days=2)  # follow-ups stop this long after the item's time
 VERB = {"bill": "Due", "deadline": "Due", "delivery": "Arriving", "rsvp": "Reply by", "reminder": ""}
 
 
@@ -118,7 +125,8 @@ def when_line(item: ActionItem, user_tz: str, now: datetime) -> str:
     tz = ZoneInfo(user_tz)
     due = due_at(item, user_tz).astimezone(tz)
     days = (due.date() - now.astimezone(tz).date()).days
-    day = "today" if days == 0 else "tomorrow" if days == 1 else f"in {days} days" if days > 1 else "earlier"
+    day = ("today" if days == 0 else "tomorrow" if days == 1 else f"in {days} days" if days > 1 else
+           "yesterday" if days == -1 else f"{-days} days ago")
     verb = VERB.get(item.type.value, "On")
     when = f"{verb} {day}, {due:%a} {due.day} {due:%b}" if verb else f"{day.capitalize()}, {due:%a} {due.day} {due:%b}"
     if not counts_as_all_day(item):
@@ -223,9 +231,9 @@ def list_text(db: Database, user_tz: str, now: datetime | None = None, limit: in
     return head + "\n\n" + "\n\n".join(blocks)
 
 
-def message_text(item: ActionItem, gmail_id: str, user_tz: str, now: datetime) -> str:
+def message_text(item: ActionItem, gmail_id: str, user_tz: str, now: datetime, again: bool = False) -> str:
     """The Telegram message. Plain text (no formatting), since titles come from email."""
-    lines = [f"🔔 {item.title}", when_line(item, user_tz, now)]
+    lines = [f"🔁 Still not done: {item.title}" if again else f"🔔 {item.title}", when_line(item, user_tz, now)]
     if item.amount is not None:
         lines.append(f"Amount: {item.currency} {item.amount}")
     if item.location:
@@ -238,23 +246,72 @@ def message_text(item: ActionItem, gmail_id: str, user_tz: str, now: datetime) -
 
 
 class Messenger(Protocol):
-    def send(self, text: str) -> None: ...
+    def send(self, text: str, buttons: list[list[tuple[str, str]]] | None = None) -> None: ...
 
 
-def send_due(db: Database, messenger: Messenger | None, user_tz: str, now: datetime | None = None) -> dict:
+def buttons(item_id: int) -> list[list[tuple[str, str]]]:
+    """Done and Snooze under a reminder; Telegram sends back the data part when you press one."""
+    return [[("✅ Done", f"done:{item_id}"), ("⏰ Snooze 1h", f"snooze:{item_id}")]]
+
+
+def next_follow_up(after: datetime, user_tz: str) -> datetime:
+    """A few hours later, moved into waking hours (9am to 10pm)."""
+    at = (after + timedelta(hours=FOLLOW_UP_HOURS)).astimezone(ZoneInfo(user_tz))
+    if at.time() >= WAKING[1]:
+        return datetime.combine(at.date() + timedelta(days=1), WAKING[0], at.tzinfo)
+    if at.time() < WAKING[0]:
+        return datetime.combine(at.date(), WAKING[0], at.tzinfo)
+    return at.replace(second=0, microsecond=0)
+
+
+def keep_asking_until(item: ActionItem, user_tz: str) -> datetime | None:
+    due = due_at(item, user_tz)
+    return due + KEEP_ASKING if due else None
+
+
+def mark_done(db: Database, item_id: int, now: datetime | None = None) -> str:
+    """You pressed Done: no more reminders for it. Returns what to tell you."""
+    row = db.get("item", item_id)
+    if row is None or row["status"] != "confirmed":
+        return "That reminder isn't active any more."
+    if row["done_at"]:
+        return f"Already done: {row['title']}"
+    db.update("item", item_id, "done", done_at=(now or datetime.now(timezone.utc)).isoformat())
+    db.cancel_reminders(item_id)
+    return f"✅ Done: {row['title']}"
+
+
+def snooze(db: Database, item_id: int, user_tz: str, now: datetime | None = None) -> str:
+    """You pressed Snooze: one more reminder an hour from now. Returns what to tell you."""
+    row = db.get("item", item_id)
+    if row is None or row["status"] != "confirmed":
+        return "That reminder isn't active any more."
+    if row["done_at"]:
+        return f"Already done: {row['title']}"
+    at = (now or datetime.now(timezone.utc)) + timedelta(minutes=SNOOZE_MINUTES)
+    db.add_reminder(item_id, at, SNOOZED)
+    return f"⏰ Snoozed: I'll remind you again at {short_time(at, ZoneInfo(user_tz)).split(', ')[1]}."
+
+
+def send_due(db: Database, messenger: Messenger | None, user_tz: str, now: datetime | None = None,
+             until_done: bool = True) -> dict:
     """Send the reminders that are due. Per item, only the latest due one goes out; earlier
-    ones it missed (the app was closed) are marked missed rather than sent in a burst.
+    ones it missed (Doraemon was off) are marked missed rather than sent in a burst.
 
-    Returns counts: sent, missed, cancelled, waiting (no Telegram yet), failed (+ the last error).
+    With `until_done`, an item that's still not done gets a follow-up after its last reminder,
+    and a reminder that comes late (the laptop was asleep) is still sent while follow-ups would be.
+
+    Returns counts: sent, missed, cancelled, waiting (no Telegram yet), failed (+ the last error), and
+    `missed_titles`: items whose reminder came too late to send at all.
     """
     now = now or datetime.now(timezone.utc)
-    result = {"sent": 0, "missed": 0, "cancelled": 0, "waiting": 0, "failed": 0, "error": ""}
+    result = {"sent": 0, "missed": 0, "cancelled": 0, "waiting": 0, "failed": 0, "error": "", "missed_titles": []}
     by_item: dict[int, list] = {}
     for r in db.due_reminders(now):
         by_item.setdefault(r["item_id"], []).append(r)
     for item_id, due in by_item.items():
         row = db.get("item", item_id)
-        if row is None or row["status"] != "confirmed":  # undone or dismissed since
+        if row is None or row["status"] != "confirmed" or row["done_at"]:  # undone, dismissed or done since
             for r in due:
                 db.mark_reminder(r["id"], "cancelled")
             result["cancelled"] += len(due)
@@ -264,34 +321,45 @@ def send_due(db: Database, messenger: Messenger | None, user_tz: str, now: datet
         for r in older:
             db.mark_reminder(r["id"], "missed")
         result["missed"] += len(older)
-        if too_late(item, user_tz, now):
+        late = too_late(item, user_tz, now)
+        if late and not (until_done and now < keep_asking_until(item, user_tz)):
             db.mark_reminder(latest["id"], "missed")
             result["missed"] += 1
+            result["missed_titles"].append(row["title"])
             continue
         if messenger is None:
             result["waiting"] += 1
             continue
+        again = late or latest["label"] == FOLLOW_UP
         try:
-            messenger.send(message_text(item, row["gmail_id"], user_tz, now))
+            messenger.send(message_text(item, row["gmail_id"], user_tz, now, again=again), buttons=buttons(item_id))
         except Exception as e:  # stays pending; tried again next minute
             result["failed"] += 1
             result["error"] = str(e)[:200]
             continue
         db.mark_reminder(latest["id"], "sent")
         result["sent"] += 1
+        if until_done and not db.reminders(item_id):  # that was the last one: keep asking until Done
+            follow = next_follow_up(now, user_tz)
+            if follow < keep_asking_until(item, user_tz):
+                db.add_reminder(item_id, follow, FOLLOW_UP)
     return result
 
 
 class ReminderJob:
-    """Sends due reminders every minute while the web app is open, and says problems once in Dorae-2's chat."""
+    """Sends due reminders every minute while Doraemon runs, and says problems once in Dorae-2's chat."""
 
-    def __init__(self, db: Database, user_tz: str, messenger) -> None:
-        self.db, self.user_tz = db, user_tz
+    def __init__(self, db: Database, user_tz: str, messenger, until_done: bool = True) -> None:
+        self.db, self.user_tz, self.until_done = db, user_tz, until_done
         self.messenger = messenger  # () -> Messenger | None, so connecting Telegram later just works
         self.last_problem = ""
 
     def tick(self, now: datetime | None = None) -> dict:
-        result = send_due(self.db, self.messenger(), self.user_tz, now)
+        result = send_due(self.db, self.messenger(), self.user_tz, now, self.until_done)
+        if result["missed_titles"]:  # Doraemon was off or asleep when they were due, and they're over now
+            titles = ", ".join(f"“{t}”" for t in result["missed_titles"])
+            self.db.add_message("calendar", "agent", "Doraemon wasn't running when these were due, so I couldn't "
+                                                     f"remind you in time: {titles}.")
         if result["waiting"]:
             self.problem("A reminder is due, but Telegram isn't connected yet. "
                          "Run: python -m doraemon.telegram connect")

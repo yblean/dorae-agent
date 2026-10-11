@@ -6,9 +6,10 @@ DORAEMON_TELEGRAM_TOKEN, then run
     python -m doraemon.telegram connect   # then send your bot any message, e.g. /start
     python -m doraemon.telegram test      # sends a test message
 
-`connect` remembers your chat with the bot, so reminders only ever go to you. While the web app
-is open the bot also answers commands from that chat (e.g. /reminders); other chats get no answer.
-Messages are sent as plain text; the token is never printed or put in error messages.
+`connect` remembers your chat with the bot, so reminders only ever go to you. While Doraemon runs
+the bot also answers commands from that chat (e.g. /reminders) and the buttons under reminders
+(Done, Snooze); other chats get no answer. Messages are sent as plain text; the token is never
+printed or put in error messages.
 """
 import argparse
 import logging
@@ -51,16 +52,28 @@ class Telegram:
             raise TelegramError(data.get("description") or f"Telegram said no (HTTP {resp.status_code})")
         return data["result"]
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, buttons: list[list[tuple[str, str]]] | None = None) -> None:
+        """`buttons`: rows of (label, data); pressing one sends `data` back to the bot."""
         if not self.chat_id:
             raise TelegramError("no chat yet: run python -m doraemon.telegram connect")
+        markup = {"reply_markup": {"inline_keyboard": [[{"text": label, "callback_data": data} for label, data in row]
+                                                       for row in buttons]}} if buttons else {}
         self.call("sendMessage", wait=10, chat_id=self.chat_id, text=text[:4000],
-                  link_preview_options={"is_disabled": True})
+                  link_preview_options={"is_disabled": True}, **markup)
 
     def updates(self, offset: int | None, timeout: int = 25) -> list[dict]:
-        """New messages to the bot, waiting up to `timeout` seconds for one (long polling)."""
-        return self.call("getUpdates", wait=timeout + 15, timeout=timeout, allowed_updates=["message"],
-                         **({"offset": offset} if offset else {}))
+        """New messages and button presses, waiting up to `timeout` seconds for one (long polling)."""
+        return self.call("getUpdates", wait=timeout + 15, timeout=timeout,
+                         allowed_updates=["message", "callback_query"], **({"offset": offset} if offset else {}))
+
+    def answer_button(self, press_id: str, text: str) -> None:
+        """Stops the button's loading spinner, showing `text` briefly."""
+        self.call("answerCallbackQuery", wait=10, callback_query_id=press_id, text=text[:200])
+
+    def edit(self, message_id: int, text: str) -> None:
+        """Replace a message's text, which also removes its buttons."""
+        self.call("editMessageText", wait=10, chat_id=self.chat_id, message_id=message_id, text=text[:4000],
+                  link_preview_options={"is_disabled": True})
 
     def set_commands(self, commands: list[tuple[str, str]]) -> None:
         """The menu Telegram shows when you type "/"."""
@@ -87,11 +100,14 @@ class Command:
 
 
 class CommandListener:
-    """Answers commands you send the bot while the web app is open. Only your linked chat gets answers."""
+    """Answers commands you send the bot and the buttons you press, while Doraemon runs.
+    Only your linked chat gets answers."""
 
-    def __init__(self, db: Database, bot: Callable[[], Telegram | None], commands: list[Command]) -> None:
+    def __init__(self, db: Database, bot: Callable[[], Telegram | None], commands: list[Command],
+                 on_button: Callable[[str], str] | None = None) -> None:
         self.db, self.bot = db, bot  # bot: () -> your Telegram, or None until connected
         self.commands = commands
+        self.on_button = on_button  # a button's data -> what to say, e.g. "done:12" -> "✅ Done: Pay bill"
         self.menu_set_for: str | None = None
 
     def lookup(self, text: str) -> Command | None:
@@ -113,6 +129,9 @@ class CommandListener:
         answered = 0
         for u in bot.updates(offset, timeout):
             self.db.set_setting(OFFSET_KEY, str(u["update_id"] + 1))
+            if "callback_query" in u:
+                answered += self.press(bot, u["callback_query"])
+                continue
             msg = u.get("message") or {}
             if str((msg.get("chat") or {}).get("id")) != str(bot.chat_id):
                 continue  # someone else found the bot: they get nothing
@@ -122,6 +141,17 @@ class CommandListener:
             bot.send(command.answer() if command else self.help_text())
             answered += 1
         return answered
+
+    def press(self, bot: Telegram, press: dict) -> int:
+        """A button under one of our messages. Pressed long after it was sent still counts: the item decides."""
+        msg = press.get("message") or {}
+        if str((msg.get("chat") or {}).get("id")) != str(bot.chat_id) or self.on_button is None:
+            return 0
+        reply = self.on_button(press.get("data", ""))
+        bot.answer_button(press["id"], reply)
+        if msg.get("message_id"):
+            bot.edit(msg["message_id"], f"{msg.get('text', '')}\n\n{reply}".strip())
+        return 1
 
     def run(self) -> threading.Event:
         stop = threading.Event()
@@ -160,8 +190,10 @@ def main() -> None:
         bot = connect_telegram(settings, db)
         if bot is None:
             sys.exit("Not connected yet. Run: python -m doraemon.telegram connect")
-        bot.send("👋 Test from Doraemon. Reminders will arrive here.")
-        print("Sent. Check Telegram.")
+        bot.send("👋 Test from Doraemon. Reminders will arrive here.\nPress the button to check Doraemon answers it.",
+                 buttons=[[("👍 Press me", "test:1")]])
+        print("Sent. Check Telegram and press the button: the message should change to say buttons work\n"
+              "(only while Doraemon runs: python -m doraemon.service, or the web app).")
         return
 
     bot = Telegram(settings.telegram_token)
@@ -175,7 +207,7 @@ def main() -> None:
     db.set_setting(CHAT_KEY, str(chat["id"]))
     bot.chat_id = str(chat["id"])
     bot.send("✅ Connected to Doraemon. Your reminders will arrive here.")
-    print(f"Connected to {who}'s chat. Reminders will be sent there while the web app is running.")
+    print(f"Connected to {who}'s chat. Reminders will be sent there while Doraemon runs (python -m doraemon.service, or the web app).")
 
 
 if __name__ == "__main__":

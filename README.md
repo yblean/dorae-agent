@@ -115,9 +115,15 @@ you set or change reminders, listing when they'll come.
 2. Run `python -m doraemon.telegram connect`, then send your new bot any message (e.g. `/start`).
    It remembers that chat, so reminders only go to you. `python -m doraemon.telegram test` sends a test message.
 
-Reminders are sent by the web app, so it has to be running. If it was closed when one was due, the latest
-missed reminder goes out when it starts again, unless the item has already passed. Messages are plain text
-with a link to the email.
+Reminders are sent while Doraemon runs: the background service (see below) or the web app. If neither
+was running when one was due, the latest missed reminder goes out when one starts again. Messages are
+plain text with a link to the email.
+
+Each reminder has two buttons. **✅ Done** stops that item's reminders (also **Mark done** on Upcoming;
+it's in Activity, so you can undo it). **⏰ Snooze 1h** reminds you again an hour later. Until you press
+Done, the last reminder is followed up every 3 hours between 9am and 10pm, for up to two days after the
+item's time, so an unpaid bill keeps nagging. `DORAEMON_REMIND_UNTIL_DONE=off` sends only the planned
+ones. If a reminder couldn't go out at all while Doraemon was off, Dorae-2 says which.
 
 You can also ask Dorae-2 for one: "create me a reminder to get groceries tmr" or "remind me to call mom
 at 5pm tomorrow". It drafts a card with the title, date, time and reminder settings filled in (once, at the
@@ -132,17 +138,37 @@ where they go: Telegram reminders (Reminder, Bill, Deadline, Delivery, RSVP) or 
 working as before.
 
 Send the bot **/reminders** to get a list of your upcoming reminders (each item with the times it will
-remind you). It only answers your own chat, and only while the web app is running.
+remind you). It only answers your own chat, and only while Doraemon runs.
 
 ### Morning briefing
 
 Every day at `DORAEMON_BRIEFING_TIME` (default `08:00`, `off` to turn it off) Dorae-2 posts a briefing in
 its chat: today and tomorrow from all your Google calendars plus email and chat items not in Google yet,
 bills due in the next 7 days, trips in the next 14, Telegram reminders going out today, and what still
-needs your OK. Fixed rules pick everything and the text is a template, so no model is involved. It only
-goes out while the web app runs; if it wasn't running at that time, the briefing is posted when you
-next open Dorae-2's chat. Before the briefing time, opening the chat doesn't post an overview (except
+needs your OK. Fixed rules pick everything and the text is a template, so no model is involved. It's
+also sent to Telegram as plain text (`DORAEMON_BRIEFING_TELEGRAM=off` to keep it in the app). It goes
+out while Doraemon runs; if nothing was running at that time, it's posted as soon as something is
+(or when you next open Dorae-2's chat). Before the briefing time, opening the chat doesn't post an overview (except
 in an empty chat), so the day's briefing isn't used up early.
+
+### Run in the background
+
+Without the web app open, nothing checks Gmail or sends reminders. The background service runs
+the same jobs with no window:
+
+```
+python -m doraemon.service install   # start hidden whenever you log into Windows
+python -m doraemon.service start     # start it now too
+python -m doraemon.service status    # what's running the jobs, and whether it starts at login
+python -m doraemon.service stop      # stop it; `uninstall` stops it starting at login
+```
+
+`install` puts a small launcher in your Windows Startup folder (no admin rights). Only one program runs
+the jobs, whichever holds `data/jobs.lock`: with the service running, the web app is just for looking
+and pressing buttons, and if the service stops the web app takes over within half a minute (and the
+other way round). Dorae-2's routines say which one is running them. A sleeping laptop pauses everything;
+on waking, late reminders still go out while they matter. The service logs to `data/service.log`.
+`python -m doraemon.service` alone runs it in the terminal until Ctrl+C, to try it out.
 
 ## Chat with the agents
 
