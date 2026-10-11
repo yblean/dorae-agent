@@ -181,6 +181,14 @@ Ask Dorae-2 to add an event ("add date night on 26/10 19:00") and it drafts a ca
 **Confirm** puts it in your Doraemon calendar. The app reads the date from your own wording (day first,
 per `DORAEMON_DATE_ORDER`), not the model, and keeps an end time only if you typed one.
 
+**Instant answers.** Everyday lookups skip the model: how much you spent (in a period, on a category, at
+a shop), breakdowns, your latest or biggest purchase, top merchants, budget status, the monthly trend,
+what needs your OK, today, tomorrow, this or next week, what's due, trips, and your reminders. Follow-ups
+like "and last month?" count too. These answer in milliseconds instead of 10-20 seconds
+(`doraemon/router.py`). A question only takes this path if all of it matches one of these shapes: advice
+("how can I stay within my budget?"), "why", comparisons and anything worded differently still go to the
+model. `DORAEMON_FAST_ANSWERS=off` sends everything to the model.
+
 Guardrails: a topic check runs first, so Dorae-1 points calendar questions to Dorae-2 (and the other
 way round) and declines anything else; each agent only has its own tools; chat can't change
 existing items, and a drafted event only reaches Google Calendar when you press Confirm. If the

@@ -175,7 +175,9 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     def message_view(row) -> dict:
         payload = json.loads(row["payload"]) if row["payload"] else None
         view = {"id": row["id"], "role": row["role"], "text": row["text"], "kind": row["kind"],
-                "time": local_time(row["created_at"]), "payload": payload, "agent": row["agent"]}
+                "time": local_time(row["created_at"]), "payload": payload, "agent": row["agent"],
+                # answered from the data without the model (a fast-path intent, or a drafted reminder or budget)
+                "instant": bool(row["via"]) and row["via"] != "model"}
         if row["kind"] in ("items", "agenda") and payload:
             rows = [db.get("item", i) for i in payload["ids"]]
             view["cards"] = [card(r) for r in rows if r]

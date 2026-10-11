@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS budgets (
 _ADDED_COLUMNS = {
     "processed_emails": {"subject": "TEXT", "sender": "TEXT", "sent_at": "TEXT", "notes": "TEXT"},
     "action_items": {"calendar_event_id": "TEXT", "custom_type_id": "INTEGER", "done_at": "TEXT"},
+    "chat_messages": {"via": "TEXT"},  # how an answer was made: a fast-path intent, "model", or empty
 }
 _TABLES = {"item": "action_items", "transaction": "transactions"}
 CHAT_ID_PREFIX = "chat:"  # gmail_id of items you asked for in chat rather than found in an email
@@ -127,10 +128,11 @@ class Database:
 
     # --- agent chats ------------------------------------------------------------
 
-    def add_message(self, agent: str, role: str, text: str, kind: str = "text", payload: dict | None = None) -> int:
+    def add_message(self, agent: str, role: str, text: str, kind: str = "text", payload: dict | None = None,
+                    via: str | None = None) -> int:
         cur = self.conn.execute(
-            "INSERT INTO chat_messages (agent, role, text, kind, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (agent, role, text, kind, json.dumps(payload) if payload is not None else None, _now()),
+            "INSERT INTO chat_messages (agent, role, text, kind, payload, created_at, via) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (agent, role, text, kind, json.dumps(payload) if payload is not None else None, _now(), via),
         )
         self.conn.commit()
         return cur.lastrowid

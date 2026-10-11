@@ -47,7 +47,7 @@ def email():
 
 @pytest.fixture
 def chat(tmp_path, settings):
-    s = dataclasses.replace(settings, db_path=str(tmp_path / "d.db"), home_currency="SGD",
+    s = dataclasses.replace(settings, db_path=str(tmp_path / "d.db"), home_currency="SGD", fast_answers=False,
                             google_token=str(tmp_path / "t.json"), google_credentials=str(tmp_path / "c.json"))
     db = Database(s.db_path)
     for i, (merchant, amount, days_ago) in enumerate([("Kopitiam", "7.02", 3), ("Uniqlo", "59.90", 1)], 1):

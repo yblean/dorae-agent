@@ -25,7 +25,8 @@ from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
 from doraemon.ledger import build_ledger, spending_totals
-from doraemon.reminders import draft_reminder, split_request
+from doraemon.reminders import draft_reminder, short_time, split_request
+from doraemon.router import route
 from doraemon.rules import name_key
 from doraemon.schema import Category
 
@@ -94,6 +95,13 @@ def money(amount: Decimal, currency: str) -> str:
     return f"{currency} {amount:,.2f}"
 
 
+def label_in(label: str) -> str:
+    """'September' -> 'in September', 'October so far' -> 'in October so far', 'today (Sun 11 Oct)' as it is."""
+    if label == "all time":
+        return "overall"
+    return f"in {label}" if label.split()[0].lower() in _MONTHS else label
+
+
 def short_clock(hhmm: str) -> str:
     """'09:30' -> '9:30am', '14:00' -> '2pm'."""
     t = time.fromisoformat(hhmm)
@@ -107,6 +115,7 @@ class Brain:
         self.schedule = schedule  # your Google calendars, or None until reading them is approved
         self.chat = None  # doraemon.chat.AgentChat when a chat model is set
         self.overview_lock = threading.Lock()  # the briefing timer and opening the chat can race
+        self.last_route = ""  # how the latest question was answered: a router intent, "model", ...
         self.tz = ZoneInfo(settings.timezone)
         self.home = settings.home_currency
 
@@ -771,6 +780,93 @@ class Brain:
         return [{"text": "I look after your calendar. Try: \"What needs my OK?\", \"Show my schedule this week\", "
                          "\"My upcoming trips\" or \"What's on tomorrow?\"", "kind": "text", "payload": None}]
 
+    # --- instant answers (doraemon.router): everyday questions, straight from your data -----------
+
+    def span(self, period: str | None, default: str | None = "this_month") -> tuple[date | None, date | None, str]:
+        """(first day, last day, label) for a router period: 'this_week', 'month:9', or None for `default`."""
+        if period and period.startswith("month:"):
+            n = int(period.split(":")[1])
+            year = self.today().year if n <= self.today().month else self.today().year - 1
+            month = f"{year}-{n:02d}"
+            return (*self.month_range(month), month_name(month))
+        return self.period_range(period or default) or (None, None, "all time")
+
+    def instant(self, route) -> dict:
+        """The answer to a question the router recognised. Same cards as the model's answers."""
+        s, home = route.slots, self.home
+        if route.intent in ("total", "payments"):
+            first, last, label = self.span(s.get("period"), "this_month" if route.intent == "total" else "this_month")
+            kept = [t for t in self.ledger_between(first, last)
+                    if (not s.get("category") or t.category.value == s["category"])
+                    and (not s.get("merchant") or s["merchant"] in t.merchant.lower())]
+            what = (f" on {s['category']}" if s.get("category") else "") + (f" at {s['merchant'].title()}" if s.get("merchant") else "")
+            if not kept:
+                return {"text": f"No payments{what} {label_in(label)}.", "kind": "text", "payload": None}
+            total = spending_totals(kept, home, self.fx).total
+            text = (f"You spent {money(total, home)}{what} {label_in(label)} across {len(kept)} "
+                    f"payment{'s' if len(kept) != 1 else ''}.")
+            if s.get("category") or s.get("merchant") or route.intent == "payments":
+                kept.sort(key=lambda t: t.purchased_at, reverse=True)
+                return {"text": text + (" Showing the latest 20." if len(kept) > 20 else ""), "kind": "payments",
+                        "payload": {"ids": [int(t.message_id) for t in kept[:20]]}}
+            card = self.summary(kept, label[0].upper() + label[1:])
+            card["text"] = text
+            return card
+        if route.intent in ("breakdown", "how_was"):
+            first, last, label = self.span(s.get("period"))
+            card = self.summary(self.ledger_between(first, last), label[0].upper() + label[1:])
+            p = card["payload"]
+            if not p["count"]:
+                return {"text": f"No payments {label_in(label)}.", "kind": "text", "payload": None}
+            top = p["rows"][0][0] if p["rows"] else ""
+            card["text"] = (f"{label[0].upper() + label[1:]}: {money(Decimal(p['total']), home)} across {p['count']} "
+                            f"payments" + (f", mostly {top}." if top else "."))
+            return card
+        if route.intent in ("latest", "biggest"):
+            first, last, label = self.span(s.get("period"), None)
+            kept = self.ledger_between(first, last)
+            if not kept:
+                return {"text": f"No payments {label_in(label)}.", "kind": "text", "payload": None}
+            sums = spending_totals(kept, home, self.fx)
+            if route.intent == "biggest":
+                kept.sort(key=lambda t: sums.home_amounts.get(id(t), t.amount), reverse=True)
+            else:
+                kept.sort(key=lambda t: t.purchased_at, reverse=True)
+            t = kept[0]
+            day = t.purchased_at.astimezone(self.tz)
+            which = "Your biggest purchase" + (f" {label_in(label)}" if s.get("period") else "") \
+                if route.intent == "biggest" else "Your latest purchase"
+            return {"text": f"{which}: {t.merchant}, {t.currency} {t.amount:,.2f} on {day:%a} {day.day} {day:%b}.",
+                    "kind": "payments", "payload": {"ids": [int(x.message_id) for x in kept[:5]]}}
+        if route.intent == "top":
+            first, last, label = self.span(s.get("period"))
+            return self.top_merchants_of(self.ledger_between(first, last), label)
+        if route.intent == "budget":
+            return self.budget_card()
+        if route.intent == "trend":
+            return self.trend(category=s.get("category"))
+        if route.intent == "week":
+            return self.week("next week" if s.get("which") == "next" else "this week")
+        if route.intent == "reminders":
+            return self.reminders_card()
+        question = {"waiting": "what needs my ok", "day": f"what's on {s.get('day', 'today')}",
+                    "due": "what's due this week", "trips": "my trips", "passed": "what already passed"}[route.intent]
+        return self.calendar_reply(question)[0]
+
+    def reminders_card(self) -> dict:
+        """Your items with Telegram reminders still to come, the next one first."""
+        nxt: dict[int, datetime] = {}
+        for r in self.db.upcoming_reminders():
+            nxt.setdefault(r["item_id"], datetime.fromisoformat(r["remind_at"]))
+        if not nxt:
+            return {"text": "No reminders set. Ask me (\"remind me to get groceries tomorrow\"), or press Remind me "
+                            "on a bill, deadline or delivery.", "kind": "text", "payload": None}
+        ids = sorted(nxt, key=nxt.get)
+        first = self.db.get("item", ids[0])
+        at = short_time(nxt[ids[0]], self.tz)
+        return {"text": f"{len(ids)} thing{'s' if len(ids) != 1 else ''} with reminders on Telegram. "
+                        f"Next: “{first['title']}” on {at}.", "kind": "agenda", "payload": {"ids": ids[:20]}}
+
     # --- shared --------------------------------------------------------------
 
     def ensure_overview(self, agent: str, scheduled: bool = False) -> list[dict]:
@@ -799,11 +895,25 @@ class Brain:
         reached, the fixed keyword answers below take over.
         """
         history = self.db.messages(agent, limit=8)
+        previous = next((r["text"] for r in reversed(history) if r["role"] == "user"), None)
         ids = [self.db.add_message(agent, "user", question)]
         answers = None
+        self.last_route = "model"
         asked = split_request(question) if agent == "calendar" else None
+        budget = bud.parse_request(question) if agent == "money" else None
+        fast = route(agent, question, previous) if self.settings.fast_answers else None
         if asked and asked[0] and asked[1]:  # "remind me to X tomorrow": clear enough to draft without the model
-            answers = [self.reminder_reply(*asked, question)]
+            answers, self.last_route = [self.reminder_reply(*asked, question)], "reminder"
+        elif budget:  # "set my dining budget to 300": drafted as a card, no model needed
+            answers, self.last_route = [self.budget_card(draft=budget)], "budget draft"
+        elif fast is not None:  # an everyday lookup: answered from the data in milliseconds
+            self.last_route = fast.intent
+            if fast.agent == agent:
+                answers = [self.instant(fast)]
+            else:
+                other = styled(AGENTS[fast.agent], self.db)
+                answers = [{"text": f"That's one for {other.name}. Open {other.name}'s chat and ask there.",
+                            "kind": "text", "payload": None}]
         elif self.chat is not None:
             try:
                 answers = self.chat.answer(agent, question, history)
@@ -813,6 +923,6 @@ class Brain:
             answers = self.money_reply(question) if agent == "money" else self.calendar_reply(question)
             if self.chat is not None:
                 answers[0]["text"] += "\n(Quick answer: the local model isn't responding right now.)"
-        for msg in answers:
-            ids.append(self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"]))
+        for msg in answers:  # `via` puts a ⚡ on answers that never waited for the model
+            ids.append(self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"], via=self.last_route))
         return ids

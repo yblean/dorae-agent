@@ -40,5 +40,8 @@ class Settings:
     # Telegram bot that sends reminders (from @BotFather); `python -m doraemon.telegram connect` finds your chat
     telegram_token: str = os.getenv("DORAEMON_TELEGRAM_TOKEN", "")
     telegram_chat_id: str = os.getenv("DORAEMON_TELEGRAM_CHAT_ID", "")  # optional: skips `connect`
+    # Everyday questions ("how much did I spend this week", "my reminders") answered from the data without
+    # the model: instant instead of 10-20s. "off" sends every question to the model.
+    fast_answers: bool = os.getenv("DORAEMON_FAST_ANSWERS", "on").lower() != "off"
     # Reasoning before answering: slower, sometimes more accurate. Off for the per-email pipeline.
     think: bool = os.getenv("DORAEMON_THINK", "false").lower() == "true"
