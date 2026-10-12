@@ -52,6 +52,13 @@ def launcher_script() -> str:
             f'shell.Run """{q(hidden_python())}"" -m doraemon.service", 0, False\r\n')
 
 
+class OnlyProblems(logging.Filter):
+    """Webull's SDK logs every step of its session check at INFO and sets its own levels: keep its warnings only."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.name.startswith("webull") or record.levelno >= logging.WARNING
+
+
 class HideSecrets(logging.Filter):
     """Masks the bot token in anything logged: Telegram's API puts it in every request URL."""
 
@@ -76,10 +83,11 @@ def log_to_file(settings: Settings) -> Path:
     handlers = [handler] + ([logging.StreamHandler()] if sys.stderr is not None else [])  # pythonw has no console
     root = logging.getLogger()
     for h in handlers:
-        h.addFilter(HideSecrets(settings.telegram_token))
+        h.addFilter(HideSecrets(settings.telegram_token, settings.webull_app_key, settings.webull_app_secret))
+        h.addFilter(OnlyProblems())
         root.addHandler(h)
     root.setLevel(logging.INFO)
-    for noisy in ("httpx", "httpcore"):  # one line per request, with the token in the URL
+    for noisy in ("httpx", "httpcore", "webull"):  # one line per request (the token is in Telegram's URLs)
         logging.getLogger(noisy).setLevel(logging.WARNING)
     return path
 

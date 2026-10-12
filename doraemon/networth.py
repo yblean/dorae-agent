@@ -180,8 +180,9 @@ class NetWorth:
             self.db.conn.execute(
                 """INSERT INTO holdings (account_id, symbol, name, quantity, price, market_value, cost, currency, as_of)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (account_id, h["symbol"], h.get("name"), str(h["quantity"]), str(h["price"]) if h.get("price") is not None else None,
-                 str(h["market_value"]), str(h["cost"]) if h.get("cost") is not None else None, h["currency"], as_of.isoformat()))
+                (account_id, h["symbol"], h.get("name"), f"{Decimal(h['quantity']).normalize():f}",
+                 str(h["price"]) if h.get("price") is not None else None, str(cents(Decimal(h["market_value"]))),
+                 str(cents(Decimal(h["cost"]))) if h.get("cost") is not None else None, h["currency"], as_of.isoformat()))
         self.db.conn.commit()
 
     def holdings(self, account_id: int | None = None):

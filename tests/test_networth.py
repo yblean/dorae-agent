@@ -259,3 +259,35 @@ def test_closing_and_deleting(settings):
     assert "Closed Old bank" in client.post("/networth/accounts/1/archive").text
     client.post("/income", data={"label": "Gig", "category": "freelance", "amount": "50", "day": "2026-10-02"})
     assert "Deleted" in client.post("/income/1/delete").text
+
+
+class SgSdk:
+    """Shaped like what Webull SG really returned (2026-10-11), with made-up ids: an option position."""
+
+    class account_v2:
+        @staticmethod
+        def get_account_list():
+            return FakeResponse({"data": [{"account_id": "999", "account_label": "CASH", "currency": "USD"}]})
+
+        @staticmethod
+        def get_account_balance(account_id):
+            return FakeResponse({"total_asset_currency": "SGD", "total_market_value": "27489.66",
+                                 "total_cash_balance": "84.56", "account_currency_assets": [
+                                     {"currency": "USD", "market_value": "21560.00", "cash_balance": "66.32"}]})
+
+        @staticmethod
+        def get_account_position(account_id):
+            return FakeResponse([{"currency": "USD", "quantity": "22.0000000000", "symbol": "ORCL",
+                                  "instrument_type": "OPTION", "cost_price": "19.94", "last_price": "9.80",
+                                  "legs": [{"quantity": "22.0000000000", "symbol": "ORCL", "option_type": "CALL",
+                                            "option_expire_date": "2028-01-21", "option_exercise_price": "280.0000000000",
+                                            "option_contract_multiplier": "100.0000000000"}]}])
+
+
+def test_webull_sg_account_value_and_option_positions():
+    snap = WebullSG("key", "secret", client=SgSdk()).snapshot("999")
+    assert (snap["value"], snap["currency"]) == (Decimal("27574.22"), "SGD")  # positions + cash, as Webull totals them
+    [h] = snap["holdings"]
+    assert (h["symbol"], h["market_value"], h["cost"], h["currency"]) == ("ORCL 280C", Decimal("21560.000"),
+                                                                          Decimal("43868.000"), "USD")
+    assert h["name"] == "ORCL call $280, expires 2028-01-21 (22 contracts of 100)"

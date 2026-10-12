@@ -759,7 +759,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             by_account.setdefault(h["account_id"], []).append(holding_view(h))
         synced = db.get_setting("brokers:synced_at")
         return render(request, "networth.html", ch=ch, home=home, kinds=KINDS,
-                      chart=charts.line(months["months"], home) if months.get("months") else None,
+                      chart=charts.line(months["months"], home) if len(months.get("months", [])) > 1 else None,
                       check_in=check_in_day(today), late=today.day <= CHECK_IN_DAYS, holdings=by_account,
                       webull=bool(settings.webull_app_key and settings.webull_app_secret),
                       synced=local_time(synced) if synced else "",

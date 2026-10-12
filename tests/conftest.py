@@ -25,7 +25,8 @@ class FakeBackend:
 @pytest.fixture
 def settings() -> Settings:
     return Settings(timezone="America/New_York", home_currency="USD", model="fake:x", chat_model="off",
-                    telegram_token="", telegram_chat_id="")  # never message a real bot from tests
+                    telegram_token="", telegram_chat_id="",  # never message a real bot from tests
+                    webull_app_key="", webull_app_secret="")  # ...or call a real brokerage
 
 
 @pytest.fixture
