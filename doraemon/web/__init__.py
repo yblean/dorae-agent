@@ -27,13 +27,12 @@ from doraemon import income
 from doraemon.agents import AGENTS, COLORS, Brain, shades, short_clock as clock, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
-from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, event_body
+from doraemon.calendar_sync import Calendar, Schedule, add_to_calendar as calendar_add
 from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when, zone_name
 from doraemon.fx import FxRates
 from doraemon.jobs import CheckJob, Runtime  # noqa: F401 (CheckJob: used to live here)
-from doraemon.google_auth import NotConnected
 from doraemon.ledger import build_ledger, spending_totals
 from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
@@ -84,10 +83,9 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                chat_backend=None, messenger: Messenger | None = None) -> FastAPI:
     settings = settings or Settings()
     # The jobs (Gmail check, reminders, bot, briefing) run here unless the background service runs them
-    rt = Runtime(settings, fx=fx, schedule=schedule, ingest=ingest, messenger=messenger)
+    rt = Runtime(settings, fx=fx, calendar=calendar, schedule=schedule, ingest=ingest, messenger=messenger)
     db, fx, brain, job, get_messenger = rt.db, rt.fx, rt.brain, rt.check, rt.get_messenger
     rules = RuleStore(settings.db_path)
-    connected_calendar: list[Calendar] = [calendar] if calendar else []
     if chat_backend is None and settings.chat_model != "off":
         try:
             chat_backend = get_backend(settings.chat_model, settings)
@@ -290,33 +288,10 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     # --- Google Calendar ----------------------------------------------------
 
     def get_calendar() -> Calendar | None:
-        """The Doraemon calendar, or None until you've approved Calendar access (never opens a browser)."""
-        if not connected_calendar:
-            try:
-                connected_calendar.append(connect_calendar(settings, db, interactive=False))
-            except (NotConnected, FileNotFoundError):
-                return None
-        return connected_calendar[0]
+        return rt.get_calendar()
 
     def add_to_calendar(item_id: int) -> str:
-        row = db.get("item", item_id)
-        item = item_model(row)
-        title = row["title"]
-        if item.start_at is None:
-            return f"Saved “{title}”. It has no date, so I didn't add it to your calendar."
-        cal = get_calendar()
-        if cal is None:
-            return (f"Saved “{title}”. To put it in Google Calendar, connect it once: "
-                    "python -m doraemon.calendar_sync connect")
-        try:
-            event_id = cal.upsert(row["calendar_event_id"], event_body(item, item_id, row["gmail_id"]))
-        except Exception as e:  # the item stays confirmed and can be retried
-            text = str(e)
-            if "has not been used" in text or "is disabled" in text or "accessNotConfigured" in text:
-                text = "the Google Calendar API is turned off in your Google Cloud project"
-            return f"Saved “{title}”, but I couldn't add it to Google Calendar ({text[:160]}). Ask me to retry from Upcoming."
-        db.set_calendar_event(item_id, event_id)
-        return f"Added “{title}” to your Doraemon calendar. 🔔"
+        return calendar_add(db, get_calendar(), item_id)
 
     # --- Telegram reminders ---------------------------------------------------
 

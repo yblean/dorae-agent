@@ -137,6 +137,28 @@ class GoogleCalendar:
                 raise
 
 
+def add_to_calendar(db: Database, cal: Calendar | None, item_id: int) -> str:
+    """Put a confirmed item in the Doraemon calendar (or update its event). Returns what to tell you;
+    a failure leaves the item confirmed, so it can be retried from Upcoming."""
+    row = db.get("item", item_id)
+    item = item_model(row)
+    title = row["title"]
+    if item.start_at is None:
+        return f"Saved “{title}”. It has no date, so I didn't add it to your calendar."
+    if cal is None:
+        return (f"Saved “{title}”. To put it in Google Calendar, connect it once: "
+                "python -m doraemon.calendar_sync connect")
+    try:
+        event_id = cal.upsert(row["calendar_event_id"], event_body(item, item_id, row["gmail_id"]))
+    except Exception as e:
+        text = str(e)
+        if "has not been used" in text or "is disabled" in text or "accessNotConfigured" in text:
+            text = "the Google Calendar API is turned off in your Google Cloud project"
+        return f"Saved “{title}”, but I couldn't add it to Google Calendar ({text[:160]}). Ask me to retry from Upcoming."
+    db.set_calendar_event(item_id, event_id)
+    return f"Added “{title}” to your Doraemon calendar. 🔔"
+
+
 def connect_calendar(settings: Settings, db: Database, interactive: bool = False) -> GoogleCalendar:
     """Raises NotConnected (when not interactive) if Calendar access hasn't been approved yet."""
     need = ALL_SCOPES if interactive else [CALENDAR]

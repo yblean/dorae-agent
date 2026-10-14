@@ -163,7 +163,12 @@ def split_request(text: str) -> tuple[str, str] | None:
     asked = _ASK_RE.search(unslang(text))
     if asked is None:
         return None
-    rest = re.sub(r"\s*(?:pls|please|thanks|thank you|thx|ty)\W*$", "", asked[1].strip(), flags=re.I)
+    return split_when(asked[1])
+
+
+def split_when(rest: str) -> tuple[str, str]:
+    """("Call mom", "at 5pm tomorrow") from "to call mom at 5pm tomorrow pls": the date words, and the rest as a title."""
+    rest = re.sub(r"\s*(?:pls|please|thanks|thank you|thx|ty)\W*$", "", rest.strip(), flags=re.I)
     spans = list(_WHEN_RE.finditer(rest))
     when = " ".join(m[0].strip() for m in spans)
     title = _WHEN_RE.sub(" ", rest)

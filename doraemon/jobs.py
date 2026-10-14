@@ -19,7 +19,7 @@ from pathlib import Path
 from doraemon.agents import Brain, money
 from doraemon.assistant import month_name
 from doraemon.brokers import Broker, BrokerError, connected, sync
-from doraemon.calendar_sync import Schedule, connect_schedule
+from doraemon.calendar_sync import Calendar, Schedule, connect_calendar, connect_schedule
 from doraemon.config import Settings
 from doraemon.db import Database
 from doraemon.fx import FxRates
@@ -170,7 +170,8 @@ def every(seconds: float, work, name: str, first: float | None = None) -> thread
 class Runtime:
     """The database, Dorae-1 and Dorae-2's brain, and the jobs, set up once for a web app or the service."""
 
-    def __init__(self, settings: Settings, fx: FxRates | None = None, schedule: Schedule | None = None,
+    def __init__(self, settings: Settings, fx: FxRates | None = None, calendar: Calendar | None = None,
+                 schedule: Schedule | None = None,
                  ingest=None, messenger: Messenger | None = None, brokers: list[Broker] | None = None) -> None:
         self.settings = settings
         # Pages only read cached rates, so they never wait on the network; ingest fetches them.
@@ -178,12 +179,13 @@ class Runtime:
         self.db = Database(settings.db_path)
         self.messenger = messenger
         self.bots: dict = {}  # chat id -> Telegram, so the bot is made once but connecting later still works
+        self.calendars: list[Calendar] = [calendar] if calendar else []
         self.schedules: list[Schedule] = [schedule] if schedule else []
         self.brain = Brain(self.db, settings, self.fx, schedule=self.get_schedule)
         self.check = CheckJob(self.db, settings, ingest)
         self.check.after_payments = self.brain.budget_alerts
         self.reminders = ReminderJob(self.db, settings.timezone, self.get_messenger, settings.remind_until_done)
-        self.phone = Phone(self.brain, help_text=lambda: self.commands.help_text())  # plain messages to the bot
+        self.phone = Phone(self.brain, self.get_calendar, help_text=lambda: self.commands.help_text())  # plain messages to the bot
         # Commands you can send the bot. /remindars is a common misspelling, so it works too.
         self.commands = CommandListener(self.db, self.get_messenger, [
             Command("reminders", "List your reminders", lambda: list_text(self.db, settings.timezone),
@@ -206,6 +208,15 @@ class Runtime:
         if bot is None:
             return None
         return self.bots.setdefault(bot.chat_id, bot)
+
+    def get_calendar(self) -> Calendar | None:
+        """The Doraemon calendar, or None until you've approved Calendar access (never opens a browser)."""
+        if not self.calendars:
+            try:
+                self.calendars.append(connect_calendar(self.settings, self.db, interactive=False))
+            except (NotConnected, FileNotFoundError):
+                return None
+        return self.calendars[0]
 
     def get_schedule(self) -> Schedule | None:
         """Your Google calendars (read-only), or None until you've approved reading them (never opens a browser)."""

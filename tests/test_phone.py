@@ -1,6 +1,6 @@
 """Plain messages to the Telegram bot: reminders with Create/Cancel buttons, and instant answers."""
 import dataclasses
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -40,7 +40,7 @@ def test_a_reminder_request_is_drafted_with_create_and_cancel(rt):
 def test_cancel_dismisses_the_draft(rt):
     _, make, drop = drafted(rt.phone.answer("remind me to pay rent tomorrow")[1])
     assert rt.button(drop) == "✖ Cancelled."
-    assert rt.button(make).startswith("That reminder was cancelled")
+    assert rt.button(make).startswith("That was cancelled")
 
 
 def test_without_a_date_it_asks_when_and_reads_the_answer(rt):
@@ -87,3 +87,67 @@ def test_snooze_buttons_by_length(rt):
     assert rt.button(f"snooze:{item_id}").startswith("⏰ Snoozed: I'll remind you again ")  # buttons sent before
     assert rt.button(f"snooze:{item_id}:soon") == "I don't know that button."
 
+
+# --- events -----------------------------------------------------------------------------
+
+class FakeCalendar:
+    def __init__(self, fail=None):
+        self.bodies, self.fail = [], fail
+
+    def upsert(self, event_id, body):
+        if self.fail:
+            raise RuntimeError(self.fail)
+        self.bodies.append(body)
+        return "ev1"
+
+    def delete(self, event_id):
+        pass
+
+
+@pytest.fixture
+def with_calendar(tmp_path, settings):
+    cal = FakeCalendar()
+    rt = Runtime(dataclasses.replace(settings, db_path=str(tmp_path / "d.db"), timezone=TZ, home_currency="SGD",
+                                     poll_minutes=0, google_token=str(tmp_path / "t.json"),
+                                     google_credentials=str(tmp_path / "c.json")), calendar=cal)
+    return rt, cal
+
+
+def test_an_event_is_drafted_then_added_to_the_calendar(with_calendar):
+    rt, cal = with_calendar
+    text, buttons = rt.phone.answer("add dinner with Sam tmr 7-9pm")
+    assert text.startswith("📅 New event: Dinner with Sam\n") and ", 7pm – 9pm\n" in text
+    assert buttons[0][0][0] == "✅ Add to calendar"
+    make = buttons[0][0][1]
+    assert rt.button(make) == "Added “Dinner with Sam” to your Doraemon calendar. 🔔"
+    item_id = int(make.split(":")[1])
+    assert rt.db.get("item", item_id)["calendar_event_id"] == "ev1"
+    assert cal.bodies[0]["summary"] == "📌 Dinner with Sam" and cal.bodies[0]["end"]["dateTime"].startswith(
+        cal.bodies[0]["start"]["dateTime"][:11])
+    assert rt.db.last_message("calendar")["text"].endswith("(You added it on Telegram.)")
+    assert rt.button(make) == "✅ Already in your calendar." and len(cal.bodies) == 1
+    assert rt.button(buttons[0][1][1]).startswith("That one's already in your calendar")
+
+
+def test_without_google_calendar_the_event_is_kept_and_it_says_how_to_connect(rt):
+    _, buttons = rt.phone.answer("add date night on 26/10 7pm")
+    said = rt.button(buttons[0][0][1])
+    assert said.startswith("Saved “Date night”. To put it in Google Calendar, connect it once")
+
+
+def test_an_event_without_a_date_asks_when(with_calendar):
+    rt, _ = with_calendar
+    assert rt.phone.answer("add a meeting with prof") == (
+        "When is “Meeting with prof”? For example: tomorrow 3pm, or 26/10 7-9pm.", None)
+    text, buttons = rt.phone.answer("friday 2-3pm")
+    assert text.startswith("📅 New event: Meeting with prof\nFri ") and ", 2pm – 3pm" in text and buttons
+
+
+def test_a_multi_day_event_shows_its_days(with_calendar):
+    rt, cal = with_calendar
+    year = datetime.now(ZoneInfo(TZ)).year + 1
+    text, buttons = rt.phone.answer(f"add trip to KL 20/11/{year} to 23/11/{year}")
+    first, last = date(year, 11, 20), date(year, 11, 23)
+    assert text.split("\n")[1] == f"{first:%a} 20 Nov – {last:%a} 23 Nov (all day)"
+    rt.button(buttons[0][0][1])
+    assert cal.bodies[0]["start"] == {"date": f"{year}-11-20"} and cal.bodies[0]["end"] == {"date": f"{year}-11-24"}

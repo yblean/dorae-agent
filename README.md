@@ -144,6 +144,10 @@ remind you). It only answers your own chat, and only while Doraemon runs.
 **Message the bot** like you'd ask Dorae-1 or Dorae-2 (`doraemon/phone.py`):
 - "remind me to call mom at 5pm tmr" drafts the reminder, with **✅ Create** and **✖ Cancel** buttons. Leave
   out the date ("remind me to buy milk") and the bot asks when; your next message ("friday 6pm") is the answer.
+- "add date night on 26/10 7-9pm" drafts a calendar event, with **✅ Add to calendar** and **✖ Cancel**. Add puts it
+  in your Doraemon Google Calendar, like Confirm in the app. It reads "schedule dentist next monday at 3pm",
+  "put gym on my calendar tmr 7am", time ranges ("7-9pm", "10pm until 2am") and days ("trip to KL 20/11 to 23/11",
+  an all-day event). Without a time it's all day; without a date the bot asks when (`doraemon/events.py`).
 - The everyday questions from **Instant answers** below, for either agent: "how much did I spend this week?",
   "and last month?", "my budget", "what's on tomorrow?", "what's due", "net worth", "my reminders".
   They're answered from your data straight away, as plain text.
