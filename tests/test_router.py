@@ -29,6 +29,7 @@ NOW = datetime.now(timezone.utc)
     ("money", "my food spending this month", "total", {"category": "dining", "period": "this_month"}),
     ("money", "Show this month's breakdown", "breakdown", {"period": "this_month"}),
     ("money", "spending by category last month", "breakdown", {"period": "last_month"}),
+    ("money", "my spending breakdown this month", "breakdown", {"period": "this_month"}),
     ("money", "What's my latest purchase?", "latest", {}),
     ("money", "recent payments", "latest", {}),
     ("money", "what was the biggest thing I bought last month", "biggest", {"period": "last_month"}),

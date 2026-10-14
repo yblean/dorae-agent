@@ -119,9 +119,10 @@ Reminders are sent while Doraemon runs: the background service (see below) or th
 was running when one was due, the latest missed reminder goes out when one starts again. Messages are
 plain text with a link to the email.
 
-Each reminder has two buttons. **✅ Done** stops that item's reminders (also **Mark done** on Upcoming;
-it's in Activity, so you can undo it). **⏰ Snooze 1h** reminds you again an hour later. Until you press
-Done, the last reminder is followed up every 3 hours between 9am and 10pm, for up to two days after the
+Each reminder has buttons. **✅ Done** stops that item's reminders (also **Mark done** on Upcoming;
+it's in Activity, so you can undo it). **⏰ 1 hour**, **⏰ 3 hours** and **🌅 Tomorrow 9am** snooze it: you're
+reminded again then, and a snoozed reminder always comes, even after the follow-ups below would have stopped.
+Until you press Done, the last reminder is followed up every 3 hours between 9am and 10pm, for up to two days after the
 item's time, so an unpaid bill keeps nagging. `DORAEMON_REMIND_UNTIL_DONE=off` sends only the planned
 ones. If a reminder couldn't go out at all while Doraemon was off, Dorae-2 says which.
 
@@ -139,6 +140,16 @@ working as before.
 
 Send the bot **/reminders** to get a list of your upcoming reminders (each item with the times it will
 remind you). It only answers your own chat, and only while Doraemon runs.
+
+**Message the bot** like you'd ask Dorae-1 or Dorae-2 (`doraemon/phone.py`):
+- "remind me to call mom at 5pm tmr" drafts the reminder, with **✅ Create** and **✖ Cancel** buttons. Leave
+  out the date ("remind me to buy milk") and the bot asks when; your next message ("friday 6pm") is the answer.
+- The everyday questions from **Instant answers** below, for either agent: "how much did I spend this week?",
+  "and last month?", "my budget", "what's on tomorrow?", "what's due", "net worth", "my reminders".
+  They're answered from your data straight away, as plain text.
+
+Anything else gets a list of examples. The local model only answers in the app, so on your phone an answer
+is instant or not given at all.
 
 ### Morning briefing
 

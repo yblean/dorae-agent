@@ -136,7 +136,8 @@ def test_after_two_days_it_stops_and_says_so(db):
 def test_reminders_have_done_and_snooze_buttons(db):
     bot = FakeBot()
     send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 12, 9, 0, tzinfo=SG))
-    assert bot.buttons == [[[("✅ Done", "done:1"), ("⏰ Snooze 1h", "snooze:1")]]]
+    assert bot.buttons == [[[("✅ Done", "done:1"), ("⏰ 1 hour", "snooze:1:60")],
+                            [("⏰ 3 hours", "snooze:1:180"), ("🌅 Tomorrow 9am", "snooze:1:tmr")]]]
 
 
 def test_after_the_last_reminder_it_follows_up_in_waking_hours(db):
@@ -175,6 +176,31 @@ def test_snooze_adds_one_more_an_hour_later(db):
     assert "snoozed" in [r["label"] for r in db.reminders(1)]
     db.undo(1)  # no longer confirmed
     assert snooze(db, 1, "Asia/Singapore", at) == "That reminder isn't active any more."
+
+
+def test_snooze_for_3_hours_or_until_tomorrow(db):
+    at = datetime(2026, 10, 12, 22, 30, tzinfo=SG)
+    assert snooze(db, 1, "Asia/Singapore", at, length=180) == "⏰ Snoozed: I'll remind you again Tue 13 Oct at 1:30am."
+    assert snooze(db, 1, "Asia/Singapore", at, length="tmr") == "⏰ Snoozed: I'll remind you again tomorrow at 9am."
+    snoozed = [datetime.fromisoformat(r["remind_at"]).astimezone(SG) for r in db.reminders(1) if r["label"] == "snoozed"]
+    assert [d.strftime("%d %H:%M") for d in snoozed] == ["13 01:30", "13 09:00"]
+
+
+def test_snoozing_until_tomorrow_drops_the_follow_up(db):
+    bot = FakeBot()
+    for day in (12, 14, 15):  # the planned ones, then a follow-up waits for 12pm on the 15th
+        send_due(db, bot, "Asia/Singapore", datetime(2026, 10, day, 9, 0, tzinfo=SG))
+    snooze(db, 1, "Asia/Singapore", datetime(2026, 10, 15, 9, 1, tzinfo=SG), length="tmr")
+    assert [r["label"] for r in db.reminders(1)] == ["snoozed"]
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 15, 12, 0, tzinfo=SG))
+    assert len(bot.sent) == 3  # nothing more today
+
+
+def test_a_snooze_comes_even_after_follow_ups_would_have_stopped(db):
+    snooze(db, 1, "Asia/Singapore", datetime(2026, 10, 17, 8, 0, tzinfo=SG), length="tmr")  # 2 days past due
+    bot = FakeBot()
+    send_due(db, bot, "Asia/Singapore", datetime(2026, 10, 18, 9, 0, tzinfo=SG))
+    assert bot.sent and bot.sent[-1].startswith("🔁 Still not done: Electricity bill")
 
 
 def test_undone_items_are_cancelled_not_sent(db):
@@ -390,6 +416,15 @@ def test_bot_answers_each_message_once(db):
 def test_strangers_and_old_commands_get_no_answer(db):
     bot = FakeChatBot([update(1, "/reminders", chat="999"), update(2, "/reminders", age=3600)])
     assert listener(db, bot).poll_once() == 0 and bot.sent == []
+
+
+def test_plain_messages_go_to_the_handler_and_commands_dont(db):
+    bot = FakeChatBot([update(1, "how much did I spend this week"), update(2, "/reminders"), update(3, "/nope")])
+    heard = []
+    CommandListener(db, lambda: bot, [Command("reminders", "List your reminders", lambda: "listed")],
+                    on_text=lambda text: (heard.append(text) or "answered", [[("OK", "ok:1")]])).poll_once()
+    assert heard == ["how much did I spend this week", "/nope"]
+    assert bot.sent == ["answered", "listed", "answered"] and bot.buttons[0] == [[("OK", "ok:1")]]
 
 
 def test_anything_else_gets_the_command_list(db):

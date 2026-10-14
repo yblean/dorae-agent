@@ -1,4 +1,4 @@
-"""Everything Doraemon does on its own: check Gmail, send Telegram reminders, answer the bot,
+"""Everything Doraemon does on its own: check Gmail, send Telegram reminders, answer the bot (doraemon.phone),
 post the morning briefing and budget alerts, sync brokerage accounts and ask for the monthly
 net worth check-in.
 
@@ -24,7 +24,8 @@ from doraemon.config import Settings
 from doraemon.db import Database
 from doraemon.fx import FxRates
 from doraemon.google_auth import NotConnected
-from doraemon.reminders import Messenger, ReminderJob, list_text, mark_done, snooze
+from doraemon.phone import EXAMPLES, Phone
+from doraemon.reminders import SNOOZE_MINUTES, SNOOZE_TOMORROW, Messenger, ReminderJob, list_text, mark_done, snooze
 from doraemon.telegram import Command, CommandListener, connect_telegram
 
 log = logging.getLogger(__name__)
@@ -182,12 +183,13 @@ class Runtime:
         self.check = CheckJob(self.db, settings, ingest)
         self.check.after_payments = self.brain.budget_alerts
         self.reminders = ReminderJob(self.db, settings.timezone, self.get_messenger, settings.remind_until_done)
+        self.phone = Phone(self.brain, help_text=lambda: self.commands.help_text())  # plain messages to the bot
         # Commands you can send the bot. /remindars is a common misspelling, so it works too.
         self.commands = CommandListener(self.db, self.get_messenger, [
             Command("reminders", "List your reminders", lambda: list_text(self.db, settings.timezone),
                     ("remindars", "list")),
             Command("help", "What I can do", lambda: self.commands.help_text(), ("start",)),
-        ], on_button=self.button)
+        ], on_button=self.button, on_text=self.phone.answer, examples=EXAMPLES)
         self.brokers = brokers  # None: the ones set up in .env (doraemon.brokers.connected)
         self.broker_problem = ""
         self.lock = FileLock(Path(settings.db_path).parent / "jobs.lock")
@@ -217,8 +219,10 @@ class Runtime:
     # --- what the jobs do -------------------------------------------------------------
 
     def button(self, data: str) -> str:
-        """A Done or Snooze button pressed under a Telegram reminder. Returns what to show there."""
-        action, _, ident = data.partition(":")
+        """A button pressed on Telegram: Done or Snooze under a reminder ("snooze:12:180", or "snooze:12" from
+        before there were lengths), or Create/Cancel under a drafted one. Returns what to show there."""
+        action, _, rest = data.partition(":")
+        ident, _, length = rest.partition(":")
         log.info("Telegram button pressed: %s", action)
         if action == "test":  # from python -m doraemon.telegram test
             return f"👍 Buttons work. The {self.name or 'app'} answered."
@@ -230,8 +234,13 @@ class Runtime:
             if text.startswith("✅"):
                 self.db.add_message("calendar", "agent", f"{text}. (You pressed Done on Telegram.)")
             return text
-        if action == "snooze":
-            return snooze(self.db, item_id, self.settings.timezone)
+        if action == "snooze" and (length.isdigit() or length in ("", SNOOZE_TOMORROW)):
+            return snooze(self.db, item_id, self.settings.timezone,
+                          length=int(length) if length.isdigit() else length or SNOOZE_MINUTES)
+        if action == "make":
+            return self.phone.create(item_id)
+        if action == "drop":
+            return self.phone.cancel(item_id)
         return "I don't know that button."
 
     def briefing_tick(self, now: datetime | None = None) -> list[dict]:

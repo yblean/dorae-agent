@@ -7,8 +7,9 @@ DORAEMON_TELEGRAM_TOKEN, then run
     python -m doraemon.telegram test      # sends a test message
 
 `connect` remembers your chat with the bot, so reminders only ever go to you. While Doraemon runs
-the bot also answers commands from that chat (e.g. /reminders) and the buttons under reminders
-(Done, Snooze); other chats get no answer. Messages are sent as plain text; the token is never
+the bot also answers that chat: commands (e.g. /reminders), the buttons under reminders (Done,
+Snooze), and plain messages ("remind me to call mom at 5pm", "how much did I spend this week?",
+see doraemon.phone). Other chats get no answer. Messages are sent as plain text; the token is never
 printed or put in error messages.
 """
 import argparse
@@ -99,15 +100,22 @@ class Command:
         self.name, self.description, self.answer, self.aliases = name, description, answer, aliases
 
 
+Buttons = list[list[tuple[str, str]]]
+
+
 class CommandListener:
-    """Answers commands you send the bot and the buttons you press, while Doraemon runs.
+    """Answers commands you send the bot, other messages and the buttons you press, while Doraemon runs.
     Only your linked chat gets answers."""
 
     def __init__(self, db: Database, bot: Callable[[], Telegram | None], commands: list[Command],
-                 on_button: Callable[[str], str] | None = None) -> None:
+                 on_button: Callable[[str], str] | None = None,
+                 on_text: Callable[[str], tuple[str, Buttons | None]] | None = None,
+                 examples: tuple[str, ...] = ()) -> None:
         self.db, self.bot = db, bot  # bot: () -> your Telegram, or None until connected
         self.commands = commands
         self.on_button = on_button  # a button's data -> what to say, e.g. "done:12" -> "✅ Done: Pay bill"
+        self.on_text = on_text  # a message that isn't a command -> (reply, buttons); None: the command list
+        self.examples = examples  # messages to suggest in the help text
         self.menu_set_for: str | None = None
 
     def lookup(self, text: str) -> Command | None:
@@ -115,7 +123,10 @@ class CommandListener:
         return next((c for c in self.commands if word == c.name or word in c.aliases), None)
 
     def help_text(self) -> str:
-        return "I'm Doraemon's reminder bot. Commands:\n" + "\n".join(f"/{c.name}: {c.description}" for c in self.commands)
+        text = "I'm Doraemon's bot. "
+        if self.examples:
+            text += "Send me things like:\n" + "\n".join(f"• {e}" for e in self.examples) + "\n\n"
+        return text + "Commands:\n" + "\n".join(f"/{c.name}: {c.description}" for c in self.commands)
 
     def poll_once(self, timeout: int = 25) -> int:
         """Wait for new messages and answer them. Returns how many were answered."""
@@ -137,8 +148,14 @@ class CommandListener:
                 continue  # someone else found the bot: they get nothing
             if time.time() - msg.get("date", 0) > STALE_SECONDS:
                 continue
-            command = self.lookup(msg.get("text", ""))
-            bot.send(command.answer() if command else self.help_text())
+            text = msg.get("text", "")
+            command = self.lookup(text) if text.strip().startswith("/") or self.on_text is None else None
+            if command:
+                bot.send(command.answer())
+            elif self.on_text and text.strip():
+                bot.send(*self.on_text(text))
+            else:
+                bot.send(self.help_text())
             answered += 1
         return answered
 

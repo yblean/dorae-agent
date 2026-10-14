@@ -8,7 +8,7 @@ that day and only use whole days: the day before, then that morning.
 While Doraemon runs (the background service or the web app) it sends what's due every minute.
 If it was off when a reminder was due, it sends the latest missed one when it starts again.
 
-Each reminder has Done and Snooze 1h buttons. Until you press Done, the last reminder is followed
+Each reminder has Done and Snooze buttons (1 hour, 3 hours, or tomorrow morning). Until you press Done, the last reminder is followed
 up every few hours in waking hours, for up to two days after the item's time (DORAEMON_REMIND_UNTIL_DONE).
 """
 import logging
@@ -46,6 +46,7 @@ ALL_DAY_STEPS = [Step("1w", "1 week before", 7 * 1440), Step("3d", "3 days befor
 DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES = "1d", 2, 4
 FOLLOW_UP, SNOOZED = "still not done", "snoozed"  # labels of reminders added after the planned ones
 FOLLOW_UP_HOURS, SNOOZE_MINUTES = 3, 60
+SNOOZE_TOMORROW = "tmr"  # a snooze button's length: minutes, or this for 9am tomorrow
 WAKING = (time(9), time(22))  # follow-ups only come between these times
 KEEP_ASKING = timedelta(days=2)  # follow-ups stop this long after the item's time
 VERB = {"bill": "Due", "deadline": "Due", "delivery": "Arriving", "rsvp": "Reply by", "reminder": ""}
@@ -250,8 +251,9 @@ class Messenger(Protocol):
 
 
 def buttons(item_id: int) -> list[list[tuple[str, str]]]:
-    """Done and Snooze under a reminder; Telegram sends back the data part when you press one."""
-    return [[("✅ Done", f"done:{item_id}"), ("⏰ Snooze 1h", f"snooze:{item_id}")]]
+    """Done and the snoozes under a reminder; Telegram sends back the data part when you press one."""
+    return [[("✅ Done", f"done:{item_id}"), ("⏰ 1 hour", f"snooze:{item_id}:60")],
+            [("⏰ 3 hours", f"snooze:{item_id}:180"), ("🌅 Tomorrow 9am", f"snooze:{item_id}:{SNOOZE_TOMORROW}")]]
 
 
 def next_follow_up(after: datetime, user_tz: str) -> datetime:
@@ -281,16 +283,27 @@ def mark_done(db: Database, item_id: int, now: datetime | None = None) -> str:
     return f"✅ Done: {row['title']}"
 
 
-def snooze(db: Database, item_id: int, user_tz: str, now: datetime | None = None) -> str:
-    """You pressed Snooze: one more reminder an hour from now. Returns what to tell you."""
+def snooze(db: Database, item_id: int, user_tz: str, now: datetime | None = None,
+           length: int | str = SNOOZE_MINUTES) -> str:
+    """You pressed Snooze: one more reminder `length` minutes from now, or 9am tomorrow (SNOOZE_TOMORROW).
+    Follow-ups already waiting are dropped, so "tomorrow" means tomorrow. Returns what to tell you."""
     row = db.get("item", item_id)
     if row is None or row["status"] != "confirmed":
         return "That reminder isn't active any more."
     if row["done_at"]:
         return f"Already done: {row['title']}"
-    at = (now or datetime.now(timezone.utc)) + timedelta(minutes=SNOOZE_MINUTES)
+    now, tz = now or datetime.now(timezone.utc), ZoneInfo(user_tz)
+    if length == SNOOZE_TOMORROW:
+        at = datetime.combine(now.astimezone(tz).date() + timedelta(days=1), MORNING, tz)
+        when = "tomorrow at 9am"
+    else:
+        at = now + timedelta(minutes=int(length))
+        when = "at " + short_time(at, tz).split(", ")[1]
+        if at.astimezone(tz).date() != now.astimezone(tz).date():
+            when = short_time(at, tz).replace(", ", " at ")
+    db.cancel_reminders(item_id, label=FOLLOW_UP)
     db.add_reminder(item_id, at, SNOOZED)
-    return f"⏰ Snoozed: I'll remind you again at {short_time(at, ZoneInfo(user_tz)).split(', ')[1]}."
+    return f"⏰ Snoozed: I'll remind you again {when}."
 
 
 def send_due(db: Database, messenger: Messenger | None, user_tz: str, now: datetime | None = None,
@@ -322,7 +335,8 @@ def send_due(db: Database, messenger: Messenger | None, user_tz: str, now: datet
             db.mark_reminder(r["id"], "missed")
         result["missed"] += len(older)
         late = too_late(item, user_tz, now)
-        if late and not (until_done and now < keep_asking_until(item, user_tz)):
+        snoozed = latest["label"] == SNOOZED  # you asked for this one, so it comes however late it is
+        if late and not snoozed and not (until_done and now < keep_asking_until(item, user_tz)):
             db.mark_reminder(latest["id"], "missed")
             result["missed"] += 1
             result["missed_titles"].append(row["title"])

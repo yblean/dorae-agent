@@ -268,9 +268,10 @@ class Database:
                           (status, _now() if status == "sent" else None, reminder_id))
         self.conn.commit()
 
-    def cancel_reminders(self, item_id: int) -> int:
-        cur = self.conn.execute("UPDATE reminders SET status = 'cancelled' WHERE item_id = ? AND status = 'pending'",
-                                (item_id,))
+    def cancel_reminders(self, item_id: int, label: str | None = None) -> int:
+        """Cancel the item's unsent reminders, or only those with `label` (e.g. follow-ups)."""
+        cur = self.conn.execute("UPDATE reminders SET status = 'cancelled' WHERE item_id = ? AND status = 'pending'"
+                                + (" AND label = ?" if label else ""), (item_id, *((label,) if label else ())))
         self.conn.commit()
         return cur.rowcount
 
