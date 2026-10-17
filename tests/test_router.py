@@ -42,6 +42,13 @@ NOW = datetime.now(timezone.utc)
     ("calendar", "What needs my OK?", "waiting", {}),
     ("calendar", "Show my schedule this week", "week", {"which": "this"}),
     ("calendar", "what's on next week", "week", {"which": "next"}),
+    ("calendar", "can you check what do i have going on this week", "week", {"which": "this"}),
+    ("calendar", "what about next week", "week", {"which": "next"}),
+    ("calendar", "any events this week", "week", {"which": "this"}),
+    ("calendar", "show me next week", "week", {"which": "next"}),
+    ("calendar", "how's my week looking", "week", {}),
+    ("calendar", "am i busy next week", "week", {"which": "next"}),
+    ("calendar", "what's planned for next week", "week", {"which": "next"}),
     ("calendar", "what's on tmr", "day", {"day": "tomorrow"}),
     ("calendar", "anything due today?", "day", {"day": "today"}),
     ("calendar", "what's due this week?", "due", {}),
@@ -81,6 +88,15 @@ def test_follow_ups_reuse_the_last_question():
     assert route("money", "what about september", previous="where did I spend the most").slots == {"period": "month:9"}
     assert route("money", "and last month?", previous="why is it so high") is None
     assert route("money", "and last month?") is None
+    # a money follow-up wins over Dorae-2's reading of "this week"
+    assert route("money", "and this week?", previous="how much did I spend last week").slots == {"period": "this_week"}
+    assert route("money", "and this week?").agent == "calendar"
+
+
+def test_week_questions_that_need_the_model_dont_take_the_shortcut():
+    for q in ("why is next week so busy", "add dinner next week", "remind me next week to call mom",
+              "is next week a public holiday", "what about last week"):
+        assert route("calendar", q) is None, q
 
 
 # --- the answers, with a model that must never be called ------------------------------------

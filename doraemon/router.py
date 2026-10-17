@@ -77,7 +77,13 @@ PATTERNS: dict[str, list[tuple[str, str]]] = {  # agent -> [(intent, pattern)], 
                     r"(?: for (?:my )?(?:ok|okay|approval))?|(?:anything|what) (?:to|for me to) (?:confirm|approve)|"
                     r"(?:my )?pending (?:items|stuff)"),
         ("week", r"(?:what(?:'s| is) (?:on )?)?my (?:schedule|calendar|week|agenda)(?: (?:for )?(?P<which>this|next) week)?|"
-                 r"what(?:'s| is) (?:on |happening )?(?P<which>this|next) week|(?P<which>this|next) week'?s? schedule"),
+                 r"what(?:'s| is) (?:on |happening |planned |coming up )?(?:for )?(?P<which>this|next) week|"
+                 r"(?P<which>this|next) week'?s? (?:schedule|plans|events|agenda)|"
+                 r"what do i have(?: going on| on| planned| coming up)?(?: for)? (?P<which>this|next) week|"
+                 r"what am i (?:doing|up to) (?P<which>this|next) week|am i (?:busy|free) (?P<which>this|next) week|"
+                 r"(?:any|my|all my) (?:events|plans|appointments|meetings)(?: for)? (?P<which>this|next) week|"
+                 r"how(?:'s| is| does) my week(?: looking| going| look)?|how(?:'s| is| does) (?P<which>next) week(?: looking| look)?|"
+                 r"(?:and |what about |how about |ok and |and for )?(?:the )?(?P<which>this|next) week"),
         ("day", r"what(?:'s| is) (?:on|happening|due|planned)(?: for me)? (?P<day>today|tomorrow)|"
                 r"(?:anything|what do i have) (?:on |due |planned )?(?P<day>today|tomorrow)|"
                 r"my (?:schedule|agenda|plans|day) (?:for )?(?P<day>today|tomorrow)"),
@@ -170,12 +176,10 @@ def route(agent: str, question: str, previous: str | None = None) -> Route | Non
     found = _match(agent, q)
     if found:
         return found
-    other = "calendar" if agent == "money" else "money"
-    found = _match(other, q)
-    if found:
-        return found  # the other agent's question: the caller points you there
+    # a follow-up of your last question ("and this week?") comes before the other agent's reading of it
     if previous and (m := re.fullmatch(rf"{_POLITE_START}{FOLLOW_UP.pattern}{_POLITE_END}", q)):
         before = route(agent, previous)
         if before and before.agent == agent and before.intent in TAKES_PERIOD:
             return Route(agent, before.intent, {**before.slots, "period": period_name(m["period"])})
-    return None
+    other = "calendar" if agent == "money" else "money"
+    return _match(other, q)  # the other agent's question: the caller points you there

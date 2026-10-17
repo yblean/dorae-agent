@@ -72,6 +72,8 @@ INSTANT = [
     ("money", "how can I stay within my budget?", "model"),
     ("calendar", "what needs my ok", "waiting"),
     ("calendar", "what's on tomorrow?", "day"),
+    ("calendar", "can you check what do i have going on this week", "week"),
+    ("calendar", "what about next week", "week"),
     ("calendar", "my reminders", "reminders"),
     ("calendar", "remind me to call mom at 5pm tmr", "reminder"),
     ("calendar", "add dinner with Sam on 26/10 7-9pm", "event"),
