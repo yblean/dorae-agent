@@ -103,7 +103,8 @@ After that, **Confirm** adds the event (with reminders and a link to the email) 
 Bills, deadlines, deliveries and RSVPs don't go to the calendar: they get Telegram reminders instead (below).
 `python -m doraemon.calendar_sync push` adds anything you confirmed before connecting.
 Ask Dorae-2 "Show my schedule this week" (or "next week") for a week view of all the calendars you
-show in Google Calendar, plus things from your email that aren't in it yet.
+show in Google Calendar, plus things from your email that aren't in it yet. All your calendars are read in one batched request
+and remembered for 3 minutes, so a week takes about a second and a follow-up is instant.
 
 Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
 subject looks like an order, booking, bill or delivery.
@@ -224,7 +225,7 @@ Telegram bot (`doraemon/events.py`) and drafted instantly; other wordings go to 
 
 **Instant answers.** Everyday lookups skip the model: how much you spent (in a period, on a category, at
 a shop), breakdowns, your latest or biggest purchase, top merchants, budget status, the monthly trend,
-what needs your OK, today, tomorrow, this or next week, what's due, trips, and your reminders. Follow-ups
+what needs your OK, today, tomorrow, this or next week ("what do I have going on this week", "what about next week"), what's due, trips, and your reminders. Follow-ups
 like "and last month?" count too. These answer in milliseconds instead of 10-20 seconds
 (`doraemon/router.py`). A question only takes this path if all of it matches one of these shapes: advice
 ("how can I stay within my budget?"), "why", comparisons and anything worded differently still go to the

@@ -10,7 +10,8 @@ and never changes them. Hide or delete the Doraemon calendar in Google Calendar 
 """
 import argparse
 import re
-from datetime import date, datetime, time, timedelta
+import threading
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -169,6 +170,9 @@ def connect_calendar(settings: Settings, db: Database, interactive: bool = False
 # --- reading your week ----------------------------------------------------------
 
 HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+CALENDARS_FOR = timedelta(minutes=30)  # the list of calendars you show changes rarely
+EVENTS_FOR = timedelta(minutes=3)  # long enough for follow-ups; an event added on your phone shows within minutes
+BATCH = 50  # Google's limit of requests in one batch
 
 
 def schedule_event(e: dict, calendar: str, color: str, zone: ZoneInfo) -> dict | None:
@@ -193,7 +197,7 @@ def schedule_event(e: dict, calendar: str, color: str, zone: ZoneInfo) -> dict |
     return {"title": e.get("summary") or "(No title)", "first": first.isoformat(), "last": max(first, last).isoformat(),
             "start": at.strftime("%H:%M") if at else "", "end": until.strftime("%H:%M") if until else "",
             "calendar": calendar, "color": color if HEX_COLOR.fullmatch(color or "") else "#9AA0A6",
-            "location": e.get("location", ""), "link": link if link.startswith("https://") else ""}
+            "location": e.get("location", ""), "link": link if link.startswith("https://") else "", "id": e.get("id", "")}
 
 
 class Schedule(Protocol):
@@ -206,33 +210,64 @@ class GoogleSchedule:
     def __init__(self, creds, timezone: str) -> None:
         self.service = build("calendar", "v3", credentials=creds, cache_discovery=False)
         self.zone = ZoneInfo(timezone)
+        self.lock = threading.Lock()  # one Google request at a time: the client isn't thread-safe
+        self.listed: tuple[datetime, list[dict]] | None = None  # (when, the calendars you show)
+        self.read: dict[tuple[date, date], tuple[datetime, list[dict]]] = {}  # (first, last) -> (when, events)
 
     def calendars(self) -> list[dict]:
+        """The calendars you show in Google Calendar, remembered for CALENDARS_FOR (they rarely change)."""
+        now = datetime.now(timezone.utc)
+        if self.listed and now - self.listed[0] < CALENDARS_FOR:
+            return self.listed[1]
         found, page = [], None
         while True:
             resp = self.service.calendarList().list(pageToken=page).execute()
             found += [c for c in resp.get("items", []) if (c.get("primary") or c.get("selected")) and not c.get("hidden")]
             page = resp.get("nextPageToken")
             if not page:
-                return found
+                break
+        self.listed = (now, found)
+        return found
 
     def events(self, first: date, last: date) -> list[dict]:
-        """Events from the first to the last day (both included), all-day ones first each day."""
-        t0 = datetime.combine(first, time(0), self.zone)
-        t1 = datetime.combine(last + timedelta(days=1), time(0), self.zone)
+        """Events from the first to the last day (both included), all-day ones first each day.
+
+        All your calendars are asked in one batched request rather than one after another (7 calendars took
+        about 3s), and the answer is remembered for EVENTS_FOR, so "and next week?" right after is instant."""
+        with self.lock:
+            now = datetime.now(timezone.utc)
+            hit = self.read.get((first, last))
+            if hit is None or now - hit[0] >= EVENTS_FOR:
+                hit = (now, self._fetch(first, last))
+                self.read = {k: v for k, v in self.read.items() if now - v[0] < EVENTS_FOR}
+                self.read[(first, last)] = hit
+            return [dict(ev) for ev in hit[1]]  # copies: callers add their own items to the list
+
+    def _fetch(self, first: date, last: date) -> list[dict]:
+        t0 = datetime.combine(first, time(0), self.zone).isoformat()
+        t1 = datetime.combine(last + timedelta(days=1), time(0), self.zone).isoformat()
+        listing = lambda cal_id, page=None: self.service.events().list(
+            calendarId=cal_id, timeMin=t0, timeMax=t1, singleEvents=True, orderBy="startTime", maxResults=250,
+            pageToken=page)
+        cals = self.calendars()
+        answers: dict[str, dict | Exception] = {}
+        for start in range(0, len(cals), BATCH):  # Google takes up to 50 requests per batch
+            batch = self.service.new_batch_http_request()
+            for cal in cals[start:start + BATCH]:
+                batch.add(listing(cal["id"]), callback=lambda _id, resp, error, cid=cal["id"]:
+                          answers.__setitem__(cid, error or resp))
+            batch.execute()
         found = []
-        for cal in self.calendars():
+        for cal in cals:
+            resp = answers.get(cal["id"])
+            if isinstance(resp, Exception):
+                raise resp
             name = cal.get("summaryOverride") or cal.get("summary", "")
-            page = None
-            while True:
-                resp = self.service.events().list(
-                    calendarId=cal["id"], timeMin=t0.isoformat(), timeMax=t1.isoformat(), singleEvents=True,
-                    orderBy="startTime", maxResults=250, pageToken=page).execute()
+            while resp:
                 found += [ev for e in resp.get("items", [])
                           if (ev := schedule_event(e, name, cal.get("backgroundColor", ""), self.zone))]
-                page = resp.get("nextPageToken")
-                if not page:
-                    break
+                page = resp.get("nextPageToken")  # more than 250 events in the range: rare, so asked one by one
+                resp = listing(cal["id"], page).execute() if page else None
         return sorted(found, key=lambda ev: (ev["first"], ev["start"]))
 
 

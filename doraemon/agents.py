@@ -589,9 +589,13 @@ class Brain:
             except Exception as e:  # network, or the API turned off: say so instead of failing
                 problem = str(e)[:160]
         color = styled(CALENDAR, self.db).color
+        # Items Doraemon put in Google Calendar show from there. One added since the calendars were last read
+        # (they're remembered for a few minutes), or with Google unreadable, shows from here instead.
+        in_google = {e["id"] for e in events if e.get("id")}
         for r in self.db.items(("proposed", "confirmed")):
             day = self._dated(r)
-            if r["calendar_event_id"] or r["done_at"] or day is None or not first <= day <= last:
+            if (r["calendar_event_id"] and r["calendar_event_id"] in in_google) or r["done_at"] or day is None \
+                    or not first <= day <= last:
                 continue  # already in Google Calendar, done, or not in these days
             item = item_model(r)
             timed = not (item.all_day or item.type in ALL_DAY_TYPES)

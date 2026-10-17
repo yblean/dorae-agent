@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -200,3 +200,99 @@ def test_week_asks_to_connect_when_reading_isnt_approved(app_with):
     client.headers["x-requested-with"] = "fetch"
     html = client.post("/chat/calendar/ask", data={"q": "show my schedule"}).json()["html"]
     assert "python -m doraemon.calendar_sync connect" in html
+
+
+# --- reading your calendars quickly ---------------------------------------------------------
+
+class FakeGoogle:
+    """calendarList / events / batch, counting round trips to Google."""
+
+    def __init__(self, calendars=3):
+        self.trips, self.cals = 0, [{"id": f"c{i}", "summary": f"Cal {i}", "selected": True} for i in range(calendars)]
+
+    def calendarList(self):
+        return self
+
+    def list(self, pageToken=None, **query):
+        return _Call(self, {"items": self.cals} if "calendarId" not in query else
+                     {"items": [{"id": f"e-{query['calendarId']}", "summary": f"Event in {query['calendarId']}",
+                                 "start": {"dateTime": "2026-10-20T09:00:00+08:00"},
+                                 "end": {"dateTime": "2026-10-20T10:00:00+08:00"}}]})
+
+    def events(self):
+        return self
+
+    def new_batch_http_request(self):
+        return _Batch(self)
+
+
+class _Call:
+    def __init__(self, google, answer):
+        self.google, self.answer = google, answer
+
+    def execute(self):
+        self.google.trips += 1
+        return self.answer
+
+
+class _Batch:
+    def __init__(self, google):
+        self.google, self.calls = google, []
+
+    def add(self, call, callback):
+        self.calls.append((call, callback))
+
+    def execute(self):
+        self.google.trips += 1  # one round trip for the whole batch
+        for n, (call, callback) in enumerate(self.calls):
+            callback(str(n), call.answer, None)
+
+
+def schedule(google):
+    import threading
+    from doraemon.calendar_sync import GoogleSchedule
+    s = GoogleSchedule.__new__(GoogleSchedule)
+    s.service, s.zone, s.lock, s.listed, s.read = google, ZoneInfo("Asia/Singapore"), threading.Lock(), None, {}
+    return s
+
+
+def test_all_calendars_are_read_in_one_batch_and_remembered(monkeypatch):
+    from doraemon import calendar_sync
+    google = FakeGoogle(calendars=7)
+    s = schedule(google)
+    week = (date(2026, 10, 19), date(2026, 10, 25))
+    events = s.events(*week)
+    assert len(events) == 7 and google.trips == 2  # the calendar list, then one batch for all 7
+    assert {e["id"] for e in events} == {f"e-c{i}" for i in range(7)}
+    events.append({"title": "mine"})  # the caller's own list
+    assert len(s.events(*week)) == 7 and google.trips == 2  # remembered: no trip at all
+    s.events(date(2026, 10, 26), date(2026, 11, 1))
+    assert google.trips == 3  # another week: one batch (the calendar list is remembered too)
+    later = datetime.now(timezone.utc) + calendar_sync.EVENTS_FOR
+    monkeypatch.setattr(calendar_sync, "datetime", type("D", (datetime,), {"now": staticmethod(lambda tz=None: later)}))
+    s.events(*week)
+    assert google.trips == 4  # a few minutes on, it reads again
+
+
+def test_an_event_confirmed_since_the_calendars_were_read_still_shows(tmp_path, settings):
+    from doraemon.agents import Brain
+    s = dataclasses.replace(settings, db_path=str(tmp_path / "d.db"), timezone="Asia/Singapore")
+    db = Database(s.db_path)
+    day = datetime.now(ZoneInfo("Asia/Singapore")).replace(hour=19, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    for gmail_id, title, event_id in (("g1", "Dentist", "ev-dentist"), ("g2", "Date night", "ev-new")):
+        item = ActionItem(message_id="m", type="appointment", title=title, start_at=day, end_at=None, all_day=False,
+                          timezone="Asia/Singapore", evidence_snippet="", confidence=0.9)
+        email = ParsedEmail(message_id="m", subject="s", sender="a@b.c", sent_at=day, body="")
+        db.save_result(gmail_id, "t", email, Extraction(message_id="m", items=[item]), "extracted")
+        item_id = db.conn.execute("SELECT MAX(id) FROM action_items").fetchone()[0]
+        db.update("item", item_id, "confirm", status="confirmed")
+        db.set_calendar_event(item_id, event_id)
+
+    class ReadEarlier:  # Google's answer from before "Date night" was added
+        def events(self, first, last):
+            return [{"title": "📌 Dentist", "first": day.date().isoformat(), "last": day.date().isoformat(),
+                     "start": "19:00", "end": "20:00", "calendar": "Doraemon", "color": "#000000", "location": "",
+                     "link": "", "id": "ev-dentist"}]
+    brain = Brain(db, s, None, schedule=lambda: ReadEarlier())
+    events, _ = brain.calendar_events(day.date(), day.date())
+    assert sorted(e["title"] for e in events) == ["Date night", "📌 Dentist"]  # each once
