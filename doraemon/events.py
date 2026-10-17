@@ -19,12 +19,16 @@ from doraemon.display import describe_when
 from doraemon.reminders import WANTS_REMINDER, split_when
 from doraemon.schema import ActionItem, ItemType
 
-_POLITE = r"(?:(?:hey|hi|ok|okay|pls|please|can you|could you|can u|pls can you)\W+)*"
+_POLITE = r"(?:(?:hey|hi|ok|okay|pls|please|can you|could you|can u|pls can you|help me(?: to)?)\W+)*"
+# A name you give it: 'titled "Zx Convocation"', 'called Sam's farewell', or just in quotes
+_NAMED = re.compile(r"""\b(?:titled|called|named)\s+["“'](?P<q>[^"”']+)["”']|["“](?P<q2>[^"”]+)["”]|"""
+                    r"""\b(?:titled|called|named)\s+(?P<w>.+?)(?=\s+(?:on|at|for|this|next|tomorrow|today)\b|$)""", re.I)
+_CLOCK_WORD = re.compile(r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\b\.?|\b\d{1,2}:\d{2}\b", re.I)
 _THING = r"(?:(?:new\s+)?(?:calendar\s+)?(?:event|appointment|appt|meeting))"
 # "add ...", "schedule ...", "make an event ...", "new event: ...", "event: ...". "event" alone, or any of them
 # before for/called/:, is left out of the title; "meeting with prof" keeps its "meeting".
 _ASK_RE = re.compile(
-    rf"^\s*{_POLITE}(?:(?P<verb>add|put|schedule|plan|create|set\s+up|make|new)\s+(?:me\s+)?(?:an?\s+|the\s+)?"
+    rf"^\s*{_POLITE}(?:(?P<verb>add|put|schedule|plan|create|set\s+up|set|make|new)\s+(?:me\s+)?(?:an?\s+|the\s+)?"
     rf"(?:{_THING}\s*(?:for|called|named|:)\s*|(?:new\s+)?(?:calendar\s+)?event\s+)?|(?:{_THING}|calendar)\s*:\s*)"
     rf"(?P<rest>.+)$", re.I | re.S)
 _SAYS_EVENT = re.compile(r"\b(?:event|appointment|appt|meeting|calendar)\b", re.I)
@@ -70,15 +74,25 @@ def split_event(text: str) -> EventAsk | None:
     if asked is None or WANTS_REMINDER.search(text):  # reminders are doraemon.reminders' to read
         return None
     says_event = bool(_SAYS_EVENT.search(text))
-    if (asked["verb"] or "").lower() in ("make", "new") and not says_event:
-        return None  # "make dinner tomorrow" is a plan, not a request for an event
+    if (asked["verb"] or "").lower() in ("make", "new", "set") and not says_event:
+        return None  # "make dinner tomorrow" is a plan, "set my budget" a budget: not requests for an event
     rest = _CALENDAR.sub(" ", asked["rest"])
+    named = _NAMED.search(rest)
+    if named:  # the title you gave; the date and time come from the rest
+        rest = rest[:named.start()] + " " + rest[named.end():]
     end = ""
     if days := _DAYS_RE.search(rest):
         rest, end = rest[:days.start()] + f" {days[1]} " + rest[days.end():], days[2]
     elif ranged := _time_range(rest):
         rest, _, end = ranged
     title, when = split_when(rest)
+    if named:
+        name = (named["q"] or named["q2"] or named["w"]).strip(" .,")
+        title = (name[:1].upper() + name[1:])[:80]
+    clocks = _CLOCK_WORD.findall(when)
+    if len(clocks) > 1 and len({c.replace(" ", "").lower() for c in clocks}) == 1:  # "friday 2pm ... at 2pm"
+        first = when.find(clocks[0]) + len(clocks[0])
+        when = when[:first] + re.sub(rf"\s*(?:\bat\s+)?{re.escape(clocks[0])}", "", when[first:])
     if not when and not says_event:
         return None
     if re.search(r"\b(?:how|what|why|which)\b|\?", title, re.I):  # "add X on 26/10 and how much did I spend": a question too
