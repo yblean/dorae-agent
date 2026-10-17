@@ -291,6 +291,22 @@
     {% for r in m.reminders %}<div class="brief-ev" style="--c: #075985"><span class="brief-time">{{ r.when }}</span><span class="brief-what">🔔 {{ r.title }}</span></div>{% endfor %}{% endif %}
   </div>
 
+  {% elif m.kind == 'days' and m.payload %}
+  <div class="card briefing">
+    <div class="card-head"><span>{{ m.payload.label }}</span></div>
+    {% for d in m.days %}
+    <div class="brief-head">{{ d.label }}</div>
+    {% for e in d.events %}
+    <div class="brief-ev{{ ' ev-waiting' if e.waiting }}" style="--c: {{ e.color }}">
+      <span class="brief-time">{{ e.when }}</span>
+      <span class="brief-what">{% if e.link %}<a href="{{ e.link }}" target="_blank" rel="noopener noreferrer">{{ e.title }}</a>{% else %}{{ e.title }}{% endif %}
+        <span class="note">{{ e.calendar }}{% if e.location %} · {{ e.location }}{% endif %}{% if e.waiting %} · needs your OK{% endif %}</span></span>
+    </div>
+    {% else %}<div class="note brief-empty">Free.</div>{% endfor %}
+    {% else %}<div class="note brief-empty">Nothing on.</div>
+    {% endfor %}
+  </div>
+
   {% elif m.kind == 'week' and m.payload %}
   <div class="card week-card">
     <div class="card-head"><span>{{ m.payload.label }}</span><span class="note">{{ m.payload.events|length }} events</span></div>

@@ -201,6 +201,8 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["bills"] = [card(r) for r in (db.get("item", i) for i in payload["bills"]) if r]
             view["trips"] = [card(r) for r in (db.get("item", i) for i in payload["trips"]) if r]
             view["reminders"] = [{**r, "when": clock(r["time"])} for r in payload["reminders"]]
+        elif row["kind"] == "days" and payload:
+            view["days"] = [{**d, "events": [event_line(e, d["date"]) for e in d["events"]]} for d in payload["days"]]
         elif row["kind"] == "week" and payload:
             view["days"] = week_days(payload)
             view["calendars"] = {e["calendar"]: e["color"] for e in payload["events"]}

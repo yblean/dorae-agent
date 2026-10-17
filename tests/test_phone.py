@@ -151,3 +151,9 @@ def test_a_multi_day_event_shows_its_days(with_calendar):
     assert text.split("\n")[1] == f"{first:%a} 20 Nov – {last:%a} 23 Nov (all day)"
     rt.button(buttons[0][0][1])
     assert cal.bodies[0]["start"] == {"date": f"{year}-11-20"} and cal.bodies[0]["end"] == {"date": f"{year}-11-24"}
+
+
+def test_days_questions_list_each_day_on_telegram(rt):
+    text, _ = rt.phone.answer("anything this weekend?")
+    assert text.startswith("This weekend, ") and "nothing on your calendars" in text and "\n• Free" in text
+    assert rt.phone.answer("what can you do?")[0] == rt.commands.help_text()  # the bot's own help, both agents

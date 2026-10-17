@@ -123,7 +123,7 @@ class Route:
 
 def clean(question: str) -> str:
     q = unslang(question).lower().replace("’", "'")
-    q = re.sub(r"[?!.]+", " ", q)
+    q = re.sub(r"[?!]+|(?<!\d)\.|\.(?!\d)", " ", q)  # keeps the point in 4.87
     q = re.sub(r"\s+", " ", q).strip(" ,")
     return q
 
@@ -182,4 +182,189 @@ def route(agent: str, question: str, previous: str | None = None) -> Route | Non
         if before and before.agent == agent and before.intent in TAKES_PERIOD:
             return Route(agent, before.intent, {**before.slots, "period": period_name(m["period"])})
     other = "calendar" if agent == "money" else "money"
-    return _match(other, q)  # the other agent's question: the caller points you there
+    # the other agent's question (the caller points you there), or else the looser reading below
+    return _match(other, q) or understand(agent, q, previous)
+
+
+# --- the looser reading: topic words and time words anywhere in the question ------------------------
+#
+# The shapes above take a question only if ALL of it matches. Most lookups are worded more freely
+# ("whats my schedule like next week", "do i have anything on november", "did i have a 4.87 transaction
+# today"), so understand() looks for what it's about (spending, budget, schedule, reminders, bills,
+# trips) and when (today, friday, this weekend, november) anywhere in it, after fixing common typos.
+# Anything that needs thought (why, should, how can I, compare, advice) or asks to change something
+# (add, set, cancel) still goes to the model: those are the questions it's for.
+
+TYPOS = {"monrh": "month", "mnth": "month", "mth": "month", "montn": "month", "wk": "week", "wkend": "weekend",
+         "weeekend": "weekend", "whats": "what's", "wats": "what's", "spendings": "spending", "spendng": "spending",
+         "calender": "calendar", "calandar": "calendar", "calander": "calendar", "schedual": "schedule",
+         "shedule": "schedule", "schdule": "schedule", "remindar": "reminder", "remindars": "reminders",
+         "reminer": "reminder", "reminers": "reminders", "transcation": "transaction", "transcations": "transactions",
+         "payemnts": "payments", "budjet": "budget", "buget": "budget", "tmrw": "tomorrow", "anythin": "anything"}
+# Words worth correcting when one letter is off ("spemt", "novemebr"); short words are left alone
+VOCAB = ["month", "week", "weekend", "spend", "spent", "spending", "budget", "budgets", "schedule", "calendar",
+         "reminder", "reminders", "payment", "payments", "transaction", "transactions", "purchase", "purchases",
+         "yesterday", "tomorrow", "today", "anything", "events", "appointments", "deadlines", "flights",
+         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", *MONTHS,
+         "monthly", "weekly", "daily", "weekends", "months", "weeks", "events"]  # real words, so they stay as they are
+
+REAL_WORDS = {"remind", "mouth", "money", "spends", "events", "minute", "mention", "monster", "mother", "weeks",
+              "spent", "payment", "purchase", "today", "fridays", "sunday", "monday", "transport"}
+NEEDS_THOUGHT = re.compile(
+    r"\b(?:why|should|shall|how (?:can|could|do|should|would|to)|could i|can i afford|afford|advice|advise|tips?|"
+    r"suggest|recommend|cut (?:down|back)|reduce|save more|compare[ds]?|comparison|versus|vs|better|worse|predict|"
+    r"forecast|will i|if i|what if|explain|ideas?|joke|poem|write|story|translate)\b")
+CHANGES = re.compile(r"^(?:\W*(?:hey|hi|ok|okay|so|please|pls|can you|could you|help me(?: to)?)\W+)*"
+                     r"(?:add|create|make|set|book|put|schedule (?:a|an|my|me)|remind|cancel|delete|remove|move|"
+                     r"change|edit|update|rename|mark)\b|\bremind me\b")
+MONEY_TOPIC = re.compile(r"\b(?:spend|spent|spending|paid|pay|payments?|costs?|purchases?|bought|buy|transactions?|"
+                         r"expenses?|money|charged?|budgets?|net ?worth|worth|income|salary|earn(?:ed|t)?|"
+                         r"holdings?|portfolio|investments?|stocks?|merchants?|shops?)\b")
+CALENDAR_TOPIC = re.compile(r"\b(?:schedule|calendar|agenda|events?|plans?|planned|busy|free|anything|"
+                            r"what do i have|what(?:'s| is) on|happening|appointments?|meetings?|reminders?|bills?|"
+                            r"due|deadlines?|trips?|flights?|travel|hotels?|needs? my (?:ok|okay|approval)|pending|"
+                            r"waiting for my|to (?:confirm|approve))\b")
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+_DAY_WORD = r"(?:mon|tue|tues|wed|wednes|thu|thur|thurs|fri|sat|satur|sun)(?:day)?"
+HELP = re.compile(r"^(?:\W*(?:hey|hi|ok|so)\W+)*(?:help|what can (?:you|dorae-?[12]|doraemon) do|"
+                  r"what (?:can|do) i ask(?: you)?|how do i use (?:you|this))\W*$")
+
+
+def fix_typos(q: str) -> str:
+    import difflib
+    words = []
+    for w in q.split(" "):
+        fixed = TYPOS.get(w, w)
+        # a real word that starts a vocabulary word ("remind" of reminder) is left alone: it's not a typo
+        if fixed == w and len(w) >= 5 and w.isalpha() and w not in VOCAB and w not in REAL_WORDS \
+                and not any(v.startswith(w) or w.startswith(v) for v in VOCAB):
+            close = difflib.get_close_matches(w, VOCAB, n=1, cutoff=0.8)
+            fixed = close[0] if close else w
+        words.append(fixed)
+    return " ".join(words)
+
+
+def spoken_when(q: str) -> str | None:
+    """The time a calendar question is about, as Brain.days_range reads it: 'today', 'tomorrow',
+    'this_weekend', 'next_weekend', 'this_week', 'next_week', 'last_week', 'this_month', 'next_month', 'month:11',
+    'weekday:4' (+ ':next'), 'date:26/10'. None when it names no time."""
+    for name, words in (("today", r"\btoday\b"), ("tomorrow", r"\btomorrow\b"),
+                        ("next_weekend", r"\bnext weekend\b"), ("this_weekend", r"\b(?:this |the )?weekend\b"),
+                        ("next_week", r"\bnext week\b"), ("last_week", r"\b(?:last|previous|past) week\b"),
+                        ("this_week", r"\b(?:this|the|my) week\b"), ("next_month", r"\bnext month\b"),
+                        ("this_month", r"\bthis month\b")):
+        if re.search(words, q):
+            return name
+    if m := re.search(rf"\b(?:(this|next|coming) )?({_DAY_WORD})\b", q):
+        day = next(i for i, d in enumerate(_WEEKDAYS) if d.startswith(m[2][:3]))
+        return f"weekday:{day}" + (":next" if m[1] == "next" else "")
+    if m := re.search(r"\b(\d{1,2})[/.](\d{1,2})\b", q):
+        return f"date:{m[1]}/{m[2]}"
+    if m := re.search(rf"\b(?:{_MONTH})\b(?! (?:i|you|we)\b)", q):  # not "may i see..."
+        return f"month:{next(i for i, n in enumerate(MONTHS, 1) if m[0].startswith(n[:3]))}"
+    return None
+
+
+def loose_period(q: str) -> str | None:
+    """A spending period named anywhere in the question ('so far this month', 'in sept', 'yesterday')."""
+    if m := re.search(rf"\b(?:{_PERIOD})\b", q):
+        return period_name(m[0])
+    return None
+
+
+def understand(agent: str, q: str, previous: str | None = None) -> Route | None:
+    """The looser reading of an everyday lookup, or None for the model."""
+    q = fix_typos(q)
+    if HELP.match(q):
+        return Route(agent, "help")
+    if NEEDS_THOUGHT.search(q) or CHANGES.search(q):
+        return None
+    money, calendar = bool(MONEY_TOPIC.search(q)), bool(CALENDAR_TOPIC.search(q))
+    if money and calendar:  # "bills" and "spend" both: read the stronger signals
+        money = not re.search(r"\b(?:bills?|due|deadlines?|reminders?|schedule|calendar)\b", q)
+        calendar = not money
+    if not (money or calendar):
+        # a bare follow-up of your last question: "what about friday?", "and in september?"
+        if previous and len(q.split()) <= 6:
+            before = route(agent, previous)
+            if before and before.intent in ("days", "week", "day") and spoken_when(q):
+                return _calendar_route(spoken_when(q), "days")
+            if before and before.intent in TAKES_PERIOD and loose_period(q):
+                return Route(before.agent, before.intent, {**before.slots, "period": loose_period(q)})
+        return None
+    return _money(q) if money else _calendar(q)
+
+
+NOT_A_SHOP = {"my", "the", "a", "an", "this", "last", "next", "today", "yesterday", "tomorrow", "it", "them", "that",
+              "stuff", "things", "average", "total", "budget", "budgets", "spending", "payments", "card", "paylah",
+              "food", "me", "earth", "track", "top", *_WEEKDAYS, *(d[:3] for d in _WEEKDAYS), *CATEGORY_WORDS}
+
+
+def _money(q: str) -> Route | None:
+    slots = {}
+    if period := loose_period(q):
+        slots["period"] = period
+    cat = re.search(rf"\b(?:on|for) (?P<c>{_CAT})\b|\b(?P<c2>{_CAT}) (?:spending|payments?|purchases?|transactions?)\b", q)
+    if cat:
+        slots["category"] = CATEGORY_WORDS[cat["c"] or cat["c2"]]
+    if (shop := re.search(r"\bat ([a-z0-9][\w&' .-]{1,30}?)(?: (?:on|in|this|last|today|yesterday|so far)\b|$)", q)) \
+            and not re.match(r"\d", shop[1]):
+        name = shop[1].strip()
+        if re.match(r"(?:the|my|a|an) ", name):  # "at the airport on my trip": a place, not a shop's name
+            return None
+        if name in CATEGORY_WORDS:
+            slots["category"] = CATEGORY_WORDS[name]
+        else:
+            slots["merchant"] = name
+    if not ({"merchant", "category"} & slots.keys()):  # "how much did grab cost me", "spent on netflix"
+        shop = re.search(r"\bdid ([a-z0-9][\w&'-]{1,25}) cost\b|\b(?:on|at|from|with) ([a-z][\w&'-]{1,25})\b", q)
+        name = shop and (shop[1] or shop[2])
+        if name and name not in NOT_A_SHOP and not name.startswith(tuple(m[:3] for m in MONTHS)):
+            slots["merchant"] = name
+    if re.search(r"\bnet ?worth\b|\bhow much am i worth\b", q):
+        return Route("money", "networth")
+    if re.search(r"\b(?:income|salary|earn(?:ed|t)?|got paid|kept|savings?|saved)\b", q):
+        return Route("money", "income", {k: v for k, v in slots.items() if k == "period"})
+    if re.search(r"\b(?:holdings?|portfolio|investments?|stocks?|positions)\b", q):
+        return Route("money", "holdings")
+    if re.search(r"\bbudgets?\b", q):
+        return Route("money", "budget")
+    if re.search(r"\b(?:trend|each month|per month|by month|monthly|going (?:up|down)|over time|over the months)\b", q):
+        return Route("money", "trend", {k: v for k, v in slots.items() if k == "category"})
+    if re.search(r"\b(?:breakdown|by category|categor(?:y|ies)|split)\b", q):
+        return Route("money", "breakdown", {k: v for k, v in slots.items() if k == "period"})
+    if re.search(r"\b(?:top|most)\b.*\b(?:merchants?|shops?|places?|stores?)\b|\bwhere\b.*\bmost\b", q):
+        return Route("money", "top", {k: v for k, v in slots.items() if k == "period"})
+    if re.search(r"\b(?:biggest|largest|most expensive|highest|priciest)\b", q):
+        return Route("money", "biggest", {k: v for k, v in slots.items() if k == "period"})
+    if re.search(r"\b(?:latest|newest|most recent|recent|recently|lately|last (?:purchase|payment|transaction|thing))\b", q):
+        return Route("money", "latest")
+    if amount := re.search(r"(?<![\d/])\$?(\d+\.\d{1,2})\b", q):
+        return Route("money", "payments", {**slots, "amount": amount[1]})
+    if re.search(r"\b(?:payments?|transactions?|purchases?|list|show|what did i (?:buy|spend (?:it )?on|pay for)|"
+                 r"what i (?:bought|spent on))\b", q):
+        return Route("money", "payments", slots)
+    return Route("money", "total", slots)
+
+
+def _calendar(q: str) -> Route | None:
+    if re.search(r"\breminders?\b", q):
+        return Route("calendar", "reminders")
+    if re.search(r"\bneeds? my (?:ok|okay|approval)\b|\bpending\b|\bwaiting for my\b|\bto (?:confirm|approve)\b", q):
+        return Route("calendar", "waiting")
+    if re.search(r"\b(?:trips?|flights?|travel|hotels?)\b", q):
+        return Route("calendar", "trips")
+    when = spoken_when(q)
+    if re.search(r"\b(?:bills?|due|deadlines?)\b", q):
+        # the next 7 days; "due this month" or "the bill from SP" is a search for the model
+        return Route("calendar", "due") if when in (None, "this_week") and not re.search(r"\b(?:from|for)\b", q) else None
+    if when is None and not re.search(r"\b(?:schedule|calendar|agenda|plans|events|anything|busy|free|"
+                                      r"what do i have|happening)\b", q):
+        return None  # "when is my dentist appointment": a search for one thing, the model's to find
+    return _calendar_route(when or "this_week", "days")
+
+
+def _calendar_route(when: str, intent: str) -> Route:
+    if when in ("this_week", "next_week"):
+        return Route("calendar", "week", {"which": when.split("_")[0]})
+    return Route("calendar", intent, {"when": when})

@@ -225,11 +225,17 @@ Telegram bot (`doraemon/events.py`) and drafted instantly; other wordings go to 
 
 **Instant answers.** Everyday lookups skip the model: how much you spent (in a period, on a category, at
 a shop), breakdowns, your latest or biggest purchase, top merchants, budget status, the monthly trend,
-what needs your OK, today, tomorrow, this or next week ("what do I have going on this week", "what about next week"), what's due, trips, and your reminders. Follow-ups
-like "and last month?" count too. These answer in milliseconds instead of 10-20 seconds
-(`doraemon/router.py`). A question only takes this path if all of it matches one of these shapes: advice
-("how can I stay within my budget?"), "why", comparisons and anything worded differently still go to the
-model. `DORAEMON_FAST_ANSWERS=off` sends everything to the model.
+what needs your OK, any day or span on your calendars (today, Friday, 26/10, this weekend, this or next
+week, November), what's due, trips, your reminders, a payment of a given amount ("did I have a 4.87
+transaction?") and what each agent can do. Follow-ups like "and last month?" or "what about friday?" count too.
+These answer in milliseconds instead of 10-20 seconds (`doraemon/router.py`).
+
+It reads them two ways. First the exact shapes ("how much did I spend on dining last month"); then, for freer
+wording, it looks for what the question is about (spending, budget, schedule, reminders, bills, trips) and when
+(today, friday, november) anywhere in it, after fixing common typos ("this monrh"). Anything that needs thought
+("why", "should", "how can I", compare, advice), asks to change something (add, set, cancel, remind me) or
+searches for one thing ("when is my dentist appointment?") still goes to the model.
+`DORAEMON_FAST_ANSWERS=off` sends everything to the model.
 
 Guardrails: a topic check runs first, so Dorae-1 points calendar questions to Dorae-2 (and the other
 way round) and declines anything else; each agent only has its own tools; chat can't change
@@ -239,7 +245,7 @@ use those.
 
 ```
 python -m evals.chat_eval            # 28 model questions (right topic, right tool, stays in its lane) + the instant ones
-python -m evals.chat_eval --instant  # 24 answers that skip the model, incl. the Telegram bot: right path, in seconds
+python -m evals.chat_eval --instant  # 37 answers that skip the model, incl. the Telegram bot: right path, in seconds
 ```
 
 ## Budgets and charts (Dorae-1)

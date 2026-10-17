@@ -191,3 +191,56 @@ def test_instant_answers_get_a_bolt_and_model_answers_dont(ask, tmp_path, settin
     client = TestClient(create_app(s, chat_backend=NoModel()), headers={"x-requested-with": "fetch"})
     html = client.post("/chat/money/ask", data={"q": "how much did I spend today"}).json()["html"]
     assert 'class="instant"' not in html  # it went the model's way
+
+
+# --- the looser reading (understand): topic and time words anywhere, typos fixed ------------------
+
+@pytest.mark.parametrize("agent, question, intent, slots", [
+    ("calendar", "show me my reminders", "reminders", {}),
+    ("calendar", "do i have any reminders", "reminders", {}),
+    ("calendar", "whats my schedule like next week", "week", {"which": "next"}),
+    ("calendar", "do i have anything on november", "days", {"when": "month:11"}),
+    ("calendar", "am i free on saturday", "days", {"when": "weekday:5"}),
+    ("calendar", "what's on wednesday", "days", {"when": "weekday:2"}),
+    ("calendar", "anything this weekend?", "days", {"when": "this_weekend"}),
+    ("calendar", "any appointments tomorrow", "days", {"when": "tomorrow"}),
+    ("calendar", "what's happening on 26/10", "days", {"when": "date:26/10"}),
+    ("calendar", "when is my next flight", "trips", {}),
+    ("calendar", "any bills i need to pay", "due", {}),
+    ("money", "what did i spend on today", "payments", {"period": "today"}),
+    ("money", "did i have a 4.87 transaction today?", "payments", {"period": "today", "amount": "4.87"}),
+    ("money", "how much have i spent this monrh", "total", {"period": "this_month"}),  # a typo
+    ("money", "spemt on food this week", "total", {"period": "this_week", "category": "dining"}),
+    ("money", "how much did grab cost me this month", "total", {"period": "this_month", "merchant": "grab"}),
+    ("money", "how much did i spend on netflix", "total", {"merchant": "netflix"}),
+    ("money", "what have i bought recently", "latest", {}),
+    ("money", "what's my biggest expense this month", "biggest", {"period": "this_month"}),
+    ("money", "how am i tracking against my budget", "budget", {}),
+    ("money", "what can dorae-1 do", "help", {}),
+])
+def test_freely_worded_lookups_skip_the_model(agent, question, intent, slots):
+    found = route(agent, question)
+    assert (found.intent, found.slots) == (intent, slots)
+
+
+@pytest.mark.parametrize("agent, question", [
+    ("money", "why did i spend so much this month"),
+    ("money", "how can i cut down on my spendings?"),
+    ("money", "should i set a budget for dining"),
+    ("money", "compare this month to last month"),
+    ("money", "can you set my budget next month to be 400"),
+    ("calendar", "remind me about the bill"),  # "remind" isn't a typo of "reminders"
+    ("calendar", "add something to my calendar"),
+    ("calendar", "cancel my dentist appointment"),
+    ("calendar", "when is my dentist appointment?"),
+    ("calendar", "any bills due this month?"),
+    ("money", "what did I buy at the airport on my trip"),
+    ("money", "tell me a joke about money"),
+])
+def test_questions_that_need_thought_or_change_things_still_go_to_the_model(agent, question):
+    assert route(agent, question) is None
+
+
+def test_a_bare_follow_up_of_a_calendar_question():
+    assert route("calendar", "what about friday", previous="what do i have this week").slots == {"when": "weekday:4"}
+    assert route("calendar", "what about friday") is None  # without one, it could be about anything

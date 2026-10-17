@@ -60,6 +60,8 @@ class Phone:
         if (event := split_event(text)) is not None:
             return self.event(event.title, event.when, event.end, text, now)
         found = route("money", text, self.db.get_setting(LAST_KEY))  # tries Dorae-2's questions too
+        if found is not None and found.intent == "help":
+            return self.help_text(), None  # both agents' examples and the commands
         if found is not None:
             self.db.set_setting(LAST_KEY, text)
             return self.plain(self.brain.instant(found)), None
@@ -207,6 +209,11 @@ class Phone:
                      for h in (held.get(tuple(k)) for k in ids[:LIST]) if h]
         elif kind == "week":
             lines = self.week_lines(p["events"])
+        elif kind == "days":
+            for d in p["days"]:
+                lines += ([""] if lines else []) + [d["label"]]
+                lines += [f"• {short_clock(e['start']) if e['start'] and e['first'] == d['date'] else 'All day'}  "
+                          f"{e['title']}" + (" (needs your OK)" if e.get("waiting") else "") for e in d["events"]] or ["• Free"]
         more = (len(ids) - LIST) + p.get("more", 0) if kind in ("payments", "items", "agenda", "holdings") else 0
         if more > 0:
             lines.append(f"…and {more} more in the Doraemon app.")

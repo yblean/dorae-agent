@@ -296,3 +296,10 @@ def test_spending_page_offers_to_sort_out_other(client):
     client.post(f"/transactions/{latest}/category", data={"category": "dining", "back": "/spending"})
     assert {r["category"] for r in db.transactions() if r["merchant"].startswith("STRIPE")} == {"dining"}
     assert "Sort out “Other”" not in client.get("/spending").text
+
+
+def test_freely_worded_calendar_questions_draw_the_days_card(client):
+    client.headers["x-requested-with"] = "fetch"
+    html = client.post("/chat/calendar/ask", data={"q": "do i have anything tomorrow?"}).json()["html"]
+    assert "Tomorrow, " in html and 'class="card briefing"' in html and "brief-head" in html
+    assert client.app.state.runtime.brain.last_route == "days"

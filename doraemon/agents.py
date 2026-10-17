@@ -65,6 +65,16 @@ CALENDAR = Agent(
      ("Telegram reminders", "Bills, deadlines, deliveries, RSVPs", "Telegram")),
 )
 AGENTS = {a.id: a for a in (MONEY, CALENDAR)}
+HELP_TEXT = {  # "what can you do?": answered instantly, in each agent's own lane
+    "money": "I look after your spending. Ask me things like: how much did I spend this week, what did I spend on "
+             "today, my spending breakdown last month, top merchants, my latest or biggest purchase, did I have a "
+             "4.87 payment, my budget, my spending trend, my net worth, my holdings, or how much I kept in "
+             "September. You can also set a budget: “set my dining budget to 300”.",
+    "calendar": "I look after your calendar and reminders. Ask me things like: what's on tomorrow, my schedule "
+                "next week, anything this weekend, do I have anything in November, what's due, my trips, my "
+                "reminders, or what needs my OK. You can also say “remind me to call mom at 5pm tmr” or “add "
+                "dinner with Sam on friday 7-9pm”.",
+}
 # The swatches offered when you customize an agent
 COLORS = ["#8B5E3C", "#EF4444", "#F97316", "#F59E0B", "#22C55E", "#14B8A6", "#3B82F6", "#8B5CF6", "#EC4899", "#6B7280"]
 
@@ -629,6 +639,66 @@ class Brain:
             text += f" {waiting} from your email still need{'s' if waiting == 1 else ''} your OK (dashed)."
         return {"text": text, "kind": "week", "payload": {"first": monday.isoformat(), "label": label, "events": events}}
 
+    def days_range(self, when: str) -> tuple[date, date, str]:
+        """(first day, last day, label) for a calendar question's time (doraemon.router.spoken_when)."""
+        today = self.today()
+        name = lambda d: f"{d:%a} {d.day} {d:%b}"
+        monday = today - timedelta(days=today.weekday())
+        kind, _, rest = when.partition(":")
+        if kind == "tomorrow":
+            d = today + timedelta(days=1)
+            return d, d, f"Tomorrow, {name(d)}"
+        if kind in ("this_weekend", "next_weekend"):
+            saturday = monday + timedelta(days=12 if kind == "next_weekend" else 5)
+            first, last = max(saturday, today), saturday + timedelta(days=1)  # on a Sunday, what's left of it
+            span = name(first) + (f" – {name(last)}" if first != last else "")
+            return first, last, f"{'This' if kind == 'this_weekend' else 'Next'} weekend, {span}"
+        if kind == "last_week":
+            first, last = monday - timedelta(days=7), monday - timedelta(days=1)
+            return first, last, f"Last week, {name(first)} – {name(last)}"
+        if kind in ("this_month", "next_month", "month"):
+            if kind == "month":
+                n = int(rest)
+                month = f"{today.year if n >= today.month else today.year + 1}-{n:02d}"  # the coming one
+            else:
+                month = self.this_month() if kind == "this_month" else self.month_shift(self.this_month(), 1)
+            first, last = self.month_range(month)
+            if month == self.this_month():  # the rest of this month
+                return today, last, f"{month_name(month)} from today"
+            return first, last, month_name(month)
+        if kind == "weekday":
+            day, _, nxt = rest.partition(":")
+            d = (monday + timedelta(days=7 + int(day))) if nxt else today + timedelta(days=(int(day) - today.weekday()) % 7)
+            return d, d, name(d) + (" (today)" if d == today else "")
+        if kind == "date":
+            from doraemon.dates import resolve_spoken
+            found, _ = resolve_spoken(rest, datetime.now(self.tz), self.settings.timezone, self.settings.date_order)
+            if found is not None:
+                return found.date(), found.date(), name(found.date())
+        return today, today, f"Today, {name(today)}"
+
+    def days_card(self, first: date, last: date, label: str) -> dict:
+        """What's on from the first to the last day: all your Google calendars plus items not in them yet.
+        A short span lists every day ("Free" ones too); a month lists only the days with something on."""
+        events, problem = self.calendar_events(first, last)
+        if problem:
+            return {"text": f"Sorry, I couldn't read your Google Calendar ({problem}).", "kind": "text", "payload": None}
+        days, d = [], first
+        while d <= last:
+            iso = d.isoformat()
+            on = [e for e in events if e["first"] <= iso <= e["last"]]
+            if on or (last - first).days < 7:
+                days.append({"date": iso, "label": f"{d:%a} {d.day} {d:%b}", "events": on})
+            d += timedelta(days=1)
+        n = len(events)
+        text = f"{label}: {n} event{'s' if n != 1 else ''}." if n else f"{label}: nothing on your calendars. 🌤️"
+        waiting = sum(1 for e in events if e.get("waiting"))
+        if waiting:
+            text += f" {waiting} from your email still need{'s' if waiting == 1 else ''} your OK."
+        if self.schedule is None or self.schedule() is None:
+            text += " (Only what's in Doraemon: connect Google Calendar to see your other calendars.)"
+        return {"text": text, "kind": "days", "payload": {"label": label, "days": days}}
+
     BILL_DAYS, TRIP_DAYS = 7, 14  # how far ahead the briefing looks for bills and trips
 
     def briefing(self) -> list[dict]:
@@ -903,17 +973,31 @@ class Brain:
     def instant(self, route) -> dict:
         """The answer to a question the router recognised. Same cards as the model's answers."""
         s, home = route.slots, self.home
+        if route.intent == "help":
+            return {"text": HELP_TEXT[route.agent], "kind": "text", "payload": None}
+        if route.intent in ("days", "day"):
+            return self.days_card(*self.days_range(s.get("when") or s.get("day") or "today"))
         if route.intent in ("total", "payments"):
-            first, last, label = self.span(s.get("period"), "this_month" if route.intent == "total" else "this_month")
+            # "did I have a 4.87 transaction": any time, unless you said when
+            first, last, label = self.span(s.get("period"), None if s.get("amount") else "this_month")
+            amount = Decimal(s["amount"]) if s.get("amount") else None
             kept = [t for t in self.ledger_between(first, last)
                     if (not s.get("category") or t.category.value == s["category"])
-                    and (not s.get("merchant") or s["merchant"] in t.merchant.lower())]
-            what = (f" on {s['category']}" if s.get("category") else "") + (f" at {s['merchant'].title()}" if s.get("merchant") else "")
+                    and (not s.get("merchant") or s["merchant"] in t.merchant.lower())
+                    and (amount is None or t.amount == amount)]
+            what = (f" of {amount:,.2f}" if amount is not None else "") + (f" on {s['category']}" if s.get("category") else "") \
+                + (f" at {s['merchant'].title()}" if s.get("merchant") else "")
             if not kept:
                 return {"text": f"No payments{what} {label_in(label)}.", "kind": "text", "payload": None}
             total = spending_totals(kept, home, self.fx).total
-            text = (f"You spent {money(total, home)}{what} {label_in(label)} across {len(kept)} "
-                    f"payment{'s' if len(kept) != 1 else ''}.")
+            if amount is not None:
+                t = kept[-1]
+                day = t.purchased_at.astimezone(self.tz)
+                text = (f"Yes: {t.merchant}, {t.currency} {t.amount:,.2f} on {day:%a} {day.day} {day:%b}"
+                        + (f", and {len(kept) - 1} more of the same amount." if len(kept) > 1 else "."))
+            else:
+                text = (f"You spent {money(total, home)}{what} {label_in(label)} across {len(kept)} "
+                        f"payment{'s' if len(kept) != 1 else ''}.")
             if s.get("category") or s.get("merchant") or route.intent == "payments":
                 kept.sort(key=lambda t: t.purchased_at, reverse=True)
                 return {"text": text + (" Showing the latest 20." if len(kept) > 20 else ""), "kind": "payments",
