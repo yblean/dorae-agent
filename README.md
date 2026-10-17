@@ -287,6 +287,10 @@ python -m doraemon.rules add ignore_sender news@shop.example
 python -m doraemon.rules delete 3
 ```
 
+The Spending page lists the payees whose payments are still in **Other** ("Sort out Other"), most payments
+first: pick a category for one and all its payments move there, now and later (a `merchant_category` rule).
+Dorae-1's daily overview points there when 5 or more of the month's payments are in Other.
+
 Rule types: `merchant_category`, `ignore_sender` (skips the email before the model runs),
 `travel_timezone` (departure place -> timezone), `not_spending` (e.g. transfers to family).
 

@@ -38,7 +38,7 @@ from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
-from doraemon.rules import RuleStore, name_matches
+from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.web import charts
 
@@ -672,10 +672,24 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                   "counts_in": month_name(counts_in(r)) if month and counts_in(r) != month else ""}
                  for r in sorted(in_month, key=lambda r: r["purchased_at"], reverse=True)]
         return render(request, "spending.html", lines=lines, months=months, month=month, home=home,
+                      others=uncategorised(everything),
                       donut=charts.donut([[c, str(a)] for c, a in sorted(sums.by_category.items(), key=lambda kv: -kv[1])], home),
                       trend=charts.columns(brain.trend()["payload"]),
                       total=sums.total, foreign=sums.unconverted, n_converted=len(converted),
                       categories=[c.value for c in Category])
+
+    def uncategorised(kept, n: int = 5) -> list[dict]:
+        """The payees whose payments sit in Other, most payments first: one category choice files them all."""
+        groups: dict[str, dict] = {}
+        for t in kept:
+            if t.category != Category.OTHER or t.is_refund:
+                continue
+            g = groups.setdefault(name_key(t.merchant) or t.merchant.lower(),
+                                  {"name": t.merchant, "count": 0, "total": Decimal(0), "txn_id": int(t.message_id)})
+            g["count"] += 1
+            g["total"] += t.amount if t.currency == home else (fx.to_home(t, home) or 0) if fx else 0
+            g["txn_id"] = max(g["txn_id"], int(t.message_id))
+        return sorted(groups.values(), key=lambda g: (-g["count"], -g["total"]))[:n]
 
     # --- budgets (Dorae-1) -------------------------------------------------------
 

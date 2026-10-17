@@ -282,3 +282,17 @@ def test_chat_reminder_turned_into_a_calendar_event_waits_for_confirm(client):
                        headers={"x-requested-with": "fetch"}).json()
     assert "now a Google Calendar event" in body["html"] and f'action="/items/{item_id}/confirm"' in body["card"]
     assert db.get("item", item_id)["status"] == "proposed" and db.reminders(item_id) == []
+
+
+def test_spending_page_offers_to_sort_out_other(client):
+    db = client.app.state.db
+    for n, amount in enumerate(("4.20", "3.90", "5.10")):
+        db.save_result(f"s{n}", f"t{n}", email(), Extraction(message_id="m", transactions=[
+            txn("STRIPE PAYMENTS SINGAPORE PTE. LTD.", amount, "other")]), "extracted")
+    page = client.get("/spending").text
+    box = page.split("Sort out “Other”")[1].split("</table>")[0]
+    assert "STRIPE PAYMENTS SINGAPORE PTE. LTD." in box and "3 payments · SGD 13.20" in box
+    latest = max(r["id"] for r in db.transactions() if r["merchant"].startswith("STRIPE"))
+    client.post(f"/transactions/{latest}/category", data={"category": "dining", "back": "/spending"})
+    assert {r["category"] for r in db.transactions() if r["merchant"].startswith("STRIPE")} == {"dining"}
+    assert "Sort out “Other”" not in client.get("/spending").text

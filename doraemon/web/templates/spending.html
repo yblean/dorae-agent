@@ -24,6 +24,30 @@
   <p class="note">Only payments with an email are counted; cash and other card payments are missing.</p>
 </div>
 
+{% if others %}
+<div class="panel-box">
+  <div class="card-head"><span>Sort out “Other”</span></div>
+  <p class="note">These payees have no category yet. Pick one and every payment to that name moves there, now and
+    from now on.</p>
+  <table>
+    {% for o in others %}
+    <tr>
+      <td>{{ o.name }}<div class="note">{{ o.count }} payment{{ 's' if o.count != 1 }} · {{ home }} {{ '%.2f' % o.total }}</div></td>
+      <td>
+        <form method="post" action="/transactions/{{ o.txn_id }}/category">
+          <input type="hidden" name="back" value="/spending{{ '?month=' ~ month if month }}">
+          <select class="field" name="category" onchange="this.form.submit()" aria-label="Category for {{ o.name }}">
+            <option value="" selected disabled>Pick a category</option>
+            {% for c in categories if c != 'other' %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+          </select>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
 <div class="panel-box">
   <table>
     <tr><th>Payment</th><th class="num">Amount</th><th>Category</th></tr>

@@ -35,6 +35,8 @@ from doraemon.schema import Category
 
 log = logging.getLogger(__name__)
 
+OTHER_NUDGE = 5  # this many payments in Other this month, and Dorae-1's overview points to the Spending page
+
 
 @dataclass(frozen=True)
 class Agent:
@@ -212,6 +214,9 @@ class Brain:
         overall = next((s for s in self.budget_statuses() if s.category == bud.TOTAL), None)
         if overall:
             card["text"] += " " + bud.describe(overall, self.home)
+        unsorted = sum(1 for t in self.ledger(month) if t.category == Category.OTHER and not t.is_refund)
+        if unsorted >= OTHER_NUDGE:
+            card["text"] += f" {unsorted} payments this month are in Other: sort them out on the Spending page."
         card["text"] += " Ask me for any month, category, merchant or your budgets."
         return [card]
 
