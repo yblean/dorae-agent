@@ -173,6 +173,7 @@ def split_when(rest: str) -> tuple[str, str]:
     when = " ".join(m[0].strip() for m in spans)
     title = _WHEN_RE.sub(" ", rest)
     title = re.sub(r"\s+", " ", title).strip(" ,.!?")
+    title = re.sub(r"^(?:sometime|some time|later|again)\s+", "", title, flags=re.I)  # "ping me sometime friday to..."
     title = re.sub(r"^(?:to|for|about|that)\s+|\s+(?:on|at|by)$", "", title, flags=re.I)
     return (title[:1].upper() + title[1:])[:80], when
 

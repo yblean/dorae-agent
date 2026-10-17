@@ -27,7 +27,7 @@ from doraemon.dates import resolve, resolve_spoken
 from doraemon.db import CHAT_ID_PREFIX, item_model
 from doraemon.display import describe_when
 from doraemon.ledger import spending_totals
-from doraemon.reminders import WANTS_REMINDER, draft_reminder
+from doraemon.reminders import WANTS_REMINDER, draft_reminder, split_request
 from doraemon.schema import ActionItem, Category, ItemType
 
 ITEM_TYPES = [t.value for t in ItemType]
@@ -258,6 +258,11 @@ def money_tools(brain: Brain, turn: dict) -> list[Tool]:
 def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
     """`turn` holds the question being answered, quoted on cards of events added in chat."""
     def find_items(text=None, type=None, status="any", from_date=None, to_date=None, limit=10, **_):
+        question = turn.get("question", "")
+        asked = split_request(question) if WANTS_REMINDER.search(question) else None
+        if asked and asked[0] and asked[1]:  # "ping me friday to renew my passport": small models look it up first
+            turn.setdefault("rerouted", []).append("propose_reminder")
+            return propose_reminder(title=asked[0], when=asked[1])
         text, kind = _text(text).lower(), _choice(type, [*ITEM_TYPES, "trip"])
         kinds = TRIP_TYPES if kind == "trip" else (kind,) if kind else ()
         status = {"needs_ok": ("proposed",), "confirmed": ("confirmed",)}.get(status, ("proposed", "confirmed"))
@@ -304,6 +309,7 @@ def calendar_tools(brain: Brain, turn: dict) -> list[Tool]:
     def propose_event(title=None, when=None, end=None, location=None, **_):
         """Adds the event as a card waiting for the user's OK; only their Confirm puts it in Google Calendar."""
         if WANTS_REMINDER.search(turn.get("question", "")):  # small models reach for this tool for reminders too
+            turn.setdefault("rerouted", []).append("propose_reminder")
             return propose_reminder(title=title, when=when)
         title, when, end = _text(title, 80), _text(when, 80), _text(end, 80)
         if not title:
@@ -495,6 +501,7 @@ class AgentChat:
                 fn = call.get("function", {})
                 self.last_tools.append(fn.get("name", ""))
                 result, card = self.call(tools, fn.get("name"), fn.get("arguments"))
+                self.last_tools += self.turn.pop("rerouted", [])  # the tool the app ran instead
                 if card:
                     cards.append(card)
                 messages.append({"role": "tool", "tool_name": fn.get("name", ""),

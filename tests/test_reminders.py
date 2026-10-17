@@ -442,6 +442,7 @@ def test_anything_else_gets_the_command_list(db):
     ("Remind me to pay rent on 1/11 9am pls", ("Pay rent", "on 1/11 9am")),
     ("set a reminder for dentist next monday at 9am", ("Dentist", "next monday at 9am")),
     ("can you remind me to take out the trash in 2 hours", ("Take out the trash", "in 2 hours")),
+    ("could you ping me sometime friday to renew my passport", ("Renew my passport", "friday")),
     ("remind me to buy milk", ("Buy milk", "")),
     ("what are my reminders?", None),
     ("show my schedule this week", None),

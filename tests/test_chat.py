@@ -389,3 +389,14 @@ def test_clear_event_requests_are_drafted_without_the_model(chat):
     row = [r for r in chat.db.items(("proposed",)) if r["title"] == "Dinner with Sam"][0]
     assert row["type"] == "appointment" and row["end_at"] and model.seen == []
     assert "That&#39;s one for" in chat("money", "add dinner with Sam on 26/10 7-9pm", model)
+
+
+def test_a_reminder_the_model_looks_up_first_is_drafted_anyway(chat):
+    # the 4B model answered "ping me sometime friday to renew my passport" by searching, then asked again
+    # (in the app this wording is drafted before the model is asked; this checks the model's own path)
+    model = ScriptedModel("calendar", call("find_items", text="passport"), say("Want me to set one?"))
+    from doraemon.agents import Brain
+    from doraemon.chat import AgentChat
+    answer = AgentChat(Brain(chat.db, chat.settings, None), model).answer("calendar", "could you ping me sometime friday to renew my passport", [])
+    assert any(r["title"] == "Renew my passport" for r in chat.db.items(("proposed",)))
+    assert answer[0]["kind"] == "items"
