@@ -50,6 +50,19 @@ def test_year_first_slash_dates():
     assert (dt.month, dt.day, has_time) == (4, 24, False)
 
 
+@pytest.mark.parametrize("text, expected, has_time", [
+    ("2026-11-05 at 06:30", (11, 5, 6, 30), True),  # China Eastern tickets: read as 11 May before
+    ("2026-11-14 at 00:55", (11, 14, 0, 55), True),
+    ("2026-11-05 06:30", (11, 5, 6, 30), True),
+    ("2026-11-05 at 6:30pm", (11, 5, 18, 30), True),
+    ("2026-11-05 (Thu) 7pm", (11, 5, 19, 0), True),
+    ("2026-11-05 (Thu)", (11, 5, 0, 0), False),
+])
+def test_year_first_dates_with_words_never_follow_date_order(text, expected, has_time):
+    dt, timed = resolve(text, SENT, TZ, date_order="DMY")
+    assert ((dt.month, dt.day, dt.hour, dt.minute), timed) == (expected, has_time)
+
+
 def test_garbage_and_empty():
     assert resolve("whenever you like", SENT, TZ) == (None, False)
     assert resolve(None, SENT, TZ) == (None, False)

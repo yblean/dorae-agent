@@ -9,7 +9,8 @@ from dateparser.search import search_dates
 _TIME_RE = re.compile(r"\d{1,2}:\d{2}|\d\s*[ap]\.?m\b|\bnoon\b|\bmidnight\b", re.I)
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
-_YMD_RE = re.compile(r"^(\d{4})[/.](\d{1,2})[/.](\d{1,2})(.*)$")
+_YMD_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b(.*)$")
+_HM_RE = re.compile(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\s*(?:([ap])\.?m\b)?|\b(\d{1,2})\s*([ap])\.?m\b", re.I)
 
 
 def _parse(text: str, settings: dict) -> datetime | None:
@@ -35,14 +36,6 @@ def resolve(
 
     zone = ZoneInfo(tz)
 
-    # Year-first dates ("2026/04/10 (Fri) 00:30", common in Japanese and Chinese emails)
-    # are always year-month-day; rewrite them as ISO.
-    ymd = _YMD_RE.match(text.strip())
-    if ymd:
-        year, month, day, rest = ymd.groups()
-        hm = re.search(r"\b(\d{1,2}):(\d{2})\b", rest)
-        text = f"{year}-{int(month):02d}-{int(day):02d}" + (f"T{int(hm[1]):02d}:{hm[2]}" if hm else "")
-
     # ISO dates are unambiguous; don't let DATE_ORDER=DMY reread 2026-10-02 as 10 Feb.
     if _ISO_RE.match(text.strip()):
         try:
@@ -52,6 +45,28 @@ def resolve(
             return iso, has_time
         except ValueError:
             pass
+
+    # Other year-first dates are always year-month-day too: "2026-11-05 at 06:30", "2026/04/10 (Fri) 00:30"
+    # (common in Japanese and Chinese emails). Read the day from its parts and the time from the rest.
+    ymd = _YMD_RE.match(text.strip())
+    if ymd:
+        year, month, day, rest = ymd.groups()
+        try:
+            first = datetime(int(year), int(month), int(day), tzinfo=zone)
+        except ValueError:
+            return None, False
+        hm = _HM_RE.search(rest)
+        if hm is None:
+            return first, False
+        if hm[4]:  # "6pm"
+            hour, minute, half = int(hm[4]), 0, hm[5]
+        else:
+            hour, minute, half = int(hm[1]), int(hm[2]), hm[3]
+        if half:
+            hour = hour % 12 + (12 if half.lower() == "p" else 0)
+        if hour > 23 or minute > 59:
+            return first, False
+        return first.replace(hour=hour, minute=minute), True
 
     base = reference.astimezone(zone).replace(tzinfo=None)
     settings = {
