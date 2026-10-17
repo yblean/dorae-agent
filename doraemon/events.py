@@ -81,6 +81,8 @@ def split_event(text: str) -> EventAsk | None:
     title, when = split_when(rest)
     if not when and not says_event:
         return None
+    if re.search(r"\b(?:how|what|why|which)\b|\?", title, re.I):  # "add X on 26/10 and how much did I spend": a question too
+        return None
     return EventAsk(title, when, end)
 
 

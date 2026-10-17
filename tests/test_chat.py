@@ -380,3 +380,12 @@ def test_answers_from_memory_are_sent_back_for_a_tool(chat):
     html = chat("money", "how is my budget?", model)
     assert "call the right tool first" in model.seen[1]["messages"][-1]["content"]
     assert "SGD 65" not in html and "[Card" not in html and "SGD 7.02 of SGD 10.00." in html
+
+
+def test_clear_event_requests_are_drafted_without_the_model(chat):
+    model = ScriptedModel("calendar")  # would fail the test if it were asked anything
+    html = chat("calendar", "add dinner with Sam on 26/10 7-9pm", model)
+    assert "Here&#39;s your event: “Dinner with Sam”" in html and "Press Confirm" in html
+    row = [r for r in chat.db.items(("proposed",)) if r["title"] == "Dinner with Sam"][0]
+    assert row["type"] == "appointment" and row["end_at"] and model.seen == []
+    assert "That&#39;s one for" in chat("money", "add dinner with Sam on 26/10 7-9pm", model)

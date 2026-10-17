@@ -218,7 +218,9 @@ from the tool results, not from the model's words.
 
 Ask Dorae-2 to add an event ("add date night on 26/10 19:00") and it drafts a card waiting for your OK;
 **Confirm** puts it in your Doraemon calendar. The app reads the date from your own wording (day first,
-per `DORAEMON_DATE_ORDER`), not the model, and keeps an end time only if you typed one.
+per `DORAEMON_DATE_ORDER`), not the model, and keeps an end time only if you typed one. Clear requests
+("add dinner with Sam on 26/10 7-9pm", "schedule dentist next monday at 3pm") are read by the same rules as the
+Telegram bot (`doraemon/events.py`) and drafted instantly; other wordings go to the model.
 
 **Instant answers.** Everyday lookups skip the model: how much you spent (in a period, on a category, at
 a shop), breakdowns, your latest or biggest purchase, top merchants, budget status, the monthly trend,

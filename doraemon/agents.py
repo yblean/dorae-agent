@@ -28,6 +28,7 @@ from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
 from doraemon.ledger import counted_between, spending_totals
 from doraemon.networth import KINDS, NetWorth, shift_month
+from doraemon.events import draft_event, split_event
 from doraemon.reminders import draft_reminder, short_time, split_request
 from doraemon.router import route
 from doraemon.rules import name_key
@@ -734,6 +735,20 @@ class Brain:
             lines += ["", f"{waiting} thing{'s' if waiting != 1 else ''} from your email need your OK: open Doraemon to check."]
         return "\n".join(lines)
 
+    def event_reply(self, ask, question: str) -> dict:
+        """Draft the event you asked for (doraemon.events) as a card waiting for Confirm."""
+        result, item_id = draft_event(self.db, self.settings.timezone, self.settings.date_order, ask.title, ask.when,
+                                      question, datetime.now(self.tz), end=ask.end)
+        if item_id is None:
+            return {"text": result["error"], "kind": "text", "payload": None}
+        status = self.db.get("item", item_id)["status"]
+        if result.get("already_there"):
+            return {"text": f"You already have that one: “{result['title']}”, {result['when']}.",
+                    "kind": "items" if status == "proposed" else "agenda", "payload": {"ids": [item_id]}}
+        return {"text": f"Here's your event: “{result['title']}”, {result['when']}. Press Confirm to add it to your "
+                        "Doraemon calendar, or change it first under Edit.",
+                "kind": "items", "payload": {"ids": [item_id]}}
+
     def reminder_reply(self, title: str, when: str, question: str) -> dict:
         """Draft the reminder you asked for as a card you can edit before pressing Create reminder."""
         result, item_id = draft_reminder(self.db, self.settings.timezone, self.settings.date_order, title, when,
@@ -996,10 +1011,16 @@ class Brain:
         answers = None
         self.last_route = "model"
         asked = split_request(question) if agent == "calendar" else None
+        event = split_event(question)
         budget = bud.parse_request(question) if agent == "money" else None
         fast = route(agent, question, previous) if self.settings.fast_answers else None
         if asked and asked[0] and asked[1]:  # "remind me to X tomorrow": clear enough to draft without the model
             answers, self.last_route = [self.reminder_reply(*asked, question)], "reminder"
+        elif event and event.title and event.when and not budget:  # "add date night on 26/10 7-9pm": likewise
+            self.last_route = "event"
+            answers = [self.event_reply(event, question)] if agent == "calendar" else [
+                {"text": f"That's one for {styled(CALENDAR, self.db).name}. Open {styled(CALENDAR, self.db).name}'s chat "
+                         "and ask there.", "kind": "text", "payload": None}]
         elif budget:  # "set my dining budget to 300": drafted as a card, no model needed
             answers, self.last_route = [self.budget_card(draft=budget)], "budget draft"
         elif fast is not None:  # an everyday lookup: answered from the data in milliseconds
