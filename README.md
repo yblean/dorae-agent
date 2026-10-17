@@ -1,6 +1,7 @@
 # Doraemon
 
-Inbox to Action, v0 (single user). Currently at milestones 1–3: extraction + eval.
+Inbox to Action, v0 (single user). Reads your Gmail into a spending ledger, reminders and calendar events;
+two agents (Dorae-1 money, Dorae-2 calendar) answer in the web app, and a Telegram bot reaches your phone.
 
 ## Setup
 
@@ -42,6 +43,11 @@ Predictions are saved to `evals/results/` so runs can be compared.
   A merchant receipt counts only when no bank alert covers it: `doraemon/ledger.py` drops
   a receipt whose amount matches an alert within 3 days, or that has the same merchant
   name and is within 5% of it (Trip Coins, vouchers). Money received is not spending.
+- **Refunds count once, in the month of the purchase they reverse.** A shop's cancellation email and the bank's
+  refund alert are one refund when the amounts are within 5% and 2 weeks apart (the names rarely match), and a
+  purchase can't be refunded more than it cost, so a repeated notice is dropped. A refund counts with the latest
+  earlier payment to the same merchant within 90 days, so a cancelled booking cancels out in its own month;
+  with no such payment it counts when it came. The Spending page notes both.
 - **Overseas spending is converted** to `DORAEMON_HOME_CURRENCY` at the European Central Bank rate on
   the purchase date (Frankfurter API, no key; only currency codes and dates are sent). Rates are fetched
   during ingest and cached, so the review page works offline. `DORAEMON_CONVERT_CURRENCIES=off` keeps
@@ -282,4 +288,9 @@ python -m evals.run_eval --reuse evals/results/<run>.jsonl --rules defaults --le
 - `doraemon/dates.py`: deterministic date parsing (the model never computes dates)
 - `doraemon/llm.py`: swappable model backends
 - `doraemon/chat.py`: the agents' tool-calling chat and its guardrails
+- `doraemon/router.py`: instant answers for everyday questions, without the model
+- `doraemon/ledger.py`: one ledger from bank alerts and receipts, duplicates and refunds settled
+- `doraemon/reminders.py`, `doraemon/events.py`: reminders and calendar events asked for in your own words
+- `doraemon/jobs.py`, `doraemon/service.py`: the background jobs and the service that runs them
+- `doraemon/telegram.py`, `doraemon/phone.py`: the Telegram bot and what it answers
 - `evals/`: labels, scoring, helper scripts

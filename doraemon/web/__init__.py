@@ -33,7 +33,7 @@ from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when, zone_name
 from doraemon.fx import FxRates
 from doraemon.jobs import CheckJob, Runtime  # noqa: F401 (CheckJob: used to live here)
-from doraemon.ledger import build_ledger, spending_totals
+from doraemon.ledger import build_ledger, refunded_purchases, spending_totals
 from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
@@ -653,9 +653,13 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     def spending(request: Request, month: str = ""):
         rows = {r["id"]: r for r in db.transactions()}
         months = sorted({r["purchased_at"][:7] for r in rows.values()}, reverse=True)
-        in_month = [r for r in rows.values() if not month or r["purchased_at"].startswith(month)]
-        counted = [transaction_model(r) for r in in_month if r["status"] == "counted"]
-        kept, duplicates = build_ledger(counted)
+        # The whole ledger first, so duplicates across a month's end are caught and refunds find their purchase
+        everything, duplicates = build_ledger([transaction_model(r) for r in rows.values() if r["status"] == "counted"])
+        originals = refunded_purchases(everything)
+        refund_of = {int(t.message_id): rows[int(originals[id(t)].message_id)] for t in everything if id(t) in originals}
+        counts_in = lambda r: refund_of[r["id"]]["purchased_at"][:7] if r["id"] in refund_of else r["purchased_at"][:7]
+        in_month = [r for r in rows.values() if not month or r["purchased_at"].startswith(month) or counts_in(r) == month]
+        kept = [t for t in everything if not month or counts_in(rows[int(t.message_id)]) == month]
         dropped = {int(d.dropped.message_id): rows[int(d.kept.message_id)] for d in duplicates}
         category_of = {int(t.message_id): t.category.value for t in kept}  # after receipt enrichment
         sums = spending_totals(kept, home, fx)
@@ -663,7 +667,9 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                      if t.currency != home and id(t) in sums.home_amounts}
         lines = [{"row": r, "category": category_of.get(r["id"], r["category"]),
                   "duplicate_of": dropped.get(r["id"]), "day": r["purchased_at"][:10],
-                  "home_amount": converted.get(r["id"])}
+                  "home_amount": converted.get(r["id"]), "refund_of": refund_of.get(r["id"]),
+                  # a refund shown in the month it came, but counted with its purchase's month
+                  "counts_in": month_name(counts_in(r)) if month and counts_in(r) != month else ""}
                  for r in sorted(in_month, key=lambda r: r["purchased_at"], reverse=True)]
         return render(request, "spending.html", lines=lines, months=months, month=month, home=home,
                       donut=charts.donut([[c, str(a)] for c, a in sorted(sums.by_category.items(), key=lambda kv: -kv[1])], home),

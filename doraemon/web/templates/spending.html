@@ -27,12 +27,14 @@
 <div class="panel-box">
   <table>
     <tr><th>Payment</th><th class="num">Amount</th><th>Category</th></tr>
-    {% for l in lines %}{% set r = l.row %}{% set active = r.status == 'counted' and not l.duplicate_of %}
+    {% for l in lines %}{% set r = l.row %}{% set active = r.status == 'counted' and not l.duplicate_of and not l.counts_in %}
     <tr class="{{ '' if active else 'faded' }}">
       <td>{{ r.merchant }}
         <div class="note">
           {{ l.day }} · {{ 'bank alert' if r.source == 'bank_alert' else 'receipt' }}
           {% if l.duplicate_of %} · same payment as {{ l.duplicate_of.merchant }}, not counted twice{% endif %}
+          {% if l.refund_of %} · refund for the {{ l.refund_of.purchased_at[:10] }} payment{% endif %}
+          {% if l.counts_in %} · counted in {{ l.counts_in }}, with that payment{% endif %}
           {% if r.status == 'removed' %} · removed{% endif %}
         </div>
         {% if active %}

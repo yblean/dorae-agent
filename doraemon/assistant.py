@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from doraemon.config import Settings
 from doraemon.db import Database, item_model, transaction_model
 from doraemon.display import describe_when
-from doraemon.ledger import build_ledger, spending_totals
+from doraemon.ledger import counted_between, spending_totals
 
 TRAVEL = ("flight", "hotel", "other_travel")
 _MONTHS = ["january", "february", "march", "april", "may", "june", "july",
@@ -57,8 +57,10 @@ def due_soon(db: Database, settings: Settings) -> str:
 
 
 def _month_totals(db: Database, settings: Settings, month: str, fx=None) -> tuple[dict[str, Decimal], int]:
-    rows = [r for r in db.transactions() if r["status"] == "counted" and r["purchased_at"].startswith(month)]
-    kept, _ = build_ledger([transaction_model(r) for r in rows])
+    first = date.fromisoformat(month + "-01")
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    rows = [r for r in db.transactions() if r["status"] == "counted"]
+    kept = counted_between([transaction_model(r) for r in rows], first, last, ZoneInfo(settings.timezone))
     return spending_totals(kept, settings.home_currency, fx).by_category, len(kept)
 
 

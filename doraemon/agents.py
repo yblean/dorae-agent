@@ -26,7 +26,7 @@ from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
 from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
-from doraemon.ledger import build_ledger, spending_totals
+from doraemon.ledger import counted_between, spending_totals
 from doraemon.networth import KINDS, NetWorth, shift_month
 from doraemon.reminders import draft_reminder, short_time, split_request
 from doraemon.router import route
@@ -173,17 +173,13 @@ class Brain:
         return None
 
     def ledger(self, month: str):
-        rows = [r for r in self.db.transactions() if r["status"] == "counted" and r["purchased_at"].startswith(month)]
-        kept, _ = build_ledger([transaction_model(r) for r in rows])
-        return kept
+        return self.ledger_between(*self.month_range(month))
 
     def ledger_between(self, first: date | None, last: date | None):
-        """Counted payments from the first to the last day (both included, your timezone), duplicates dropped."""
-        day = lambda r: datetime.fromisoformat(r["purchased_at"]).astimezone(self.tz).date()
-        rows = [r for r in self.db.transactions() if r["status"] == "counted"
-                and (first is None or day(r) >= first) and (last is None or day(r) <= last)]
-        kept, _ = build_ledger([transaction_model(r) for r in rows])
-        return kept
+        """Counted payments from the first to the last day (both included, your timezone), duplicates dropped.
+        A refund counts on the day of the purchase it reverses (doraemon.ledger.counted_between)."""
+        rows = [r for r in self.db.transactions() if r["status"] == "counted"]
+        return counted_between([transaction_model(r) for r in rows], first, last, self.tz)
 
     def breakdown(self, month: str) -> dict:
         return self.summary(self.ledger(month), month_name(month), month)
