@@ -145,7 +145,9 @@ where they go: Telegram reminders (Reminder, Bill, Deadline, Delivery, RSVP) or 
 working as before.
 
 Send the bot **/reminders** to get a list of your upcoming reminders (each item with the times it will
-remind you). It only answers your own chat, and only while Doraemon runs.
+remind you), and **/status** to see whether each part is working: when Gmail was last checked, whether the
+model is running, Google Calendar, the Webull sign-in and when it runs out, your next reminder and what's
+waiting for your OK. It only answers your own chat, and only while Doraemon runs.
 
 **Message the bot** like you'd ask Dorae-1 or Dorae-2 (`doraemon/phone.py`):
 - "remind me to call mom at 5pm tmr" drafts the reminder, with **✅ Create** and **✖ Cancel** buttons. Leave
@@ -172,6 +174,17 @@ out while Doraemon runs; if nothing was running at that time, it's posted as soo
 (or when you next open Dorae-2's chat). Before the briefing time, opening the chat doesn't post an overview (except
 in an empty chat), so the day's briefing isn't used up early.
 
+### Keeping "needs your OK" short
+
+Every 30 minutes Doraemon tidies what's waiting for you (`doraemon/tidy.py`), and says what it cleared in
+Dorae-2's chat. Each one is a dismissal in Activity, so you can undo it.
+- **The same thing twice.** A forwarded email, or a booking's confirmation and its e-ticket, gives the same flight
+  or hotel twice. Same type and day (and time), plus the same booking ref, a shared word with a number in it
+  (MU2048, an order number) or mostly the same title, is one item: a new email leaves it out, and one already
+  waiting is dismissed in favour of the one you confirmed (or the first one).
+- **Passed without an answer.** A suggestion still waiting a day after its date is over (a survey deadline, last
+  week's gameweek) is dismissed. `DORAEMON_EXPIRE_PASSED=off` keeps them.
+
 ### Run in the background
 
 Without the web app open, nothing checks Gmail or sends reminders. The background service runs
@@ -189,6 +202,11 @@ the jobs, whichever holds `data/jobs.lock`: with the service running, the web ap
 and pressing buttons, and if the service stops the web app takes over within half a minute (and the
 other way round). Dorae-2's routines say which one is running them. A sleeping laptop pauses everything;
 on waking, late reminders still go out while they matter. The service logs to `data/service.log`.
+
+Before each Gmail check it makes sure the model is reachable. If a local Ollama isn't running, it starts
+`ollama serve` with no window (`DORAEMON_START_OLLAMA=off` leaves that to you). When something stops working
+(the model can't be started, Google needs approving again, Webull fails), the problem is said once in the
+agent's chat and on Telegram. Three days before Webull's approved session runs out, Dorae-1 says how to renew it.
 `python -m doraemon.service` alone runs it in the terminal until Ctrl+C, to try it out.
 
 ## Chat with the agents

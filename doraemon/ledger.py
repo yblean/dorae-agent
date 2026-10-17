@@ -22,7 +22,7 @@ NAMED_MATCH_TOLERANCE = Decimal("0.05")
 _NOISE = {"singapore", "pte", "ltd", "com", "the", "app", "store", "sg"}
 
 
-def _name_tokens(name: str) -> set[str]:
+def name_tokens(name: str) -> set[str]:
     words = re.findall(r"[a-z0-9]+", name.lower().replace("'", ""))
     # Banks sometimes write O as zero inside a name ("SP B00KMARKET" for BookMarket)
     words = [w.replace("0", "o") if re.search(r"[a-z]", w) else w for w in words]
@@ -38,7 +38,7 @@ def _close(a: Transaction, b: Transaction) -> bool:
 
 
 def _names_match(a: Transaction, b: Transaction) -> bool:
-    return bool(_name_tokens(a.merchant) & _name_tokens(b.merchant))
+    return bool(name_tokens(a.merchant) & name_tokens(b.merchant))
 
 
 def _same_refund(receipt: Transaction, other: Transaction) -> bool:

@@ -29,6 +29,7 @@ from doraemon.llm import Backend, get_backend
 from doraemon.pipeline import process
 from doraemon.rules import RuleStore
 from doraemon.schema import Extraction
+from doraemon.tidy import find_twin, same_item
 
 
 def ingest_message(msg: GmailMessage, backend: Backend, settings: Settings,
@@ -116,6 +117,7 @@ def run_ingest(settings: Settings, days: int | None = None, limit: int = 0, agai
             continue
         label = triage_label(result)
         counts[label.split(":")[0]] += 1
+        result = without_twins(db, result, msg.id)
         db.save_result(msg.id, msg.thread_id, email, result, label)
         transactions += result.transactions
         found += len(result.items)
@@ -129,6 +131,19 @@ def run_ingest(settings: Settings, days: int | None = None, limit: int = 0, agai
         db.set_setting(CHECKED_AT, started.isoformat())  # next time, only ask Gmail for newer mail
     return {"processed": len(todo) - counts["failed"], "items": found, "transactions": transactions,
             "counts": dict(counts), "stopped": stopped}
+
+
+def without_twins(db: Database, result: Extraction, gmail_id: str) -> Extraction:
+    """Leave out items another email already gave (a forward, or a booking's confirmation and e-ticket)."""
+    kept = []
+    for item in result.items:
+        if find_twin(db, item, gmail_id) is None and not any(same_item(item, k) for k in kept):
+            kept.append(item)
+    if len(kept) == len(result.items):
+        return result
+    skipped = len(result.items) - len(kept)
+    return result.model_copy(update={"items": kept, "problems": [
+        *result.problems, f"left out {skipped} item(s) already found in another email"]})
 
 
 def warm_exchange_rates(db: Database, settings: Settings) -> None:

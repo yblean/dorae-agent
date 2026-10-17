@@ -19,6 +19,7 @@ returns, to check it before relying on it.
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -26,6 +27,16 @@ from doraemon.brokers import BrokerError
 
 ENDPOINT = "api.webull.com.sg"
 TOKEN_DIR = "data/webull"  # the approved session token (relative to the project folder)
+
+
+def session_expires() -> datetime | None:
+    """When the approved session runs out, from the SDK's token file (token, expiry in ms, status); None if unknown."""
+    from doraemon.config import in_project
+    try:
+        parts = (Path(in_project(TOKEN_DIR)) / "token.txt").read_text().split()
+        return datetime.fromtimestamp(int(parts[1]) / 1000, timezone.utc)
+    except (OSError, IndexError, ValueError):
+        return None
 
 
 def _num(value) -> Decimal | None:

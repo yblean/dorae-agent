@@ -1,6 +1,7 @@
 """Everything Doraemon does on its own: check Gmail, send Telegram reminders, answer the bot (doraemon.phone),
-post the morning briefing and budget alerts, sync brokerage accounts and ask for the monthly
-net worth check-in.
+post the morning briefing and budget alerts, sync brokerage accounts, ask for the monthly
+net worth check-in, tidy "needs your OK" (doraemon.tidy) and warn you on Telegram when
+something stops working (the model, a sign-in).
 
 Both the background service (python -m doraemon.service) and the web app can run these jobs,
 but only one at a time: whichever holds data/jobs.lock. The service comes first: a web app
@@ -24,9 +25,12 @@ from doraemon.config import Settings
 from doraemon.db import Database
 from doraemon.fx import FxRates
 from doraemon.google_auth import NotConnected
+from doraemon.llm import model_ready, ollama_up
 from doraemon.phone import EXAMPLES, Phone
-from doraemon.reminders import SNOOZE_MINUTES, SNOOZE_TOMORROW, Messenger, ReminderJob, list_text, mark_done, snooze
+from doraemon.reminders import (SNOOZE_MINUTES, SNOOZE_TOMORROW, Messenger, ReminderJob, list_text, mark_done,
+                                short_time, snooze)
 from doraemon.telegram import Command, CommandListener, connect_telegram
+from doraemon.tidy import tidy
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +39,7 @@ SERVICE_KEY = "jobs:service"      # when the background service last said it's t
 HEARTBEAT = 30                    # seconds between looking for the lock / saying "still here"
 FRESH = timedelta(minutes=3)      # an owner not heard from for this long has stopped
 BROKER_HOURS = 3                  # how often brokerage accounts are synced
+SESSION_WARNING = timedelta(days=3)  # warn this long before a sign-in (Webull's session) runs out
 
 
 class FileLock:
@@ -96,6 +101,9 @@ class CheckJob:
         self.running = False
         self.last_problem = ""
         self.after_payments = None  # e.g. budget alerts; called when a check brings in new payments
+        self.on_problem = None  # e.g. a Telegram message; called once per new problem of an automatic check
+        # Is the model running (starting Ollama if not)? Tests pass a fake ingest, which needs no model.
+        self.ready = (lambda: True) if ingest else (lambda: model_ready(settings))
 
     def start(self, auto: bool = False) -> bool:
         with self.lock:
@@ -110,6 +118,11 @@ class CheckJob:
             from doraemon.ingest import run_ingest  # imports Google libraries only when needed
             self.ingest = run_ingest
         try:
+            if not self.ready():
+                self.problem(auto, f"I couldn't check your inbox: the model ({self.settings.model.partition(':')[2]}) "
+                                   "isn't running, and I couldn't start Ollama. Open the Ollama app; I'll try again "
+                                   "at the next check.")
+                return
             # never opens a browser from here: an expired sign-in raises NotConnected instead
             summary = self.ingest(self.settings, say=lambda _: None, interactive=False)
         except NotConnected:
@@ -149,6 +162,8 @@ class CheckJob:
             return
         self.last_problem = text
         self.db.add_message("calendar", "agent", text)
+        if auto and self.on_problem:
+            self.on_problem(text)
 
 
 def every(seconds: float, work, name: str, first: float | None = None) -> threading.Event:
@@ -184,12 +199,14 @@ class Runtime:
         self.brain = Brain(self.db, settings, self.fx, schedule=self.get_schedule)
         self.check = CheckJob(self.db, settings, ingest)
         self.check.after_payments = self.brain.budget_alerts
+        self.check.on_problem = self.warn
         self.reminders = ReminderJob(self.db, settings.timezone, self.get_messenger, settings.remind_until_done)
         self.phone = Phone(self.brain, self.get_calendar, help_text=lambda: self.commands.help_text())  # plain messages to the bot
         # Commands you can send the bot. /remindars is a common misspelling, so it works too.
         self.commands = CommandListener(self.db, self.get_messenger, [
             Command("reminders", "List your reminders", lambda: list_text(self.db, settings.timezone),
                     ("remindars", "list")),
+            Command("status", "Is everything working?", lambda: self.status_text(), ("health",)),
             Command("help", "What I can do", lambda: self.commands.help_text(), ("start",)),
         ], on_button=self.button, on_text=self.phone.answer, examples=EXAMPLES)
         self.brokers = brokers  # None: the ones set up in .env (doraemon.brokers.connected)
@@ -226,6 +243,16 @@ class Runtime:
             except (NotConnected, FileNotFoundError):
                 return None
         return self.schedules[0]
+
+    def warn(self, text: str) -> None:
+        """Tell you on Telegram that something needs you (it's in the agents' chat already)."""
+        bot = self.get_messenger()
+        if bot is None:
+            return
+        try:
+            bot.send(f"⚠️ {text}")
+        except Exception as e:  # the chat has it either way
+            log.warning("warning on Telegram: %s", e)
 
     # --- what the jobs do -------------------------------------------------------------
 
@@ -282,6 +309,7 @@ class Runtime:
                 if text != self.broker_problem:
                     self.broker_problem = text
                     self.db.add_message("money", "agent", text)
+                    self.warn(text)
                 continue
             self.broker_problem = ""
         self.db.set_setting("brokers:synced_at", datetime.now(timezone.utc).isoformat())
@@ -313,6 +341,72 @@ class Runtime:
                 log.warning("check-in on Telegram: %s", e)
         return True
 
+    def tidy_tick(self, now: datetime | None = None) -> str:
+        """Clear repeated items and suggestions that passed unanswered, and say so in Dorae-2's chat."""
+        text = tidy(self.db, self.settings.timezone, now or datetime.now(timezone.utc), self.settings.expire_passed)
+        if text:
+            self.db.add_message("calendar", "agent", text)
+        return text
+
+    def webull_expires(self) -> datetime | None:
+        if not (self.settings.webull_app_key and self.settings.webull_app_secret):
+            return None
+        from doraemon.brokers.webull import session_expires
+        return session_expires()
+
+    def session_tick(self, now: datetime | None = None) -> bool:
+        """A few days before Webull's approved session runs out, say once how to renew it. Returns whether it did."""
+        expires = self.webull_expires()
+        now = now or datetime.now(timezone.utc)
+        if expires is None or expires - now > SESSION_WARNING:
+            return False
+        key = f"warned:webull:{expires.date().isoformat()}"
+        if self.db.get_setting(key):
+            return False
+        local = expires.astimezone(self.brain.tz)
+        text = (f"Your Webull sign-in {'ran out' if expires <= now else 'runs out'} on {local:%a} {local.day} {local:%b}. "
+                "To keep your investments up to date, run: python -m doraemon.brokers.webull, then approve it in the "
+                "Webull app.")
+        self.db.add_message("money", "agent", text)
+        self.warn(text)
+        self.db.set_setting(key, now.isoformat())
+        return True
+
+    def status_text(self, now: datetime | None = None) -> str:
+        """/status on Telegram: is each part working, in one message."""
+        now = now or datetime.now(timezone.utc)
+        tz = self.brain.tz
+
+        def ago(iso: str | None) -> str:
+            if not iso:
+                return "never"
+            minutes = int((now - datetime.fromisoformat(iso)).total_seconds() // 60)
+            return "just now" if minutes < 1 else f"{minutes} min ago" if minutes < 90 else \
+                f"{minutes // 60} h ago" if minutes < 48 * 60 else f"{minutes // 1440} days ago"
+
+        lines = ["🩺 Doraemon status", f"Running in the {self.name or 'app'}"]
+        problem = self.check.last_problem
+        lines.append(f"{'⚠️' if problem else '✅'} Gmail: checked {ago(self.db.get_setting('gmail_checked_at'))}"
+                     + (f". Last problem: {problem}" if problem else ""))
+        model = self.settings.model.partition(":")[2] or self.settings.model
+        up = not self.settings.model.startswith("ollama:") or ollama_up(self.settings.ollama_url, wait=1)
+        lines.append(f"{'✅' if up else '⚠️'} Model ({model}): {'running' if up else 'not running'}")
+        lines.append("✅ Google Calendar: connected" if self.get_calendar() is not None else
+                     "⚠️ Google Calendar: not connected (python -m doraemon.calendar_sync connect)")
+        expires = self.webull_expires()
+        if self.settings.webull_app_key:
+            local = expires.astimezone(tz) if expires else None
+            soon = expires is not None and expires - now <= SESSION_WARNING
+            lines.append(f"{'⚠️' if soon or expires is None else '✅'} Webull: synced "
+                         f"{ago(self.db.get_setting('brokers:synced_at'))}"
+                         + (f", sign-in until {local:%a} {local.day} {local:%b}" if local else ", sign-in unknown")
+                         + (f". Last problem: {self.broker_problem}" if self.broker_problem else ""))
+        upcoming = self.db.upcoming_reminders()
+        nxt = f", next {short_time(datetime.fromisoformat(upcoming[0]['remind_at']), tz)}" if upcoming else ""
+        lines.append(f"🔔 Reminders: {len({r['item_id'] for r in upcoming})} item(s) to remind you about{nxt}")
+        lines.append(f"📬 Waiting for your OK: {len(self.brain.pending()[0])}")
+        return "\n".join(lines)
+
     # --- running the jobs, in one program at a time -------------------------------------
 
     def start_jobs(self) -> None:
@@ -324,6 +418,8 @@ class Runtime:
         self.stops.append(every(60, self.briefing_tick, "briefing", first=10))
         self.stops.append(every(30 * 60, self.check_in_tick, "check-in", first=15))
         self.stops.append(every(BROKER_HOURS * 3600, self.sync_brokers, "brokers", first=30))
+        self.stops.append(every(30 * 60, self.tidy_tick, "tidy", first=25))
+        self.stops.append(every(6 * 3600, self.session_tick, "sessions", first=40))
 
     def stop_jobs(self) -> None:
         for stop in self.stops:
