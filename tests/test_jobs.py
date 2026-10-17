@@ -113,7 +113,7 @@ def test_done_button_stops_reminders_and_tells_dorae2(settings):
 def test_snooze_button(settings):
     rt = Runtime(settings)
     item_id = add_bill(rt)
-    assert rt.button(f"snooze:{item_id}").startswith("⏰ Snoozed: I'll remind you again at ")
+    assert rt.button(f"snooze:{item_id}").startswith("⏰ Snoozed: I'll remind you again ")  # at 5pm, or Sun 18 Oct at 12:30am
     assert [r["label"] for r in rt.db.reminders(item_id)] == ["snoozed"]
 
 
