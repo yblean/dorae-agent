@@ -68,7 +68,7 @@ def test_everyday_questions_take_the_fast_path(agent, question, intent, slots):
     ("money", "should I cancel any subscriptions"),
     ("money", "set my dining budget to 300"),                  # its own fast path (a card to Save)
     ("money", "what did I buy at the airport on my trip"),
-    ("calendar", "when is my dentist appointment?"),            # needs a search: the model's find_items
+    ("calendar", "when should I book the dentist?"),            # advice: the model's
     ("calendar", "any bills due this month?"),
     ("calendar", "add dinner with mum next friday 7pm"),
     ("calendar", "what's the capital of France?"),
@@ -217,6 +217,12 @@ def test_instant_answers_get_a_bolt_and_model_answers_dont(ask, tmp_path, settin
     ("money", "what's my biggest expense this month", "biggest", {"period": "this_month"}),
     ("money", "how am i tracking against my budget", "budget", {}),
     ("money", "what can dorae-1 do", "help", {}),
+    ("calendar", "when is my dentist appointment?", "find", {"what": "dentist appointment"}),
+    ("calendar", "what time is my flight to tokyo", "find", {"what": "flight to tokyo"}),
+    ("calendar", "when is my next flight", "trips", {}),  # the list, not a search
+    ("money", "monthly summary", "summary", {}),
+    ("money", "september in review", "summary", {"period": "month:9"}),
+    ("money", "give me a recap of last month", "summary", {"period": "last_month"}),
 ])
 def test_freely_worded_lookups_skip_the_model(agent, question, intent, slots):
     found = route(agent, question)
@@ -232,7 +238,7 @@ def test_freely_worded_lookups_skip_the_model(agent, question, intent, slots):
     ("calendar", "remind me about the bill"),  # "remind" isn't a typo of "reminders"
     ("calendar", "add something to my calendar"),
     ("calendar", "cancel my dentist appointment"),
-    ("calendar", "when is my dentist appointment?"),
+    ("calendar", "when should i pay my bill"),
     ("calendar", "any bills due this month?"),
     ("money", "what did I buy at the airport on my trip"),
     ("money", "tell me a joke about money"),

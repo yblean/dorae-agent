@@ -291,6 +291,20 @@
     {% for r in m.reminders %}<div class="brief-ev" style="--c: #075985"><span class="brief-time">{{ r.when }}</span><span class="brief-what">🔔 {{ r.title }}</span></div>{% endfor %}{% endif %}
   </div>
 
+  {% elif m.kind == 'skip' and m.payload %}
+  <div class="card">
+    {% for s in m.payload.senders %}
+    <div class="legend-row">
+      <span class="legend-name as-is">{{ s.name }}<span class="note">{{ s.address }} · {{ s.dismissed }} dismissed, none confirmed</span></span>
+      <form method="post" action="/senders/skip" data-ajax>
+        <input type="hidden" name="address" value="{{ s.address }}"><input type="hidden" name="back" value="/chat/calendar">
+        <button class="btn btn-white btn3d">Skip their emails</button>
+      </form>
+    </div>
+    {% endfor %}
+    <div class="note">Skipped senders' emails aren't read at all. Undo any of them under Learned rules.</div>
+  </div>
+
   {% elif m.kind == 'days' and m.payload %}
   <div class="card briefing">
     <div class="card-head"><span>{{ m.payload.label }}</span></div>

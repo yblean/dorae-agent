@@ -26,7 +26,7 @@ from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
 from doraemon.config import Settings
 from doraemon.db import Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
-from doraemon.ledger import counted_between, spending_totals
+from doraemon.ledger import counted_between, refunded_purchases, spending_totals
 from doraemon.networth import KINDS, NetWorth, shift_month
 from doraemon.events import draft_event, split_event
 from doraemon.reminders import draft_reminder, short_time, split_request
@@ -55,7 +55,7 @@ MONEY = Agent(
      "Is my spending going up or down?", "How was {last_month}?"),
     (("Check inbox for receipts", "With Dorae-2's check", "On"),
      ("Budget alerts", "At 80% and 100% of a budget", "Budgets"),
-     ("Monthly summary", "1st of each month, 9:00", "Coming soon")),
+     ("Monthly summary", "1st of each month, also on Telegram", "On")),
 )
 CALENDAR = Agent(
     "calendar", "Dorae-2", "Calendar & reminders", "#EC4899",
@@ -639,6 +639,103 @@ class Brain:
             text += f" {waiting} from your email still need{'s' if waiting == 1 else ''} your OK (dashed)."
         return {"text": text, "kind": "week", "payload": {"first": monday.isoformat(), "label": label, "events": events}}
 
+    def monthly_summary(self, month: str | None = None) -> dict:
+        """A month in review (last month by default): spending against the month before and your budget, where it
+        went and what changed most, the biggest purchase, what you kept from your income and your net worth.
+        Every number is worked out here; it's posted on the 1st (Runtime.monthly_tick) and answers "monthly summary"."""
+        month = month or last_full_month(self.settings)
+        prev, home = self.month_shift(month, -1), self.home
+        kept = self.ledger(month)
+        card = self.summary(kept, month_name(month), month)
+        p = card["payload"]
+        if not p["count"]:
+            return {"text": f"No payments in {month_name(month)} to sum up yet.", "kind": "text", "payload": None}
+        total = Decimal(p["total"])
+        text = f"📅 {month_name(month)} in review: you spent {money(total, home)} across {p['count']} payments"
+        compare = (self.first_month() or month) <= prev
+        before = self.month_total(prev) if compare else Decimal(0)
+        if before:
+            diff = total - before
+            text += (f", {money(abs(diff), home)} ({int(abs(diff) / before * 100)}%) {'more' if diff > 0 else 'less'} "
+                     f"than {month_name(prev)}." if diff else f", the same as {month_name(prev)}.")
+        else:
+            text += "."
+        overall = next((s for s in self.budget_statuses(month) if s.category == bud.TOTAL), None)
+        if overall:
+            text += (f" That's {overall.used}% of your {money(overall.limit, home)} budget"
+                     + (f", {money(overall.spent - overall.limit, home)} over." if overall.spent > overall.limit
+                        else ", within it."))
+        if p["rows"]:
+            text += f" Most went to {p['rows'][0][0]} ({money(Decimal(p['rows'][0][1]), home)})."
+        if before:
+            now_by = dict((c, Decimal(a)) for c, a in p["rows"])
+            then_by = spending_totals(self.ledger(prev), home, self.fx).by_category
+            changes = [(c, now_by.get(c, Decimal(0)) - then_by.get(c, Decimal(0))) for c in {*now_by, *then_by}]
+            cat, change = max(changes, key=lambda kv: abs(kv[1]), default=("", Decimal(0)))
+            if abs(change) >= 20:
+                text += f" The biggest change: {cat} {'up' if change > 0 else 'down'} {money(abs(change), home)}."
+        sums = spending_totals(kept, home, self.fx)
+        refunded = {id(p) for p in refunded_purchases(kept).values()}  # a cancelled booking wasn't really spent
+        spends = [t for t in kept if not t.is_refund and id(t) in sums.home_amounts and id(t) not in refunded]
+        if spends:
+            big = max(spends, key=lambda t: sums.home_amounts[id(t)])
+            day = big.purchased_at.astimezone(self.tz)
+            text += f" Biggest purchase: {big.merchant}, {money(sums.home_amounts[id(big)], home)} on {day.day} {day:%b}."
+        got = income.total(income.in_month(self.db, month, home, self.fx, self.today()))
+        if got > 0:
+            saved = got - total
+            text += (f" From {money(got, home)} of income you kept {money(saved, home)} ({int(saved / got * 100)}%)."
+                     if saved >= 0 else f" You spent {money(-saved, home)} more than your {money(got, home)} of income.")
+        end, end_before = self.month_range(month)[1], self.month_range(prev)[1]
+        worth, worth_before = self.nw.worth_at(end), self.nw.worth_at(end_before)
+        if worth.counted:
+            text += f" Net worth at the end of the month: {money(worth.total, home)}"
+            if worth_before.counted and worth_before.total:
+                change = worth.total - worth_before.total
+                text += f", {'up' if change >= 0 else 'down'} {money(abs(change), home)}."
+            else:
+                text += "."
+        card["text"] = text
+        card["payload"]["label"] = f"{month_name(month)} in review"
+        return card
+
+    FIND_DAYS = 120  # how far ahead "when is my ..." looks
+    FIND_FILLER = {"my", "the", "a", "an", "next", "upcoming", "coming", "up", "is", "are", "when", "appointment",
+                   "appointments", "event", "events", "meeting", "scheduled", "booked", "on", "at", "for", "with",
+                   "to", "of", "do", "i", "have", "any", "due", "planned", "time", "day", "date", "our"}
+
+    def find_card(self, what: str) -> dict:
+        """'When is my dentist appointment?': the soonest event or item whose title has the words you used, from all
+        your calendars and your email, in the next FIND_DAYS days."""
+        words = [w for w in re.findall(r"[a-z0-9]+", what.lower()) if w not in self.FIND_FILLER and len(w) > 1]
+        today, now = self.today(), datetime.now(self.tz)
+        events, problem = self.calendar_events(today, today + timedelta(days=self.FIND_DAYS))
+        upcoming = [e for e in events if not (e["first"] == today.isoformat() and e["start"]
+                                              and (e["end"] or e["start"]) < now.strftime("%H:%M"))]
+        if words:
+            scored = [(sum(1 for w in words if w in e["title"].lower()), e) for e in upcoming]
+            best = max((s for s, _ in scored), default=0)
+            found = [e for s, e in scored if best and s == best]
+        else:  # "when is my next appointment": the next thing with a time
+            found = [e for e in upcoming if e["start"]][:1]
+        if not found:
+            return {"text": f"I couldn't find “{what}” in your calendars or email in the next {self.FIND_DAYS // 30} months."
+                            + (f" (I couldn't read Google Calendar: {problem}.)" if problem else ""),
+                    "kind": "text", "payload": None}
+        first = found[0]
+        d = date.fromisoformat(first["first"])
+        gap = (d - today).days
+        when = f"{d:%a} {d.day} {d:%b}" + (f", {short_clock(first['start'])}" if first["start"] else " (all day)")
+        text = (f"{first['title']}: {when}, {'today' if gap == 0 else 'tomorrow' if gap == 1 else f'in {gap} days'}"
+                + (f" · {first['location']}" if first["location"] else "") + "."
+                + (f" {len(found) - 1} more after that." if len(found) > 1 else ""))
+        days: dict[str, dict] = {}
+        for e in found[:5]:
+            day = date.fromisoformat(e["first"])
+            days.setdefault(e["first"], {"date": e["first"], "label": f"{day:%a} {day.day} {day:%b}", "events": []})
+            days[e["first"]]["events"].append(e)
+        return {"text": text, "kind": "days", "payload": {"label": f"“{what}”", "days": list(days.values())}}
+
     def days_range(self, when: str) -> tuple[date, date, str]:
         """(first day, last day, label) for a calendar question's time (doraemon.router.spoken_when)."""
         today = self.today()
@@ -975,6 +1072,11 @@ class Brain:
         s, home = route.slots, self.home
         if route.intent == "help":
             return {"text": HELP_TEXT[route.agent], "kind": "text", "payload": None}
+        if route.intent == "find":
+            return self.find_card(s["what"])
+        if route.intent == "summary" or (route.intent == "how_was" and (s.get("period") or "").startswith(("month:", "last_month"))):
+            first, _, _ = self.span(s.get("period"), "last_month")
+            return self.monthly_summary(first.strftime("%Y-%m") if first else None)
         if route.intent in ("days", "day"):
             return self.days_card(*self.days_range(s.get("when") or s.get("day") or "today"))
         if route.intent in ("total", "payments"):

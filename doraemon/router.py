@@ -226,6 +226,13 @@ CALENDAR_TOPIC = re.compile(r"\b(?:schedule|calendar|agenda|events?|plans?|plann
                             r"waiting for my|to (?:confirm|approve))\b")
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 _DAY_WORD = r"(?:mon|tue|tues|wed|wednes|thu|thur|thurs|fri|sat|satur|sun)(?:day)?"
+# "when is my dentist appointment", "what time is the concert", "find my flight to tokyo": a search for one thing
+FIND = re.compile(r"^(?:(?:hey|hi|ok|so|please|pls|can you|could you)\W+)*(?:when(?:'s| is| are| will)|"
+                  r"what (?:time|day|date) is|find|look up|search(?: for)?)\s+(?:my |the |a |an |our )?(?P<what>.+)$")
+# ...unless it's one of the lists the other intents answer ("when is my next flight": the trips)
+TOPIC_ONLY = (r"(?:next |upcoming )?(?:flights?|trips?|travel|bills?(?: due)?|reminders?|payments?|budgets?|"
+              r"schedule|calendar|agenda)(?: coming up)?")
+SUMMARY = re.compile(r"\b(?:monthly )?summary\b|\bin review\b|\breview of\b|\bwrap[- ]?up\b|\brecap\b")
 HELP = re.compile(r"^(?:\W*(?:hey|hi|ok|so)\W+)*(?:help|what can (?:you|dorae-?[12]|doraemon) do|"
                   r"what (?:can|do) i ask(?: you)?|how do i use (?:you|this))\W*$")
 
@@ -279,6 +286,10 @@ def understand(agent: str, q: str, previous: str | None = None) -> Route | None:
         return Route(agent, "help")
     if NEEDS_THOUGHT.search(q) or CHANGES.search(q):
         return None
+    if (found := FIND.match(q)) and not re.fullmatch(TOPIC_ONLY, found["what"]):
+        return Route("calendar", "find", {"what": found["what"].strip()})  # "when is my dentist appointment"
+    if SUMMARY.search(q):
+        return Route("money", "summary", {"period": loose_period(q)} if loose_period(q) else {})
     money, calendar = bool(MONEY_TOPIC.search(q)), bool(CALENDAR_TOPIC.search(q))
     if money and calendar:  # "bills" and "spend" both: read the stronger signals
         money = not re.search(r"\b(?:bills?|due|deadlines?|reminders?|schedule|calendar)\b", q)

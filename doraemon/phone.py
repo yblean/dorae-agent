@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from doraemon import senders
 from doraemon.agents import Brain, money, short_clock
 from doraemon.calendar_sync import add_to_calendar
 from doraemon.db import item_model, transaction_model
@@ -143,6 +144,8 @@ class Phone:
         if row["status"] == "confirmed":
             return "✅ Already created."
         item = item_model(row)
+        if item.start_at is None:
+            return "It has no date, so I can't time a reminder: set one under Edit in Doraemon."
         first, times = defaults_for(row["type"])
         planned, _ = plan(item, self.settings.timezone, first, times, now)
         if not planned:
@@ -153,6 +156,21 @@ class Phone:
         self.db.add_message("calendar", "agent", f"🔔 Reminder created on Telegram: “{row['title']}”, "
                                                  f"{when_line(item, self.settings.timezone, now)}.")
         return f"✅ Created. I'll remind you {whens}."
+
+    def new_item(self, row) -> tuple[str, Buttons]:
+        """A suggestion just found in your email, to approve from your phone: Remind me (bills, deadlines, deliveries,
+        RSVPs) or Confirm (into Google Calendar), and Dismiss. The same as the buttons in the app."""
+        kind = (row["type"] or "").replace("_", " ").capitalize()
+        when = self.day(row) + (f" · {row['currency']} {row['amount']}" if row["amount"] else "") \
+            + (f" · {row['location']}" if row["location"] else "")
+        sender = senders.name(row["sender"] or "")
+        lines = [f"📬 New from your email: {row['title']}", f"{kind} · {when}"]
+        if sender:
+            lines.append(f"From {sender}")
+        if row["evidence_snippet"]:
+            lines.append(f"“{row['evidence_snippet'][:140]}”")
+        ok = ("🔔 Remind me", f"make:{row['id']}") if wants_reminder(row["type"]) else ("✅ Confirm", f"make:{row['id']}")
+        return "\n".join(lines), [[ok, ("✖ Dismiss", f"drop:{row['id']}")]]
 
     def add_event(self, row) -> str:
         if row["status"] == "confirmed" and row["calendar_event_id"]:

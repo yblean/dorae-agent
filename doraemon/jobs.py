@@ -30,6 +30,9 @@ from doraemon.phone import EXAMPLES, Phone
 from doraemon.reminders import (SNOOZE_MINUTES, SNOOZE_TOMORROW, Messenger, ReminderJob, list_text, mark_done,
                                 short_time, snooze)
 from doraemon.telegram import Command, CommandListener, connect_telegram
+from doraemon import senders
+from doraemon.db import from_chat
+from doraemon.rules import RuleStore
 from doraemon.tidy import tidy
 
 log = logging.getLogger(__name__)
@@ -102,6 +105,7 @@ class CheckJob:
         self.last_problem = ""
         self.after_payments = None  # e.g. budget alerts; called when a check brings in new payments
         self.on_problem = None  # e.g. a Telegram message; called once per new problem of an automatic check
+        self.after_items = None  # e.g. sending them to Telegram; called when a check finds new things for you
         # Is the model running (starting Ollama if not)? Tests pass a fake ingest, which needs no model.
         self.ready = (lambda: True) if ingest else (lambda: model_ready(settings))
 
@@ -149,6 +153,8 @@ class CheckJob:
         if items:
             self.db.add_message("calendar", "agent", f"📬 {n} new email(s): {items} new thing(s) for you. "
                                                      "Ask \"What needs my OK?\" to see them.")
+            if self.after_items:
+                self.after_items()
         elif not auto and not summary.get("stopped"):
             self.db.add_message("calendar", "agent", f"Checked {n} new email(s): nothing that needs you." if n
                                 else "Checked your inbox just now. Nothing new since my last look.")
@@ -200,6 +206,8 @@ class Runtime:
         self.check = CheckJob(self.db, settings, ingest)
         self.check.after_payments = self.brain.budget_alerts
         self.check.on_problem = self.warn
+        self.check.after_items = self.announce_new
+        self.rules = RuleStore(settings.db_path)  # for "Skip emails from ..." (doraemon.senders)
         self.reminders = ReminderJob(self.db, settings.timezone, self.get_messenger, settings.remind_until_done)
         self.phone = Phone(self.brain, self.get_calendar, help_text=lambda: self.commands.help_text())  # plain messages to the bot
         # Commands you can send the bot. /remindars is a common misspelling, so it works too.
@@ -278,8 +286,38 @@ class Runtime:
         if action == "make":
             return self.phone.create(item_id)
         if action == "drop":
-            return self.phone.cancel(item_id)
+            text = self.phone.cancel(item_id)
+            self.offer_skip(item_id)
+            return text
+        if action == "skip":  # "Skip emails from ..." under an offer
+            row = self.db.get("item", item_id)
+            sender = self.sender_of(row) if row else ""
+            if not sender:
+                return "I can't tell who sent that one."
+            text, _ = senders.skip(self.db, self.rules, sender, created_from="you chose Skip on Telegram")
+            self.db.add_message("calendar", "agent", f"{text} (You chose that on Telegram.)")
+            return text
         return "I don't know that button."
+
+    def sender_of(self, row) -> str:
+        found = self.db.conn.execute("SELECT sender FROM processed_emails WHERE message_id = ?", (row["gmail_id"],)).fetchone()
+        return found["sender"] if found and found["sender"] else ""
+
+    def offer_skip(self, item_id: int) -> bool:
+        """After a Dismiss on Telegram: the third from a sender you never confirm anything from? Offer to skip them."""
+        row = self.db.get("item", item_id)
+        sender = self.sender_of(row) if row else ""
+        offers = senders.worth_skipping(self.db, self.rules, self.settings.user_emails, sender=sender) if sender else []
+        bot = self.get_messenger()
+        if not offers or bot is None:
+            return False
+        senders.mark_offered(self.db, offers)
+        try:
+            bot.send(senders.offer_text(offers), buttons=[[(f"🚫 Skip emails from {offers[0]['name'][:30]}",
+                                                           f"skip:{item_id}")]])
+        except Exception as e:
+            log.warning("skip offer on Telegram: %s", e)
+        return True
 
     def briefing_tick(self, now: datetime | None = None) -> list[dict]:
         """Post the morning briefing when it's due, and send it on Telegram too."""
@@ -346,7 +384,75 @@ class Runtime:
         text = tidy(self.db, self.settings.timezone, now or datetime.now(timezone.utc), self.settings.expire_passed)
         if text:
             self.db.add_message("calendar", "agent", text)
+        self.offer_skips()
         return text
+
+    def offer_skips(self) -> list[dict]:
+        """Once per sender: those whose suggestions you've only ever dismissed, offered in Dorae-2's chat and on
+        Telegram with a Skip button each. Returns the ones offered."""
+        offers = senders.worth_skipping(self.db, self.rules, self.settings.user_emails)[:6]
+        if not offers:
+            return []
+        senders.mark_offered(self.db, offers)
+        self.db.add_message("calendar", "agent", senders.offer_text(offers), "skip", {"senders": [
+            {"address": o["address"], "name": o["name"], "dismissed": o["dismissed"]} for o in offers]})
+        bot = self.get_messenger()
+        if bot is not None:
+            try:
+                bot.send(senders.offer_text(offers), buttons=[[(f"🚫 Skip {o['name'][:32]}", f"skip:{o['item']}")]
+                                                             for o in offers])
+            except Exception as e:
+                log.warning("skip offers on Telegram: %s", e)
+        return offers
+
+    ANNOUNCED = "telegram:announced"  # the newest item already sent to Telegram
+
+    def announce_new(self, limit: int = 5) -> int:
+        """Send suggestions found since the last time to Telegram, with Confirm / Remind me and Dismiss. The first
+        time it only notes where it's up to, so what was waiting before isn't sent all at once. Returns how many."""
+        newest = self.db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM action_items").fetchone()[0]
+        last = self.db.get_setting(self.ANNOUNCED)
+        bot = self.get_messenger() if self.settings.telegram_new_items else None
+        if last is None or bot is None:
+            self.db.set_setting(self.ANNOUNCED, str(newest))
+            return 0
+        rows = [r for r in self.db.items(("proposed",)) if r["id"] > int(last) and not from_chat(r["gmail_id"])]
+        sent = 0
+        for row in sorted(rows, key=lambda r: r["id"])[:limit]:
+            try:
+                bot.send(*self.phone.new_item(row))
+                sent += 1
+            except Exception as e:  # they're in the app either way
+                log.warning("new item on Telegram: %s", e)
+                break
+        if len(rows) > limit:
+            try:
+                bot.send(f"…and {len(rows) - limit} more from your email. Open Doraemon to see them all.")
+            except Exception:
+                pass
+        self.db.set_setting(self.ANNOUNCED, str(newest))
+        return sent
+
+    def monthly_tick(self, now: datetime | None = None) -> bool:
+        """On the 1st (from the briefing time), last month in review once: in Dorae-1's chat and on Telegram."""
+        now = (now or datetime.now(self.brain.tz)).astimezone(self.brain.tz)
+        at = self.brain.briefing_time() or dtime(9)
+        month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        key = f"summary:{month}"
+        if now.day != 1 or now.time() < at or self.db.get_setting(key):
+            return False
+        card = self.brain.monthly_summary(month)
+        self.db.set_setting(key, now.isoformat())
+        if card["payload"] is None:  # nothing to sum up
+            return False
+        self.db.add_message("money", "agent", card["text"], card["kind"], card["payload"])
+        bot = self.get_messenger()
+        if bot is not None:
+            try:
+                bot.send(self.phone.plain(card))
+            except Exception as e:  # it's in Dorae-1's chat either way
+                log.warning("monthly summary on Telegram: %s", e)
+        return True
 
     def webull_expires(self) -> datetime | None:
         if not (self.settings.webull_app_key and self.settings.webull_app_secret):
@@ -420,6 +526,7 @@ class Runtime:
         self.stops.append(every(BROKER_HOURS * 3600, self.sync_brokers, "brokers", first=30))
         self.stops.append(every(30 * 60, self.tidy_tick, "tidy", first=25))
         self.stops.append(every(6 * 3600, self.session_tick, "sessions", first=40))
+        self.stops.append(every(30 * 60, self.monthly_tick, "monthly-summary", first=20))
 
     def stop_jobs(self) -> None:
         for stop in self.stops:

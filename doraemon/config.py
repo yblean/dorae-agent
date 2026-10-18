@@ -43,6 +43,8 @@ class Settings:
     # Dorae-2 posts a daily briefing in its chat at this time (while Doraemon runs); "off" to stop it
     briefing_time: str = os.getenv("DORAEMON_BRIEFING_TIME", "08:00")
     briefing_telegram: bool = os.getenv("DORAEMON_BRIEFING_TELEGRAM", "on").lower() != "off"  # also send it there
+    # Send each new suggestion from your email to Telegram with Confirm / Remind me and Dismiss; "off" for the app only
+    telegram_new_items: bool = os.getenv("DORAEMON_TELEGRAM_NEW_ITEMS", "on").lower() != "off"
     # Dismiss suggestions still waiting for your OK a day after their date (undo under Activity); "off" keeps them
     expire_passed: bool = os.getenv("DORAEMON_EXPIRE_PASSED", "on").lower() != "off"
     # Start Ollama (ollama serve) when the model is needed and it isn't running; "off" to leave it to you

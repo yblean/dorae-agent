@@ -38,6 +38,7 @@ from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
+from doraemon import senders
 from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.web import charts
@@ -275,12 +276,15 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return tpl.render(c=card(db.get("item", item_id)), types=type_options(), back=back)
 
     def answer(request: Request, agent: str, back: str, text: str, mood: str = "idle", remove: bool = False,
-               refresh: int | None = None, reply_card: dict | None = None):
+               refresh: int | None = None, reply_card: dict | None = None, follow: dict | None = None):
         """An action's result, said by the agent in its chat. `refresh`: an item whose card changed.
-        `reply_card`: a card ({"kind", "payload"}) to show under the text."""
+        `reply_card`: a card ({"kind", "payload"}) to show under the text. `follow`: a second message after it
+        ({"text", "kind", "payload"}), e.g. offering to skip a sender."""
         msg_id = db.add_message(agent, "agent", text, *((reply_card["kind"], reply_card["payload"]) if reply_card else ()))
+        ids = [msg_id] + ([db.add_message(agent, "agent", follow["text"], follow["kind"], follow["payload"])]
+                          if follow else [])
         if wants_json(request):
-            return JSONResponse({"html": render_messages(request, [msg_id]), "mood": mood, "remove": remove,
+            return JSONResponse({"html": render_messages(request, ids), "mood": mood, "remove": remove,
                                  **({"card": render_card(refresh, back)} if refresh else {})})
         path = back if back.startswith("/") and not back.startswith("//") else f"/chat/{agent}"
         if not path.startswith("/chat/"):  # list pages show it too; chat pages already have it in the thread
@@ -525,17 +529,27 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     def dismiss(request: Request, item_id: int, ignore_sender: str = Form(""), back: str = Form("/chat/calendar")):
         row = db.get("item", item_id)
         db.update("item", item_id, "dismiss", status="dismissed")
-        if not ignore_sender:
-            return answer(request, "calendar", back, f"Okay, I'll skip “{row['title']}”.", remove=True)
-        sender = db.conn.execute("SELECT sender FROM processed_emails WHERE message_id = ?",
-                                 (row["gmail_id"],)).fetchone()["sender"]
-        rule = rules.add("ignore_sender", sender, created_from=f"item #{item_id}")
-        others = [r for r in db.items(("proposed",)) if r["sender"] == sender]
-        for other in others:
-            db.update("item", other["id"], "dismiss (ignored sender)", status="dismissed")
-        extra = f" and {len(others)} more from them" if others else ""
-        return answer(request, "calendar", back,
-                      f"Skipped “{row['title']}”{extra}. I won't read emails from {rule.match} again.", remove=True)
+        sender_row = db.conn.execute("SELECT sender FROM processed_emails WHERE message_id = ?",
+                                     (row["gmail_id"],)).fetchone()
+        sender = sender_row["sender"] if sender_row else ""
+        if not ignore_sender or not sender:
+            # the third dismissal from a sender you've never confirmed anything from: offer to skip them
+            offers = senders.worth_skipping(db, rules, settings.user_emails, sender=sender) if sender else []
+            senders.mark_offered(db, offers)
+            return answer(request, "calendar", back, f"Okay, I'll skip “{row['title']}”.", remove=True,
+                          follow=skip_offer(offers) if offers else None)
+        text, _ = senders.skip(db, rules, sender, created_from=f"item #{item_id}")
+        return answer(request, "calendar", back, f"Skipped “{row['title']}”. {text}", remove=True)
+
+    def skip_offer(offers: list[dict]) -> dict:
+        """Dorae-2's "skip their emails?" message, with a button per sender."""
+        return {"text": senders.offer_text(offers), "kind": "skip", "payload": {"senders": [
+            {"address": o["address"], "name": o["name"], "dismissed": o["dismissed"]} for o in offers[:6]]}}
+
+    @app.post("/senders/skip")
+    def skip_sender(request: Request, address: str = Form(...), back: str = Form("/chat/calendar")):
+        text, n = senders.skip(db, rules, address, created_from="you chose Skip their emails")
+        return answer(request, "calendar", back, text, mood="happy")
 
     def pick_type(value: str, new_type: str = "", new_base: str = "reminder") -> tuple[dict | None, str]:
         """The Type dropdown's choice as item fields ({"type", "custom_type_id"}), plus a note if you made a

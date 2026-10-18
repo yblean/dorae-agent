@@ -227,6 +227,12 @@ waiting for your OK. It only answers your own chat, and only while Doraemon runs
 Anything else gets a list of examples. The local model only answers in the app, so on your phone an answer
 is instant or not given at all.
 
+**New finds come to your phone.** Each new suggestion from your email (a bill, an appointment, a flight) arrives on
+Telegram with what it is, when and who sent it, and buttons: **🔔 Remind me** (bills, deadlines, deliveries, RSVPs:
+the default reminders) or **✅ Confirm** (into Google Calendar), and **✖ Dismiss**. They're the same as the app's
+buttons, and the item stays in the app too. Up to 5 per check; `DORAEMON_TELEGRAM_NEW_ITEMS=off` keeps them in the
+app only. What was already waiting when you turn this on isn't sent.
+
 ### Morning briefing
 
 Every day at `DORAEMON_BRIEFING_TIME` (default `08:00`, `off` to turn it off) Dorae-2 posts a briefing in
@@ -248,6 +254,13 @@ Dorae-2's chat. Each one is a dismissal in Activity, so you can undo it.
   waiting is dismissed in favour of the one you confirmed (or the first one).
 - **Passed without an answer.** A suggestion still waiting a day after its date is over (a survey deadline, last
   week's gameweek) is dismissed. `DORAEMON_EXPIRE_PASSED=off` keeps them.
+- **Senders you never want.** Once you've dismissed 3 things from one sender and confirmed none (a library's
+  newsletters, a school's announcements), Dorae-2 asks once whether to skip their emails from now on, with a
+  **Skip their emails** button (in the app, and on Telegram after a Dismiss there). Senders that already qualify
+  from your history are listed once, in the chat and on Telegram. Skipping adds an `ignore_sender` rule (their
+  emails aren't read at all, so the model never runs on them) and dismisses what's still waiting from them; undo it
+  under Learned rules. It never asks about your own address (your forwards), and never decides for you
+  (`doraemon/senders.py`).
 
 ### Run in the background
 
@@ -290,7 +303,9 @@ Telegram bot (`doraemon/events.py`) and drafted instantly; other wordings go to 
 a shop), breakdowns, your latest or biggest purchase, top merchants, budget status, the monthly trend,
 what needs your OK, any day or span on your calendars (today, Friday, 26/10, this weekend, this or next
 week, November), what's due, trips, your reminders, a payment of a given amount ("did I have a 4.87
-transaction?") and what each agent can do. Follow-ups like "and last month?" or "what about friday?" count too.
+transaction?"), when one thing is ("when is my dentist appointment?", "what time is my flight to tokyo": the
+soonest match in the next 4 months, from all your calendars and email), the monthly summary and what each agent
+can do. Follow-ups like "and last month?" or "what about friday?" count too.
 These answer in milliseconds instead of 10-20 seconds (`doraemon/router.py`).
 
 It reads them two ways. First the exact shapes ("how much did I spend on dining last month"); then, for freer
@@ -319,6 +334,11 @@ card. Each budget shows how much is used, with a tick for how far through the mo
 "how can I stay within my budget?" and the app works out the tips (what you can spend a day, where the
 money went, categories heading above usual), which the model only puts into words. After each inbox
 check, Dorae-1 posts in its chat when a budget reaches 80% and 100% (once per level per month).
+
+**Monthly summary.** On the 1st (from the briefing time) Dorae-1 posts last month in review, in its chat and on
+Telegram: what you spent against the month before and your budget, where most of it went and what changed most,
+the biggest purchase (a refunded one doesn't count), what you kept from your income and your net worth at the
+month's end. Every number is worked out by the app. Ask for it any time: "monthly summary", "September in review".
 
 Breakdowns are donut charts with every category listed below. "Is my spending going up or down?" shows
 spending per month as columns, with this month lighter because it isn't over yet; All payments and
@@ -386,6 +406,7 @@ python -m evals.run_eval --reuse evals/results/<run>.jsonl --rules defaults --le
 - `doraemon/router.py`: instant answers for everyday questions, without the model
 - `doraemon/ledger.py`: one ledger from bank alerts and receipts, duplicates and refunds settled
 - `doraemon/reminders.py`, `doraemon/events.py`: reminders and calendar events asked for in your own words
+- `doraemon/tidy.py`, `doraemon/senders.py`: keeping "needs your OK" short (repeats, passed ones, senders to skip)
 - `doraemon/jobs.py`, `doraemon/service.py`: the background jobs and the service that runs them
 - `doraemon/telegram.py`, `doraemon/phone.py`: the Telegram bot and what it answers
 - `doraemon/demo.py`: the web app on made-up data (`python -m doraemon.demo`), also used for `docs/screenshots/`
