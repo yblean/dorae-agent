@@ -3,6 +3,69 @@
 Inbox to Action, v0 (single user). Reads your Gmail into a spending ledger, reminders and calendar events;
 two agents (Dorae-1 money, Dorae-2 calendar) answer in the web app, and a Telegram bot reaches your phone.
 
+## A quick tour
+
+The screenshots below are from the demo, which runs the web app on made-up data (none of it is anyone's real
+mail, money or calendar). Try it yourself, with nothing to connect:
+
+```
+python -m doraemon.demo        # then open http://127.0.0.1:8100
+```
+
+The app has two chats, picked on the left: **Dorae-2** for your calendar, bills and reminders, and **Dorae-1** for
+your money. Ask them anything in your own words. Everyday lookups answer instantly from your data (the ⚡ on a
+reply); questions that need thought go to the local model.
+
+**1. Start the day with Dorae-2's briefing.** Every morning it lists today and tomorrow from all your Google
+calendars, the bills due this week and what's waiting for your OK. The panel on the right keeps the counts.
+
+![Dorae-2's morning briefing](docs/screenshots/dorae2-briefing.png)
+
+**2. Review what it found in your email.** Each bill, appointment, flight or delivery from your inbox waits for you
+to check it. **Confirm** puts appointments and trips in a Doraemon calendar in Google Calendar; bills, deadlines,
+deliveries and RSVPs get **Remind me** instead (Telegram reminders: pick when the first one comes and how many).
+**Dismiss** skips it, and *Edit · more options* fixes a wrong date or title first.
+
+![Things from email waiting for your OK](docs/screenshots/dorae2-review.png)
+
+**3. Ask about your schedule.** "What's my schedule like next week", "anything this weekend?", "am I free on
+Friday" or "do I have anything in November" show every calendar you have in Google, plus things from your email
+that aren't in it yet (dashed).
+
+![A week of events](docs/screenshots/dorae2-week.png)
+
+**4. Ask for reminders and events.** "Remind me to call mom at 5pm tomorrow" drafts a reminder you can change
+before pressing **Create reminder**; "add dinner with Sam on friday 7-9pm" drafts an event to Confirm. The same
+works from your phone by messaging the Telegram bot.
+
+![A drafted reminder](docs/screenshots/dorae2-reminder.png)
+
+**5. Ask Dorae-1 where your money went.** "How much have I spent this month?", "what did I spend on today",
+"top merchants last month" or "my latest purchase": the answer comes with a breakdown by category, from your bank
+alerts and receipts (each payment counted once, refunds in the month of their purchase).
+
+![This month's spending by category](docs/screenshots/dorae1-spending.png)
+
+**6. Keep to a budget.** Set monthly budgets for all your spending or one category, and ask "how am I doing on my
+budget". The tick on each bar is where you'd be spending evenly through the month; Dorae-1 tells you what a day
+keeps you within, and messages you at 80% and 100%.
+
+![Budget progress in the chat](docs/screenshots/dorae1-budget.png)
+
+**7. Look through everything on the pages.** *All payments* has the monthly trend, the breakdown, every payment
+(change a category once and that merchant follows it) and a box to sort out what's still in Other. *Budgets* sets
+them, with your averages as suggestions. *Net worth* adds up your bank accounts, CPF, investments and loans,
+updated in a monthly check-in (or synced from Webull).
+
+![All payments](docs/screenshots/spending-page.png)
+
+![Budgets](docs/screenshots/budgets-page.png)
+
+![Net worth](docs/screenshots/networth-page.png)
+
+To use it on your own mail, follow [Setup](#setup) and [Connect Gmail](#connect-gmail) below, then run
+`python -m doraemon.web` (or `python -m doraemon.service install` to keep it running in the background).
+
 ## Setup
 
 ```
@@ -325,4 +388,5 @@ python -m evals.run_eval --reuse evals/results/<run>.jsonl --rules defaults --le
 - `doraemon/reminders.py`, `doraemon/events.py`: reminders and calendar events asked for in your own words
 - `doraemon/jobs.py`, `doraemon/service.py`: the background jobs and the service that runs them
 - `doraemon/telegram.py`, `doraemon/phone.py`: the Telegram bot and what it answers
+- `doraemon/demo.py`: the web app on made-up data (`python -m doraemon.demo`), also used for `docs/screenshots/`
 - `evals/`: labels, scoring, helper scripts
