@@ -517,6 +517,9 @@ class Runtime:
 
     def start_jobs(self) -> None:
         s = self.settings
+        if self.db.get_setting(self.ANNOUNCED) is None:  # new finds from now on go to Telegram, not what's waiting
+            self.db.set_setting(self.ANNOUNCED, str(self.db.conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM action_items").fetchone()[0]))
         if s.poll_minutes > 0:  # first look shortly after starting, so the program has settled
             self.stops.append(every(s.poll_minutes * 60, lambda: self.check.start(auto=True), "gmail-check", first=20))
         self.stops.append(every(60, self.reminders.tick, "reminders", first=5))

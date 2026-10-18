@@ -152,3 +152,13 @@ def test_new_suggestions_can_stay_in_the_app(settings):
     rt.announce_new()
     found(rt.db, 1)
     assert rt.announce_new() == 0 and bot.sent == []
+
+
+def test_the_first_find_after_starting_is_sent_too(settings):
+    bot = FakeBot()
+    rt = Runtime(settings, messenger=bot)
+    found(rt.db, 0)  # waiting from before
+    rt.start_jobs()
+    rt.stop_jobs()
+    found(rt.db, 1, title="Dentist check-up")
+    assert rt.announce_new() == 1 and bot.sent[0][0].startswith("📬 New from your email: Dentist check-up")
