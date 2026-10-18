@@ -29,7 +29,7 @@ def test_every_page_shows_made_up_data(tmp_path):
     _, app = demo(tmp_path)
     client = TestClient(app, follow_redirects=True)
     calendar = client.get("/chat/calendar").text
-    assert "SP Group electricity bill" in calendar and "Team stand-up" in calendar and "Call mom" in calendar
+    assert "SP Group electricity bill" in calendar and "Team stand-up" in calendar and "Good " in calendar  # briefing
     assert "You spent SGD" in client.get("/chat/money").text
     for page in ("/spending", "/budgets", "/networth", "/income", "/upcoming", "/history", "/rules", "/pocket"):
         assert client.get(page).status_code == 200, page

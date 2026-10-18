@@ -69,19 +69,22 @@ def test_only_one_holder_of_the_lock(tmp_path):
 
 
 def test_the_service_gets_the_jobs_and_the_web_app_takes_them_back(settings, monkeypatch):
-    monkeypatch.setattr(jobs, "HEARTBEAT", 0.05)
+    # Fast, but not so fast that a busy machine (the whole suite running) makes the service look gone: the web app
+    # counts it as running for 2.5 heartbeats after it last said so
+    monkeypatch.setattr(jobs, "HEARTBEAT", 0.25)
     web, svc = Runtime(settings), Runtime(settings)
     stop_web = web.supervise("web app")  # the web app was open first...
-    assert wait_for(lambda: (web.owner() or {}).get("by") == "web app")
+    assert wait_for(lambda: (web.owner() or {}).get("by") == "web app", seconds=10)
     stop_svc = svc.supervise("background service")
-    assert wait_for(lambda: (svc.owner() or {}).get("by") == "background service")  # ...and hands over
-    assert web.stops == [] and svc.stops
-    time.sleep(0.2)
-    assert svc.owner()["by"] == "background service"  # and stays out of the way
+    assert wait_for(lambda: (svc.owner() or {}).get("by") == "background service" and not web.stops,
+                    seconds=10)  # ...and hands over
+    assert svc.stops
+    time.sleep(0.6)
+    assert svc.owner()["by"] == "background service" and not web.stops  # and stays out of the way
     stop_svc.set()
-    assert wait_for(lambda: (web.owner() or {}).get("by") == "web app", seconds=5)  # back when the service stops
+    assert wait_for(lambda: (web.owner() or {}).get("by") == "web app", seconds=10)  # back when the service stops
     stop_web.set()
-    assert wait_for(lambda: web.owner() is None)
+    assert wait_for(lambda: web.owner() is None, seconds=10)
 
 
 def test_test_button_says_who_answered(settings):
