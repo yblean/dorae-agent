@@ -184,6 +184,8 @@ you set or change reminders, listing when they'll come.
 1. In Telegram, message **@BotFather**, send `/newbot`, and copy the token into `.env` as `DORAEMON_TELEGRAM_TOKEN`.
 2. Run `python -m doraemon.telegram connect`, then send your new bot any message (e.g. `/start`).
    It remembers that chat, so reminders only go to you. `python -m doraemon.telegram test` sends a test message.
+   A bot without a profile picture gets Dorae's (the app's mascot in Telegram's blues, `docs/brand/`); one you've
+   given a picture keeps it. `python -m doraemon.telegram photo` sets Dorae's any time.
 
 Reminders are sent while Doraemon runs: the background service (see below) or the web app. If neither
 was running when one was due, the latest missed reminder goes out when one starts again. Messages are

@@ -5,6 +5,7 @@ DORAEMON_TELEGRAM_TOKEN, then run
 
     python -m doraemon.telegram connect   # then send your bot any message, e.g. /start
     python -m doraemon.telegram test      # sends a test message
+    python -m doraemon.telegram photo     # gives the bot Dorae's picture (connect does it if it has none)
 
 `connect` remembers your chat with the bot, so reminders only ever go to you. While Doraemon runs
 the bot also answers that chat: commands (e.g. /reminders), the buttons under reminders (Done,
@@ -13,10 +14,12 @@ see doraemon.phone). Other chats get no answer. Messages are sent as plain text;
 printed or put in error messages.
 """
 import argparse
+import json
 import logging
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 import httpx
@@ -25,6 +28,7 @@ from doraemon.config import Settings
 from doraemon.db import Database
 
 API = "https://api.telegram.org"
+PHOTO = Path(__file__).parent / "web" / "static" / "dorae-telegram.jpg"  # Dorae in Telegram's blues: the bot's photo
 CHAT_KEY = "telegram_chat_id"
 OFFSET_KEY = "telegram_update_offset"  # updates before this were already answered
 STALE_SECONDS = 600  # commands sent while the app was closed are ignored after 10 minutes
@@ -52,6 +56,26 @@ class Telegram:
         if not data.get("ok"):
             raise TelegramError(data.get("description") or f"Telegram said no (HTTP {resp.status_code})")
         return data["result"]
+
+    def upload(self, method: str, fields: dict, files: dict) -> dict | list:
+        """Like call(), with files sent as multipart/form-data (Telegram's way to upload)."""
+        try:
+            resp = self.client.post(f"{API}/bot{self.token}/{method}", data=fields, files=files, timeout=30)
+            data = resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            raise TelegramError(f"couldn't reach Telegram ({type(e).__name__})") from None
+        if not data.get("ok"):
+            raise TelegramError(data.get("description") or f"Telegram said no (HTTP {resp.status_code})")
+        return data["result"]
+
+    def has_photo(self) -> bool:
+        me = self.call("getMe")
+        return self.call("getUserProfilePhotos", user_id=me["id"], limit=1)["total_count"] > 0
+
+    def set_photo(self, path: Path = PHOTO) -> None:
+        """Give the bot a profile photo (a JPG; Telegram crops it to a circle)."""
+        self.upload("setMyProfilePhoto", {"photo": json.dumps({"type": "static", "photo": "attach://photo"})},
+                    {"photo": (path.name, path.read_bytes(), "image/jpeg")})
 
     def send(self, text: str, buttons: list[list[tuple[str, str]]] | None = None) -> None:
         """`buttons`: rows of (label, data); pressing one sends `data` back to the bot."""
@@ -197,12 +221,19 @@ def connect_telegram(settings: Settings, db: Database) -> Telegram | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="python -m doraemon.telegram")
-    ap.add_argument("command", choices=["connect", "test"])
+    ap.add_argument("command", choices=["connect", "test", "photo"])
     args = ap.parse_args()
     settings = Settings()
     if not settings.telegram_token:
         sys.exit("Set DORAEMON_TELEGRAM_TOKEN in .env first (create a bot with @BotFather to get one).")
     db = Database(settings.db_path)
+    if args.command == "photo":
+        try:
+            Telegram(settings.telegram_token).set_photo()
+        except TelegramError as e:
+            sys.exit(f"Couldn't set the bot's picture: {e}")
+        print("Done: your bot now has Dorae's picture (Telegram may take a minute to show it).")
+        return
     if args.command == "test":
         bot = connect_telegram(settings, db)
         if bot is None:
@@ -215,6 +246,12 @@ def main() -> None:
 
     bot = Telegram(settings.telegram_token)
     me = bot.call("getMe")
+    try:  # a new bot gets Dorae's picture; one you've given a picture keeps it
+        if not bot.has_photo():
+            bot.set_photo()
+            print("Gave your bot Dorae's picture.")
+    except TelegramError as e:  # not needed to connect
+        print(f"(Couldn't set the bot's picture: {e}. Try later: python -m doraemon.telegram photo)")
     print(f"Open https://t.me/{me['username']} in Telegram and send it any message (e.g. /start).")
     print("Waiting up to 3 minutes...")
     chat = bot.wait_for_chat()

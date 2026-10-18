@@ -478,3 +478,24 @@ def test_pressing_done_answers_and_edits_the_message(db):
     assert pressed == ["done:1"]
     assert bot.answers == [("cb1", "✅ Done: Electricity bill")]
     assert bot.edits == [(7, "🔔 Electricity bill\n\n✅ Done: Electricity bill")]
+
+
+def test_the_bot_gets_dorae_as_its_picture():
+    from doraemon.telegram import PHOTO
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/getMe"):
+            return httpx.Response(200, json={"ok": True, "result": {"id": 777, "username": "dorae_bot"}})
+        if request.url.path.endswith("/getUserProfilePhotos"):
+            return httpx.Response(200, json={"ok": True, "result": {"total_count": 0, "photos": []}})
+        return httpx.Response(200, json={"ok": True, "result": True})
+    bot = Telegram("123:SECRET", None, httpx.Client(transport=httpx.MockTransport(handler)))
+    assert not bot.has_photo() and json.loads(seen[1].content) == {"user_id": 777, "limit": 1}
+    bot.set_photo()
+    upload = seen[-1]
+    assert upload.url.path == "/bot123:SECRET/setMyProfilePhoto"
+    body = upload.content
+    assert b'{"type": "static", "photo": "attach://photo"}' in body and PHOTO.read_bytes()[:64] in body
+    assert PHOTO.read_bytes()[:3] == b"\xff\xd8\xff"  # Telegram wants a JPG
