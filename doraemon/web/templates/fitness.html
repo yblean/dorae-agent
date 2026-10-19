@@ -63,10 +63,18 @@
 </div>
 
 <div class="panel-box">
-  <div class="card-head"><span>Steps from Apple Health</span></div>
-  <p class="note">An automation in your iPhone's Shortcuts app saves today's steps to <code>{{ health_folder }}</code> (in
-    OneDrive), and Doraemon reads it every 10 minutes. Setting it up takes about 5 minutes: see
-    <code>docs/apple-health-steps.md</code>. {% if today.steps is not none %}Today so far: {{ '{:,}'.format(today.steps) }} steps.{% else %}No steps for today yet.{% endif %}</p>
+  <div class="card-head"><span>Steps from Apple Health</span>
+    <span class="note">{% if today.steps is not none %}today so far: {{ '{:,}'.format(today.steps) }}{% else %}none for today yet{% endif %}</span></div>
+  <p class="note">An automation in your iPhone's Shortcuts app saves today's steps to iCloud Drive, iCloud for Windows
+    syncs them here, and Doraemon reads them every 10 minutes. Set-up (about 5 minutes): <code>docs/apple-health-steps.md</code>.
+    {% if not icloud %}<strong>iCloud for Windows isn't set up on this computer yet</strong>: install it from the Microsoft Store,
+    sign in and turn on iCloud Drive.{% endif %}</p>
+  <table class="payments">
+    {% for f in health %}
+    <tr><td><code>{{ f.path }}</code></td><td class="num note">{{ '✓ found' if f.found else 'not there yet' }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="note">Doraemon watches all of these; the Shortcut only needs to save to one.</p>
 </div>
 
 <div class="panel-box">

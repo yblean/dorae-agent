@@ -312,8 +312,15 @@ def parse_steps(text: str, fallback_day: date | None = None) -> list[tuple[date,
     return found
 
 
+def health_folders(setting: str) -> list[Path]:
+    """The folders DORAEMON_HEALTH_FOLDER names (separated by ";"), whether they exist yet or not."""
+    return [Path(p.strip()) for p in setting.split(";") if p.strip()]
+
+
 def import_steps(fit: Fitness, folder: str | Path) -> int:
-    """Read the step files in `folder`. Returns how many days changed."""
+    """Read the step files in `folder` (or in each of several separated by ";"). Returns how many days changed."""
+    if isinstance(folder, str) and ";" in folder:
+        return sum(import_steps(fit, f) for f in health_folders(folder))
     folder = Path(folder)
     if not folder.is_dir():
         return 0

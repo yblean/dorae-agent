@@ -391,8 +391,9 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
   3. anything else is the local model's estimate for a typical Singapore portion.
   Fix any number under **Edit**: what you change is what it remembers, so your usual orders get accurate quickly.
 - **Steps** come from Apple Health through a Shortcuts automation on your iPhone that saves a small file to
-  OneDrive (`DORAEMON_HEALTH_FOLDER`, default `OneDrive/Doraemon/health`); Doraemon reads it every 10 minutes.
-  Set-up: [docs/apple-health-steps.md](docs/apple-health-steps.md).
+  iCloud Drive; iCloud for Windows syncs it, and Doraemon reads it every 10 minutes. It watches
+  `iCloudDrive\Shortcuts\Doraemon\health`, `iCloudDrive\Doraemon\health` and `OneDrive\Doraemon\health`
+  (`DORAEMON_HEALTH_FOLDER` for others, separated by `;`). Set-up: [docs/apple-health-steps.md](docs/apple-health-steps.md).
 - **Asking.** "How am I doing today?", "protein left", "calories this week", "what did I eat yesterday", "my
   targets": instant answers with bars against your targets. Questions that need thought ("what can I improve?")
   go to the model, which gets the numbers and tips worked out by the app and only puts them into words.

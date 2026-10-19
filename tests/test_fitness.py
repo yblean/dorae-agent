@@ -272,3 +272,19 @@ def test_opening_dorae3_shows_your_day_not_the_calendar_briefing(settings):
     page = client.get("/chat/fitness").text
     assert "Today, " in page and "nothing logged yet" in page
     assert "need your OK" not in page.split('id="thread"')[1].split("</section>")[0]
+
+
+def test_steps_are_read_from_every_watched_folder(fit, tmp_path):
+    icloud, onedrive = tmp_path / "iCloudDrive" / "Shortcuts" / "Doraemon" / "health", tmp_path / "OneDrive" / "health"
+    icloud.mkdir(parents=True)
+    (icloud / "steps-2026-10-19.txt").write_text("2026-10-19 steps 8423")
+    assert import_steps(fit, f"{icloud};{onedrive}") == 1  # the missing OneDrive folder is just skipped
+    assert fit.steps_on(date(2026, 10, 19)) == 8423
+
+
+def test_the_fitness_page_shows_which_folders_it_watches(settings, tmp_path):
+    folder = tmp_path / "icloud-health"
+    folder.mkdir()
+    client = chat_client(dataclasses.replace(settings, health_folder=f"{folder};{tmp_path / 'nope'}"))
+    page = client.get("/fitness").text
+    assert str(folder) in page and "✓ found" in page and "not there yet" in page

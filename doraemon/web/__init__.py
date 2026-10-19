@@ -39,7 +39,7 @@ from doraemon.llm import get_backend
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
 from doraemon import coach, senders
-from doraemon.fitness import suggest_targets
+from doraemon.fitness import health_folders, suggest_targets
 from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.web import charts
@@ -843,7 +843,9 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         week = coach.week_card(fit)["payload"]
         return render(request, "fitness.html", today=today, rows=fit_rows({"kcal": t.kcal, "protein": t.protein},
                       today["steps"], today["targets"]), week=week, targets=fit.targets(), suggested=suggested,
-                      profile=profile, library=fit.library(30), health_folder=settings.health_folder,
+                      profile=profile, library=fit.library(30),
+                      health=[{"path": str(f), "found": f.is_dir()} for f in health_folders(settings.health_folder)],
+                      icloud=(Path.home() / "iCloudDrive").is_dir(),
                       check_time=settings.fitness_check_time)
 
     # --- budgets (Dorae-1) -------------------------------------------------------
