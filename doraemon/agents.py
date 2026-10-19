@@ -937,8 +937,18 @@ class Brain:
 
     # --- Dorae-3 -----------------------------------------------------------------------------------
 
-    def fitness_first(self, question: str, previous: str | None) -> list[dict] | None:
-        """What Dorae-3 answers before the usual routes: a target you set, suggested targets, or food to log."""
+    def fitness_first(self, question: str, previous: str | None, history: list | None = None) -> list[dict] | None:
+        """What Dorae-3 answers before the usual routes: a target you set, ideas for what to eat (the model plans
+        them, from what's left and foods that fit), suggested targets, or food to log."""
+        if coach.FOOD_IDEAS.search(question) and not coach.parse_target(question):
+            if self.chat is not None:
+                try:
+                    self.last_route = "model"
+                    return self.chat.answer("fitness", question, history or [])
+                except Exception as e:  # the model isn't running: the app's own ideas instead
+                    log.warning("meal ideas from the model failed: %s", e)
+            self.last_route = "ideas"
+            return [coach.ideas_card(self.fit)]
         if target := coach.parse_target(question):
             self.fit.set_targets(**target)
             self.last_route = "target"
@@ -1266,7 +1276,7 @@ class Brain:
         answers = None
         self.last_route = "model"
         if agent == "fitness":  # Dorae-3: targets you set and food you log come before anything else
-            answers = self.fitness_first(question, previous)
+            answers = self.fitness_first(question, previous, history)
         asked = split_request(question) if agent == "calendar" else None
         event = split_event(question)
         budget = bud.parse_request(question) if agent == "money" else None

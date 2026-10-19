@@ -64,6 +64,8 @@ class Phone:
         if target := coach.parse_target(text):  # "set my protein target to 140"
             self.brain.fit.set_targets(**target)
             return self.plain(coach.targets_card(self.brain.fit)), None
+        if coach.FOOD_IDEAS.search(text):  # "what should I eat for dinner?": the app's own ideas (no model here)
+            return self.plain(coach.ideas_card(self.brain.fit)), None
         if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"
             return self.food(food)
         # Dorae-3's own shapes first ("how am I doing today?"), then everyone else's
@@ -263,6 +265,11 @@ class Phone:
             if p["steps"] is not None:
                 rows.append(f"• Steps: {p['steps']:,}" + (f" of {p['targets']['steps']:,}" if p["targets"].get("steps") else ""))
             lines = rows + ([""] + [f"– {f[1]}: {f[3]} kcal, {f[4]} g" for f in p["foods"][:LIST]] if p["foods"] else [])
+        elif kind == "meal_ideas":
+            lines = ([f"• {' + '.join(pl['foods'])}: {pl['kcal']:,} kcal, {pl['protein']} g protein" for pl in p["plans"][1:]]
+                     if p.get("plans") else [f"• {o[0]}: {o[1]} kcal, {o[2]} g protein" for o in p["options"][3:6]])
+            if lines:
+                lines.insert(0, "Or:")
         elif kind == "fitness_week":
             lines = [f"• {r['name']}: " + (f"{r['kcal']:,} kcal, {r['protein']} g" if r["foods"] else "not logged")
                      + (f", {r['steps']:,} steps" if r["steps"] is not None else "") for r in p["rows"]]

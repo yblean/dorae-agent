@@ -288,3 +288,85 @@ def test_the_fitness_page_shows_which_folders_it_watches(settings, tmp_path):
     client = chat_client(dataclasses.replace(settings, health_folder=f"{folder};{tmp_path / 'nope'}"))
     page = client.get("/fitness").text
     assert str(folder) in page and "✓ found" in page and "not there yet" in page
+
+
+# --- ideas for what to eat ----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, ideas, targets", [
+    ("suggest me some foods to eat so that i can hit my targets", True, True),  # ideas win over targets
+    ("what should i eat for dinner", True, False),
+    ("any snack ideas to hit my protein?", True, False),
+    ("suggest my targets", False, True),
+    ("had chicken rice for lunch", False, False),
+])
+def test_ideas_for_food_are_told_apart_from_targets(text, ideas, targets):
+    assert bool(coach.FOOD_IDEAS.search(text)) is ideas and bool(coach.SUGGEST.search(text)) is targets
+    assert coach.food_request("what should i eat for dinner", True) is None
+    assert coach.food_request("had chicken rice for lunch", True) == "chicken rice"
+
+
+class PlanningModel:
+    """A chat model that calls meal_ideas, then answers from what it returned."""
+
+    def __init__(self):
+        self.seen = []
+
+    def complete_json(self, system, user, schema):
+        return json.dumps({"topic": "fitness"})
+
+    def chat(self, messages, tools):
+        self.seen.append(messages)
+        if len(self.seen) == 1:
+            return {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "meal_ideas", "arguments": {}}}]}
+        facts = json.loads(messages[-1]["content"])
+        pick = facts["foods"][0]
+        return {"role": "assistant", "content": f"Have {pick['name']}: {pick['kcal']} kcal, {pick['protein']} g protein."}
+
+
+def test_asking_what_to_eat_goes_to_the_model_with_whats_left(settings):
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    from doraemon.chat import AgentChat
+    model = PlanningModel()
+    brain.chat = AgentChat(brain, model)
+    brain.fit.set_targets(kcal=1800, protein=140)
+    brain.fit.log(brain.fit.draft([{"name": "Chicken breast rice", "portion": "1 plate", "kcal": 520, "protein": 38}]))
+    html = client.post("/chat/fitness/ask", data={"q": "suggest me some foods to eat so that i can hit my targets"}).json()["html"]
+    assert brain.last_route == "model" and "Have Chicken breast rice: 520 kcal, 38 g protein." in html
+    facts = json.loads(model.seen[1][-1]["content"])
+    assert (facts["kcal_left"], facts["protein_left"]) == (1280, 102) and facts["foods"][0]["theirs"] is True
+    assert facts["status"] == "calories: 1280 left; protein: 102 g still to go"
+    assert "Fits what's left today" in html  # the options card under the answer
+
+
+def test_without_the_model_the_app_still_gives_ideas(settings):
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    brain.fit.set_targets(kcal=1800, protein=140)
+    html = client.post("/chat/fitness/ask", data={"q": "what should i eat for dinner?"}).json()["html"]
+    assert brain.last_route == "ideas" and "You have 1,800 kcal and 140 g protein left today." in html
+    rt = Runtime(settings, messenger=FakeBot())
+    assert rt.phone.answer("what should I eat for dinner?")[0].startswith("You have ")
+
+
+def test_with_calories_used_up_the_ideas_turn_to_the_leanest_protein(fit):
+    fit.set_targets(kcal=1850, protein=140)
+    fit.log(fit.draft([{"name": "Buffet lunch", "kcal": 1935, "protein": 79}]))
+    facts = coach.ideas_facts(fit)
+    assert facts["status"] == "calories: 85 OVER the target; protein: 61 g still to go"
+    assert facts["foods"] and facts["foods"][0]["name"] == "Tuna in water (1 can)"  # 26 g for 120 kcal
+    assert facts["how"].startswith("Calories are used up but protein is short.")
+
+
+def test_meal_plans_fit_the_calories_and_add_up_here():
+    options = [{"name": "Kaya toast set", "kcal": 480, "protein": 18, "yours": True},
+               {"name": "Nasi lemak", "kcal": 500, "protein": 12, "yours": True},
+               {"name": "Chicken breast (150 g)", "kcal": 250, "protein": 45, "yours": False},
+               {"name": "Greek yogurt (150 g)", "kcal": 130, "protein": 15, "yours": False},
+               {"name": "Fish soup with rice", "kcal": 480, "protein": 32, "yours": True}]
+    plans = coach.meal_plans(options, kcal_left=900, protein_left=80)
+    best = plans[0]
+    assert best["kcal"] <= 900 and best["protein"] >= 80  # 45 + 32 = 77 alone isn't enough: the yogurt makes 92
+    assert set(best["foods"]) == {"Chicken breast (150 g)", "Fish soup with rice", "Greek yogurt (150 g)"}
+    assert (best["kcal"], best["protein"]) == (860, 92)
+    assert all(p["kcal"] <= 900 for p in plans) and len(plans) > 1

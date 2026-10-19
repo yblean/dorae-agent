@@ -427,7 +427,17 @@ def fitness_tools(brain: Brain, turn: dict) -> list[Tool]:
                 {"drafted": True, "next_step": "The user must check the numbers and press Log on the card."}), \
             (card if card["kind"] != "text" else None)
 
+    def meal_ideas(**_):
+        card = coach.ideas_card(fit, text="")
+        facts = coach.ideas_facts(fit)
+        if facts["plans"]:  # the plans are the answer; the single foods only tempt the model to list them all
+            facts.pop("foods")
+        return facts, {"kind": card["kind"], "payload": card["payload"]}  # the model's words go above the card
+
     return [
+        Tool("meal_ideas", "What the user has left today (kcal_left, protein_left) and foods that fit it, theirs first, "
+             "with their numbers. Use for 'what should I eat', 'suggest foods to hit my protein', 'dinner ideas'.",
+             {}, meal_ideas),
         Tool("fitness_facts", "The user's eating, protein, calories and steps against their targets, worked out by the "
              "app, with tips for improving. Use for 'how am I doing', 'am I on track', 'what can I improve'.",
              {"period": {"type": "string", "enum": ["today", "yesterday", "this_week", "last_week"]}}, fitness_facts),
@@ -470,12 +480,14 @@ LENGTH = {
              "gives. Never compare numbers yourself or add comparisons the tool didn't make.",
     "calendar": "Keep it to 1 to 3 short sentences.",
     "fitness": "Keep it to 1 to 3 short sentences. When asked how to improve, pass on the tool's tips (up to 3) in "
-               "your own words, up to 5 sentences. Never invent numbers, foods or comparisons the tool didn't give. "
+               "your own words, up to 5 sentences. When suggesting what to eat, follow meal_ideas' `how`: 2 to 4 "
+               "options with their kcal and protein and the total, never more kcal than kcal_left, up to 6 sentences. Never invent numbers, foods or comparisons the tool didn't give. "
                "Give general fitness guidance only, nothing medical and no extreme diets.",
 }
 
 CHANGES = {
-    "fitness": "To log food the user ate, call log_food once with their words, then tell them to check the numbers "
+    "fitness": "To suggest what to eat, call meal_ideas first and plan from it. "
+               "To log food the user ate, call log_food once with their words, then tell them to check the numbers "
                "and press Log on the card. You can't change targets or past logs from chat: the Fitness page does that.",
     "money": "To set or change a budget, call propose_budget once, then tell the user to press Save on the card. "
              "You can't change anything else from chat. If asked to, say the buttons on the card do that.",

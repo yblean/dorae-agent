@@ -339,6 +339,26 @@
     {% if p.foods %}<div class="note">Carbs {{ p.eaten.carbs }} g · fat {{ p.eaten.fat }} g · sugar {{ p.eaten.sugar }} g</div>{% endif %}
   </div>
 
+  {% elif m.kind == 'meal_ideas' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>Fits what's left today</span>
+      <span class="note">{% if p.kcal_left is not none %}{{ '{:,}'.format(p.kcal_left) }} kcal{% endif %}{% if p.protein_left is not none and p.protein_left > 0 %} · {{ p.protein_left }} g protein to go{% endif %}</span></div>
+    {% if p.plans %}
+    {% for plan in p.plans %}
+    <div class="legend-row"><span class="swatch-dot" style="background: {{ 'var(--agent)' if loop.first else '#A8A7A0' }}"></span>
+      <span class="legend-name as-is">{{ plan.foods|join(' + ') }}<span class="note">{{ 'best fit' if loop.first else 'or' }}</span></span>
+      <span class="num">{{ '{:,}'.format(plan.kcal) }} kcal · {{ plan.protein }} g</span></div>
+    {% endfor %}
+    {% else %}
+    {% for o in p.options %}
+    <div class="legend-row"><span class="swatch-dot" style="background: {{ 'var(--agent)' if o[3] else '#A8A7A0' }}"></span>
+      <span class="legend-name as-is">{{ o[0] }}<span class="note">{{ 'one of yours' if o[3] else 'typical values' }}</span></span>
+      <span class="num">{{ o[1] }} kcal · {{ o[2] }} g</span></div>
+    {% endfor %}
+    {% endif %}
+    <div class="note">Totals worked out from your logged foods (green dot: yours) and typical values.</div>
+  </div>
+
   {% elif m.kind == 'fitness_week' and m.payload %}{% set p = m.payload %}
   <div class="card">
     <div class="card-head"><span>{{ p.label }}</span><a class="note" href="/fitness">Fitness page</a></div>

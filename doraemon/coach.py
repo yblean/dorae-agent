@@ -20,6 +20,11 @@ TARGET = re.compile(r"\bset (?:my )?(?:daily )?(?P<what>calories?|calorie|kcal|p
                     r"\s*(?:to|at|=)?\s*(?P<n>\d[\d,]*)", re.I)
 SUGGEST = re.compile(r"\b(?:suggest|recommend|work out|calculate|what should)\b.*\b(?:targets?|goals?|calories|protein)\b",
                      re.I)
+LEAN_ROOM = 150  # kcal: less left than this and ideas turn to the leanest protein
+# "suggest some foods to hit my targets", "what should I eat for dinner?": ideas to eat, for the model (not targets)
+FOOD_IDEAS = re.compile(r"^(?=.*\b(?:eat|eating|food|foods|meal|meals|snack|snacks|dinner|lunch|breakfast|supper|order|"
+                        r"menu|recipes?)\b).*\b(?:suggest|recommend|ideas?|options?|what (?:should|can|could|do) i|"
+                        r"what to|help me|give me|any)\b", re.I | re.S)
 
 
 def food_request(text: str, own_chat: bool) -> str | None:
@@ -27,8 +32,9 @@ def food_request(text: str, own_chat: bool) -> str | None:
     Elsewhere (Telegram) "had ..." alone isn't enough ("had a meeting"): it takes ate, drank, log or a meal word."""
     text = text.strip()
     if (m := FOOD_LOG.match(text)) and (own_chat or not re.match(r"^\W*(?:i |just )*had\b", text, re.I)):
-        return m["what"].strip(" .")
-    if m := FOR_MEAL.match(text):
+        what = m["what"].strip(" .")
+        return meal["what"].strip(" .") if (meal := FOR_MEAL.match(what)) else what  # not "... for lunch"
+    if (m := FOR_MEAL.match(text)) and not QUESTION.search(text):  # "what should I eat for dinner" is a question
         return m["what"].strip(" .")
     if own_chat and text and not QUESTION.search(text) and len(text) <= 200:
         return text.strip(" .")
@@ -121,6 +127,97 @@ def targets_card(fit: Fitness, suggested: dict | None = None) -> dict:
         text = ("You haven't set targets yet. Enter them below, or fill in your profile on the Fitness page and I'll "
                 "suggest some.")
     return {"text": text, "kind": "targets", "payload": {"targets": goals, "suggested": suggested}}
+
+
+def meal_plans(options: list[dict], kcal_left: float | None, protein_left: float | None, most: int = 3,
+               items: int = 3) -> list[dict]:
+    """Up to `most` different plans of 1 to `items` foods from `options` that fit in kcal_left, with their totals added
+    up here: the most protein towards what's still to go first, then the fewest calories, then more of your own foods.
+    [{"foods": [names], "kcal", "protein", "theirs": how many are yours}]"""
+    from itertools import combinations
+    room = kcal_left if kcal_left is not None else 900  # no target: a normal meal's worth
+    goal = protein_left if protein_left is not None and protein_left > 0 else 40
+    plans = []
+    for n in range(1, items + 1):
+        for combo in combinations(options, n):
+            kcal = sum(o["kcal"] for o in combo)
+            if kcal > room:
+                continue
+            protein = sum(o["protein"] for o in combo)
+            plans.append({"foods": [o["name"] for o in combo], "kcal": round(kcal), "protein": round(protein),
+                          "theirs": sum(1 for o in combo if o["yours"])})
+    plans.sort(key=lambda p: (-min(p["protein"], goal), p["kcal"], -p["theirs"], len(p["foods"])))
+    chosen = []
+    for p in plans:  # different enough from the ones already chosen
+        if all(len(set(p["foods"]) & set(c["foods"])) <= 1 for c in chosen):
+            chosen.append(p)
+        if len(chosen) == most:
+            break
+    return chosen
+
+
+def ideas_facts(fit: Fitness) -> dict:
+    """What's left today and foods that fit it, worked out here: what the model plans a meal from."""
+    s = fit.day_status()
+    goals, t, left = s["targets"], s["totals"], s["left"]
+    kcal_left, protein_left = left["kcal"], left["protein"]
+    tight = kcal_left is not None and kcal_left < LEAN_ROOM  # calories (nearly) used up
+    protein_short = protein_left is not None and protein_left > 5
+    # With calories used up but protein short: the leanest protein, whatever its calories (it says it goes over)
+    options = fit.food_options(None if tight and protein_short else kcal_left, n=10, staples=4)
+    if tight and protein_short:
+        options = sorted(options, key=lambda o: -o["protein"] / max(o["kcal"], 1))[:4]
+    status = []
+    if kcal_left is not None:
+        status.append(f"calories: {kcal_left:.0f} left" if kcal_left >= 0 else f"calories: {-kcal_left:.0f} OVER the target")
+    if protein_left is not None:
+        status.append(f"protein: {protein_left:.0f} g still to go" if protein_left > 0 else "protein: target reached")
+    big_gap = protein_left is not None and protein_left > 60  # a lot to go: up to 4 foods in a plan
+    plans = [] if tight else meal_plans(options, kcal_left, protein_left, items=4 if big_gap else 3)
+    if tight and protein_short:
+        how = ("Calories are used up but protein is short. Suggest 1 or 2 of the leanest foods below (most protein "
+               "for their calories), say how much protein they add and that they take the calories slightly over.")
+    elif tight:
+        how = "Calories are used up and protein is fine: suggest stopping for today, or only something very light."
+    else:
+        how = ("Present the best plan (and, briefly, one other) from `plans` exactly as given: each food, then the "
+               "plan's total kcal and protein. Their totals are already added up and fit the calories left; never "
+               "add numbers up yourself or suggest foods outside the plans.")
+    how += " Use the status line as it is; don't recompute it."
+    return {"status": "; ".join(status) or "no targets set",
+            "eaten_today": {"kcal": round(t.kcal), "protein": round(t.protein)}, "targets": goals,
+            "kcal_left": round(kcal_left) if kcal_left is not None else None,
+            "protein_left": round(protein_left) if protein_left is not None else None,
+            "foods": [{"name": o["name"], "kcal": round(o["kcal"]), "protein": round(o["protein"]),
+                       "theirs": o["yours"]} for o in options],
+            "plans": plans, "how": how}
+
+
+def ideas_card(fit: Fitness, text: str | None = None) -> dict:
+    """The foods that fit what's left, as a card; `text` is the model's plan, or the app's own short version."""
+    f = ideas_facts(fit)
+    if text is None:
+        kcal_left, protein_left = f["kcal_left"], f["protein_left"]
+        short = protein_left is not None and protein_left > 5
+        listed = "; ".join(f"{o['name']} ({o['kcal']} kcal, {o['protein']} g)" for o in f["foods"][:3])
+        if kcal_left is not None and kcal_left < LEAN_ROOM and short:
+            text = (f"You're at your calories ({abs(kcal_left):,} kcal {'over' if kcal_left < 0 else 'left'}) with "
+                    f"{protein_left} g protein to go. The leanest ways to close it, taking calories a little over: {listed}.")
+        elif kcal_left is not None and kcal_left < LEAN_ROOM:
+            text = "You've hit your calories and protein is fine: that's it for today, or something very light."
+        else:
+            left = ([f"{kcal_left:,} kcal"] if kcal_left is not None else []) + ([f"{protein_left} g protein"] if short else [])
+            best = f["plans"][0] if f["plans"] else None
+            text = ((f"You have {' and '.join(left)} left today. " if left else "")
+                    + (f"One way to get there: {' + '.join(best['foods'])} ({best['kcal']:,} kcal, {best['protein']} g "
+                       "protein)." if best else
+                       f"Foods that fit, most protein for their calories: {listed}." if listed
+                       else "Nothing on my list fits what's left today: something light, like soup or fruit."))
+        if not any(f["targets"].values()):
+            text += " Set your targets (Fitness page) and I'll fit ideas to them."
+    return {"text": text, "kind": "meal_ideas", "payload": {
+        "kcal_left": f["kcal_left"], "protein_left": f["protein_left"], "plans": f["plans"],
+        "options": [[o["name"], o["kcal"], o["protein"], o["theirs"]] for o in f["foods"]]}}
 
 
 def answer(fit: Fitness, route) -> dict:

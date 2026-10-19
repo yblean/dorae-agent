@@ -263,15 +263,20 @@ class Fitness:
             return None
         return "\n".join([f"⏰ Your 6pm check for {s['day']:%a %d %b}:".replace(" 0", " ")] + lines)
 
-    def protein_ideas(self, protein_left: float, kcal_left: float | None, n: int = 2) -> list[str]:
-        """Foods with plenty of protein for their calories that fit what's left: yours first, then common staples."""
+    def food_options(self, kcal_left: float | None, n: int = 2, staples: int = 0) -> list[dict]:
+        """Foods with plenty of protein for their calories that fit in `kcal_left`: yours first (with your own
+        numbers), then common staples to fill up to `n` (and at least `staples` of them).
+        [{"name", "kcal", "protein", "yours"}]"""
         room = kcal_left if kcal_left is not None else 9999
-        mine = [{"name": r["name"], "kcal": r["kcal"], "protein": r["protein"]} for r in self.library()
+        mine = [{"name": r["name"], "kcal": r["kcal"], "protein": r["protein"], "yours": True} for r in self.library()
                 if r["protein"] >= 8 and 0 < r["kcal"] <= room]
-        pool = sorted(mine, key=lambda f: -f["protein"] / f["kcal"])[:n]
-        if len(pool) < n:
-            pool += [f for f in STAPLES if f["kcal"] <= room and f["name"] not in {p["name"] for p in pool}][:n - len(pool)]
-        return [f"{f['name']} ({f['kcal']:.0f} kcal, {f['protein']:.0f} g)" for f in pool]
+        pool = sorted(mine, key=lambda f: -f["protein"] / f["kcal"])[:max(0, n - staples)]
+        fill = [{**f, "yours": False} for f in STAPLES if f["kcal"] <= room and f["name"] not in {p["name"] for p in pool}]
+        return pool + fill[:n - len(pool)]
+
+    def protein_ideas(self, protein_left: float, kcal_left: float | None, n: int = 2) -> list[str]:
+        """The best couple of foods for what's left, as short text."""
+        return [f"{f['name']} ({f['kcal']:.0f} kcal, {f['protein']:.0f} g)" for f in self.food_options(kcal_left, n)]
 
 
 # --- steps from Apple Health (a Shortcuts automation saving to a OneDrive folder) ---------------------------
