@@ -291,6 +291,79 @@
     {% for r in m.reminders %}<div class="brief-ev" style="--c: #075985"><span class="brief-time">{{ r.when }}</span><span class="brief-what">🔔 {{ r.title }}</span></div>{% endfor %}{% endif %}
   </div>
 
+  {% elif m.kind == 'food' and m.foods %}
+  <div class="card food-card food-{{ m.food_state }}">
+    {% for f in m.foods %}
+    <div class="food-row{{ ' faded' if f.status == 'cancelled' }}">
+      <div class="food-what"><strong>{{ f.name }}</strong>
+        <span class="note">{{ f.portion }}{% if f.source == 'yours' %} · your usual{% elif f.source == 'database' %} · {{ f.note }}{% elif f.source == 'you' %} · your numbers{% else %} · estimate{% endif %}</span></div>
+      <div class="food-nums"><strong>{{ '%.0f'|format(f.kcal) }}</strong> kcal
+        <span class="note">P {{ '%.0f'|format(f.protein) }} · C {{ '%.0f'|format(f.carbs) }} · F {{ '%.0f'|format(f.fat) }} · S {{ '%.0f'|format(f.sugar) }} g</span></div>
+    </div>
+    {% endfor %}
+    {% if m.foods|length > 1 %}<div class="food-total"><span>Total</span><span><strong>{{ '%.0f'|format(m.foods|sum(attribute='kcal')) }}</strong> kcal · {{ '%.0f'|format(m.foods|sum(attribute='protein')) }} g protein</span></div>{% endif %}
+    {% if m.food_state == 'draft' %}
+    <div class="row food-actions">
+      <form method="post" action="/food/{{ m.batch }}/log" data-ajax><button class="btn btn-primary btn3d">Log</button></form>
+      <form method="post" action="/food/{{ m.batch }}/cancel" data-ajax><button class="btn-link">Cancel</button></form>
+    </div>
+    {% elif m.food_state == 'logged' %}<div class="note food-done">✓ Logged</div>
+    {% else %}<div class="note food-done">Not logged</div>{% endif %}
+    {% if m.food_state != 'cancelled' %}
+    <details class="more"><summary>Edit</summary>
+      {% for f in m.foods if f.status != 'cancelled' %}
+      <form class="food-edit" method="post" action="/food/item/{{ f.id }}/edit" data-ajax>
+        <input type="hidden" name="back" value="/chat/fitness">
+        <input class="field" name="name" value="{{ f.name }}" aria-label="Food">
+        <input class="field" name="portion" value="{{ f.portion }}" aria-label="Portion" placeholder="portion">
+        {% for k, label in [('kcal', 'kcal'), ('protein', 'protein g'), ('carbs', 'carbs g'), ('fat', 'fat g'), ('sugar', 'sugar g')] %}
+        <label class="food-num"><span class="note">{{ label }}</span><input class="field" name="{{ k }}" inputmode="decimal" value="{{ '%.0f'|format(f[k]) }}"></label>
+        {% endfor %}
+        <button class="btn btn-white btn3d">Save</button>
+      </form>
+      {% endfor %}
+      <div class="note">What you change is remembered: next time this food comes with your numbers.</div>
+    </details>
+    {% endif %}
+  </div>
+
+  {% elif m.kind == 'fitness_day' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ p.label }}</span><a class="note" href="/fitness">Fitness page</a></div>
+    {% if m.fit_rows %}{{ fit_meters(m.fit_rows) }}{% endif %}
+    {% for f in p.foods %}
+    <div class="legend-row"><span class="swatch-dot" style="background: var(--agent)"></span>
+      <span class="legend-name as-is">{{ f[1] }}<span class="note">{{ f[2] }}</span></span>
+      <span class="num">{{ f[3] }} kcal · {{ f[4] }} g</span></div>
+    {% endfor %}
+    {% if p.foods %}<div class="note">Carbs {{ p.eaten.carbs }} g · fat {{ p.eaten.fat }} g · sugar {{ p.eaten.sugar }} g</div>{% endif %}
+  </div>
+
+  {% elif m.kind == 'fitness_week' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ p.label }}</span><a class="note" href="/fitness">Fitness page</a></div>
+    <table class="payments fit-week">
+      <tr><th>Day</th><th class="num">kcal</th><th class="num">Protein</th><th class="num">Steps</th></tr>
+      {% for r in p.rows %}
+      <tr><td>{{ r.name }}</td>
+        <td class="num{{ ' over' if p.targets.kcal and r.kcal > p.targets.kcal * 1.05 }}">{{ '{:,}'.format(r.kcal) if r.foods else '–' }}</td>
+        <td class="num{{ ' hit' if p.targets.protein and r.protein >= p.targets.protein * 0.95 }}">{{ r.protein ~ ' g' if r.foods else '–' }}</td>
+        <td class="num{{ ' hit' if p.targets.steps and r.steps and r.steps >= p.targets.steps }}">{{ '{:,}'.format(r.steps) if r.steps is not none else '–' }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  {% elif m.kind == 'targets' and m.payload %}{% set p = m.payload %}{% set v = p.suggested or p.targets %}
+  <div class="card">
+    <form class="fit-targets" method="post" action="/fitness/targets" data-ajax>
+      <input type="hidden" name="back" value="/chat/fitness">
+      <label><span class="note">Calories a day</span><input class="field" name="kcal" inputmode="numeric" value="{{ v.kcal or '' }}"></label>
+      <label><span class="note">Protein (g)</span><input class="field" name="protein" inputmode="numeric" value="{{ v.protein or '' }}"></label>
+      <label><span class="note">Steps</span><input class="field" name="steps" inputmode="numeric" value="{{ v.steps or '' }}"></label>
+      <button class="btn btn-primary btn3d">Save</button>
+    </form>
+  </div>
+
   {% elif m.kind == 'skip' and m.payload %}
   <div class="card">
     {% for s in m.payload.senders %}
@@ -352,6 +425,22 @@
 {# --- charts (geometry from doraemon/web/charts.py) --- #}
 
 {# Category breakdown: a donut with the total in the middle, and the list that names every slice. #}
+{# Dorae-3's day: calories (red once over), protein and steps (green once reached) #}
+{% macro fit_meters(rows) %}
+<div class="meters">
+  {% for b in rows %}
+  <div class="meter fit-meter meter-{{ b.state }}" style="--used: {{ [b.used, 100]|min }}%">
+    <div class="meter-top">
+      <span class="meter-name">{{ b.label }}{% if b.state == 'done' %} <span class="meter-flag">✓</span>{% elif b.state == 'over' %} <span class="meter-flag">Over</span>{% endif %}</span>
+      <span class="num">{% if b.target %}{% if b.left > 0 %}{{ '{:,.0f}'.format(b.left) }}{{ b.unit }} {{ 'to go' if b.label != 'Calories' else 'left' }}{% elif b.label == 'Calories' and b.left < 0 %}{{ '{:,.0f}'.format(-b.left) }} kcal over{% else %}done{% endif %}{% endif %}</span>
+    </div>
+    <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ b.used }}" aria-label="{{ b.label }}: {{ b.used }}%"><span class="meter-fill"></span></div>
+    <div class="meter-sub note">{{ '{:,.0f}'.format(b.value) if b.value is not none else '–' }}{% if b.target %} of {{ '{:,}'.format(b.target) }}{% endif %}{{ b.unit }}{% if not b.target %} · no target yet{% endif %}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
+
 {% macro donut(d, currency, caption='', small=False) %}
 <div class="donut-wrap{{ ' small' if small }}">
   <svg class="viz donut" viewBox="0 0 120 120" role="img" aria-label="Spending by category: {% for l in d.legend %}{{ l.category }} {{ l.pct }}%{{ ', ' if not loop.last }}{% endfor %}">

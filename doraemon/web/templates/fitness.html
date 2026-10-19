@@ -1,0 +1,84 @@
+{% extends "base.html" %}{% from "_macros.html" import fit_meters %}{% set title = "Fitness" %}
+{% block content %}
+<div class="fit-page" style="--agent: #22C55E">
+<div class="panel-box">
+  <div class="card-head"><span>Today, {{ today.day.strftime('%a %d %b').replace(' 0', ' ') }}</span><a class="note" href="/chat/fitness">Tell Dorae-3 what you ate</a></div>
+  {% if rows %}{{ fit_meters(rows) }}{% else %}<p class="empty">Set your targets below to see today against them.</p>{% endif %}
+  <table class="payments">
+    {% for f in today.foods %}
+    <tr><td>{{ f.name }}<div class="note">{{ f.portion }}{% if f.source == 'yours' %} · your usual{% elif f.source == 'database' %} · {{ f.note }}{% elif f.source == 'estimate' %} · estimate{% endif %}</div></td>
+      <td class="num">{{ '%.0f'|format(f.kcal) }} kcal<div class="note">P {{ '%.0f'|format(f.protein) }} · C {{ '%.0f'|format(f.carbs) }} · F {{ '%.0f'|format(f.fat) }} g</div></td>
+      <td><form method="post" action="/food/item/{{ f.id }}/remove"><input type="hidden" name="back" value="/fitness"><button class="btn-link">Remove</button></form></td></tr>
+    {% else %}
+    <tr><td colspan="3" class="empty">Nothing logged today. Tell Dorae-3 (here or on Telegram): “chicken rice and kopi siew dai”.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<form class="panel-box" method="post" action="/fitness/targets">
+  <input type="hidden" name="back" value="/fitness">
+  <div class="card-head"><span>Daily targets</span><span class="note">{{ 'Suggested from your profile: change anything, then Save' if suggested else 'blank = no target' }}</span></div>
+  {% set v = suggested or targets %}
+  <div class="fit-form">
+    <label><span class="note">Calories (kcal)</span><input class="field" name="kcal" inputmode="numeric" value="{{ v.kcal or '' }}"></label>
+    <label><span class="note">Protein (g)</span><input class="field" name="protein" inputmode="numeric" value="{{ v.protein or '' }}"></label>
+    <label><span class="note">Steps</span><input class="field" name="steps" inputmode="numeric" value="{{ v.steps or '' }}"></label>
+    <button class="btn btn-primary btn3d">Save targets</button>
+  </div>
+  <p class="note">Dorae-3 checks at {{ check_time if check_time != 'off' else '(turned off)' }} each day: protein and steps still to go
+    (with foods you eat that fit), or calories over. It stays quiet when you're on track.</p>
+</form>
+
+<form class="panel-box" method="post" action="/fitness/profile">
+  <div class="card-head"><span>Suggest my targets</span><span class="note">kept on this computer only</span></div>
+  <div class="fit-form">
+    <label><span class="note">Weight (kg)</span><input class="field" name="weight_kg" inputmode="decimal" value="{{ profile.weight_kg or '' }}" required></label>
+    <label><span class="note">Height (cm)</span><input class="field" name="height_cm" inputmode="decimal" value="{{ profile.height_cm or '' }}" required></label>
+    <label><span class="note">Age</span><input class="field" name="age" inputmode="numeric" value="{{ profile.age or '' }}" required></label>
+    <label><span class="note">Sex</span><select class="field" name="sex">
+      {% for k, l in [('female', 'Female'), ('male', 'Male')] %}<option value="{{ k }}" {{ 'selected' if profile.sex == k }}>{{ l }}</option>{% endfor %}</select></label>
+    <label><span class="note">How active</span><select class="field" name="activity">
+      {% for k, l in [('low', 'Mostly sitting'), ('light', 'Light (walks, 1-2 workouts a week)'), ('moderate', 'Moderate (3-5 workouts)'), ('high', 'Very active (6+ hard workouts)')] %}
+      <option value="{{ k }}" {{ 'selected' if (profile.activity or 'light') == k }}>{{ l }}</option>{% endfor %}</select></label>
+    <label><span class="note">Goal</span><select class="field" name="goal">
+      {% for k, l in [('lose', 'Lose fat'), ('maintain', 'Maintain'), ('gain', 'Build muscle')] %}
+      <option value="{{ k }}" {{ 'selected' if (profile.goal or 'maintain') == k }}>{{ l }}</option>{% endfor %}</select></label>
+    <button class="btn btn-white btn3d">Suggest</button>
+  </div>
+  <p class="note">Calories from what your body burns (Mifflin-St Jeor, times how active you are), adjusted for your goal;
+    protein 1.8 g per kg (2.0 when losing fat). A starting point, not medical advice.</p>
+</form>
+
+<div class="panel-box">
+  <div class="card-head"><span>{{ week.label }}</span></div>
+  <table class="payments fit-week">
+    <tr><th>Day</th><th class="num">kcal</th><th class="num">Protein</th><th class="num">Steps</th></tr>
+    {% for r in week.rows %}
+    <tr><td>{{ r.name }}</td>
+      <td class="num{{ ' over' if week.targets.kcal and r.kcal > week.targets.kcal * 1.05 }}">{{ '{:,}'.format(r.kcal) if r.foods else '–' }}</td>
+      <td class="num{{ ' hit' if week.targets.protein and r.protein >= week.targets.protein * 0.95 }}">{{ r.protein ~ ' g' if r.foods else '–' }}</td>
+      <td class="num{{ ' hit' if week.targets.steps and r.steps and r.steps >= week.targets.steps }}">{{ '{:,}'.format(r.steps) if r.steps is not none else '–' }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="panel-box">
+  <div class="card-head"><span>Steps from Apple Health</span></div>
+  <p class="note">An automation in your iPhone's Shortcuts app saves today's steps to <code>{{ health_folder }}</code> (in
+    OneDrive), and Doraemon reads it every 10 minutes. Setting it up takes about 5 minutes: see
+    <code>docs/apple-health-steps.md</code>. {% if today.steps is not none %}Today so far: {{ '{:,}'.format(today.steps) }} steps.{% else %}No steps for today yet.{% endif %}</p>
+</div>
+
+<div class="panel-box">
+  <div class="card-head"><span>Your foods</span><span class="note">learned from what you log and correct</span></div>
+  <table class="payments">
+    {% for f in library %}
+    <tr><td>{{ f.name }}<div class="note">{{ f.portion }} · logged {{ f.uses }}×</div></td>
+      <td class="num">{{ '%.0f'|format(f.kcal) }} kcal<div class="note">P {{ '%.0f'|format(f.protein) }} · C {{ '%.0f'|format(f.carbs) }} · F {{ '%.0f'|format(f.fat) }} g</div></td></tr>
+    {% else %}
+    <tr><td colspan="2" class="empty">Nothing yet. Each food you log is remembered with your numbers, so your usual orders get one tap.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+</div>
+{% endblock %}

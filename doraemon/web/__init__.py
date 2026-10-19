@@ -38,7 +38,8 @@ from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
-from doraemon import senders
+from doraemon import coach, senders
+from doraemon.fitness import suggest_targets
 from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.web import charts
@@ -202,6 +203,13 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             view["bills"] = [card(r) for r in (db.get("item", i) for i in payload["bills"]) if r]
             view["trips"] = [card(r) for r in (db.get("item", i) for i in payload["trips"]) if r]
             view["reminders"] = [{**r, "when": clock(r["time"])} for r in payload["reminders"]]
+        elif row["kind"] == "food" and payload:
+            view["foods"] = brain.fit.batch(payload["batch"])
+            view["batch"] = payload["batch"]
+            view["food_state"] = ("logged" if any(f["status"] == "logged" for f in view["foods"]) else
+                                  "cancelled" if all(f["status"] == "cancelled" for f in view["foods"]) else "draft")
+        elif row["kind"] == "fitness_day" and payload:
+            view["fit_rows"] = fit_rows(payload["eaten"], payload["steps"], payload["targets"])
         elif row["kind"] == "days" and payload:
             view["days"] = [{**d, "events": [event_line(e, d["date"]) for e in d["events"]]} for d in payload["days"]]
         elif row["kind"] == "week" and payload:
@@ -429,7 +437,30 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         db.set_setting(f"agent:{agent_id}:color", None if color.upper() == agent.color.upper() else color.upper())
         return RedirectResponse(f"/chat/{agent_id}", status_code=303)
 
+    def fit_rows(eaten: dict, steps, targets: dict) -> list[dict]:
+        """Dorae-3's bars: calories (red once over), protein and steps (green once reached)."""
+        rows = []
+        for key, label, value, unit in (("kcal", "Calories", eaten.get("kcal", 0), " kcal"),
+                                         ("protein", "Protein", eaten.get("protein", 0), " g"),
+                                         ("steps", "Steps", steps, "")):
+            target = targets.get(key)
+            if value is None and not target:
+                continue
+            used = int(value / target * 100) if target and value is not None else 0
+            state = ("over" if key == "kcal" and used > 105 else "done" if key != "kcal" and used >= 100 else "")
+            left = (target - (value or 0)) if target else None
+            rows.append({"label": label, "value": value, "target": target, "unit": unit, "used": used, "state": state,
+                         "left": left})
+        return rows
+
     def panel(agent_id: str) -> dict:
+        if agent_id == "fitness":
+            s = brain.fit.day_status()
+            t = s["totals"]
+            return {"kind": "fitness", "rows": fit_rows({"kcal": t.kcal, "protein": t.protein}, s["steps"], s["targets"]),
+                    "foods": s["foods"][-5:], "count": t.foods, "has_targets": any(s["targets"].values()),
+                    "has_steps": db.conn.execute("SELECT 1 FROM steps LIMIT 1").fetchone() is not None,
+                    "check_when": settings.fitness_check_time if settings.fitness_check_time != "off" else ""}
         if agent_id == "money":
             month = brain.this_month()
             b = brain.breakdown(month)["payload"]
@@ -741,6 +772,79 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             g["total"] += t.amount if t.currency == home else (fx.to_home(t, home) or 0) if fx else 0
             g["txn_id"] = max(g["txn_id"], int(t.message_id))
         return sorted(groups.values(), key=lambda g: (-g["count"], -g["total"]))[:n]
+
+    # --- Dorae-3: food, targets and the Fitness page ---------------------------------------------
+
+    @app.post("/food/{batch}/log")
+    def food_log(request: Request, batch: str, back: str = Form("/chat/fitness")):
+        rows = brain.fit.log(batch)
+        if not rows:
+            return answer(request, "fitness", back, "That one's already logged (or was cancelled).", refresh=None)
+        day = brain.fit.day_status()
+        t, goals = day["totals"], day["targets"]
+        text = (f"Logged: {sum(r['kcal'] for r in rows):,.0f} kcal, {sum(r['protein'] for r in rows):.0f} g protein. "
+                f"Today so far: {t.kcal:,.0f}" + (f" of {goals['kcal']:,}" if goals["kcal"] else "") + " kcal, "
+                f"{t.protein:.0f}" + (f" of {goals['protein']}" if goals["protein"] else "") + " g protein.")
+        return answer(request, "fitness", back, text, mood="happy")
+
+    @app.post("/food/{batch}/cancel")
+    def food_cancel(request: Request, batch: str, back: str = Form("/chat/fitness")):
+        brain.fit.cancel(batch)
+        return answer(request, "fitness", back, "Okay, not logged.")
+
+    @app.post("/food/item/{food_id}/edit")
+    async def food_edit(request: Request, food_id: int):
+        form = await request.form()
+        changes = {"name": form.get("name") or None, "portion": form.get("portion")}
+        for m in ("kcal", "protein", "carbs", "fat", "sugar"):
+            try:
+                changes[m] = float(form.get(m)) if form.get(m) not in (None, "") else None
+            except ValueError:
+                changes[m] = None
+        brain.fit.edit(food_id, **changes)
+        back = str(form.get("back") or "/chat/fitness")
+        return answer(request, "fitness", back, f"Updated “{changes['name'] or 'that'}”. I'll remember these numbers.")
+
+    @app.post("/food/item/{food_id}/remove")
+    def food_remove(food_id: int, back: str = Form("/fitness")):
+        brain.fit.remove(food_id)
+        return RedirectResponse(back if back.startswith("/") and not back.startswith("//") else "/fitness", status_code=303)
+
+    @app.post("/fitness/targets")
+    def fitness_targets(request: Request, kcal: str = Form(""), protein: str = Form(""), steps: str = Form(""),
+                        back: str = Form("/fitness")):
+        number = lambda v: int(float(v.replace(",", ""))) if v and v.replace(",", "").replace(".", "").isdigit() else None
+        goals = brain.fit.set_targets(kcal=number(kcal), protein=number(protein), steps=number(steps))
+        text = "Saved your daily targets: " + (", ".join(
+            f"{goals[k]:,}{' kcal' if k == 'kcal' else ' g protein' if k == 'protein' else ' steps'}"
+            for k in ("kcal", "protein", "steps") if goals[k]) or "none") + "."
+        return answer(request, "fitness", back, text, mood="happy")
+
+    @app.post("/fitness/profile")
+    async def fitness_profile(request: Request):
+        form = await request.form()
+        try:
+            profile = {"weight_kg": float(form["weight_kg"]), "height_cm": float(form["height_cm"]),
+                       "age": int(form["age"]), "sex": form.get("sex", "female"),
+                       "activity": form.get("activity", "light"), "goal": form.get("goal", "maintain")}
+        except (KeyError, ValueError):
+            return RedirectResponse("/fitness?msg=" + quote("Fill in weight, height and age to get suggestions."),
+                                    status_code=303)
+        brain.fit.set_profile(profile)
+        return RedirectResponse("/fitness?suggest=1", status_code=303)
+
+    @app.get("/fitness", response_class=HTMLResponse)
+    def fitness_page(request: Request, suggest: int = 0):
+        fit = brain.fit
+        today = fit.day_status()
+        t = today["totals"]
+        profile = fit.profile()
+        suggested = suggest_targets(profile) if suggest and profile.get("weight_kg") else None
+        week = coach.week_card(fit)["payload"]
+        return render(request, "fitness.html", today=today, rows=fit_rows({"kcal": t.kcal, "protein": t.protein},
+                      today["steps"], today["targets"]), week=week, targets=fit.targets(), suggested=suggested,
+                      profile=profile, library=fit.library(30), health_folder=settings.health_folder,
+                      check_time=settings.fitness_check_time)
 
     # --- budgets (Dorae-1) -------------------------------------------------------
 

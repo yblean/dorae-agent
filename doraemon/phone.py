@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from doraemon import senders
+from doraemon import coach, senders
 from doraemon.agents import Brain, money, short_clock
 from doraemon.calendar_sync import add_to_calendar
 from doraemon.db import item_model, transaction_model
@@ -33,7 +33,8 @@ LAST_KEY = "telegram:last_question"    # for follow-ups like "and last month?"
 ASK_MINUTES = 15                       # an answer to "when?" counts for this long
 LIST = 8                               # lines under an answer; the rest are in the app
 EXAMPLES = ("remind me to call mom at 5pm tmr", "add dinner with Sam on friday 7-9pm",
-            "how much did I spend this week?", "what's on tomorrow?", "my budget", "my reminders")
+            "how much did I spend this week?", "what's on tomorrow?", "my budget", "my reminders",
+            "ate chicken rice and kopi siew dai", "how am I doing today?")
 
 Buttons = list[list[tuple[str, str]]]
 
@@ -60,7 +61,13 @@ class Phone:
             return self.draft(*asked, text, now)
         if (event := split_event(text)) is not None:
             return self.event(event.title, event.when, event.end, text, now)
-        found = route("money", text, self.db.get_setting(LAST_KEY))  # tries Dorae-2's questions too
+        if target := coach.parse_target(text):  # "set my protein target to 140"
+            self.brain.fit.set_targets(**target)
+            return self.plain(coach.targets_card(self.brain.fit)), None
+        if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"
+            return self.food(food)
+        # Dorae-3's own shapes first ("how am I doing today?"), then everyone else's
+        found = route("fitness", text, self.db.get_setting(LAST_KEY))
         if found is not None and found.intent == "help":
             return self.help_text(), None  # both agents' examples and the commands
         if found is not None:
@@ -73,6 +80,27 @@ class Phone:
         if asking:  # "When should I remind you to buy milk?" -> "tomorrow 6pm"
             return self.draft(asking["title"], text.strip(), f"remind me to {asking['title']} {text.strip()}", now)
         return self.help_text(), None
+
+    def food(self, text: str) -> tuple[str, Buttons | None]:
+        """What you ate, worked out (the model, your foods, Open Food Facts) as a draft with Log and Cancel."""
+        card = self.brain.food_reply(text)
+        if card["kind"] != "food":
+            return card["text"], None
+        batch = card["payload"]["batch"]
+        lines = ["🍽 Here's what I worked out:", *coach.food_lines(self.brain.fit.batch(batch)),
+                 "", "Numbers off? Log it, then fix them in Dorae-3's chat (Edit): I'll remember them."]
+        return "\n".join(lines), [[("✅ Log", f"flog:{batch}"), ("✖ Cancel", f"fdrop:{batch}")]]
+
+    def log_food(self, batch: str) -> str:
+        rows = self.brain.fit.log(batch)
+        if not rows:
+            return "That one's already logged (or was cancelled)."
+        s = self.brain.fit.day_status()
+        t, goals = s["totals"], s["targets"]
+        self.db.add_message("fitness", "agent", f"🍽 Logged on Telegram: " + ", ".join(r["name"] for r in rows)
+                            + f" ({sum(r['kcal'] for r in rows):,.0f} kcal).")
+        return (f"✅ Logged. Today: {t.kcal:,.0f}" + (f" of {goals['kcal']:,}" if goals["kcal"] else "") + " kcal, "
+                f"{t.protein:.0f}" + (f" of {goals['protein']}" if goals["protein"] else "") + " g protein.")
 
     def asked_about(self, now: datetime) -> dict | None:
         """{"title", "kind"} of the reminder or event the bot just asked "when?" about, if it's still a fresh question."""
@@ -227,6 +255,17 @@ class Phone:
                      for h in (held.get(tuple(k)) for k in ids[:LIST]) if h]
         elif kind == "week":
             lines = self.week_lines(p["events"])
+        elif kind == "fitness_day":
+            rows = []
+            for key, label, unit in (("kcal", "Calories", " kcal"), ("protein", "Protein", " g")):
+                goal = p["targets"].get(key)
+                rows.append(f"• {label}: {p['eaten'][key]:,}" + (f" of {goal:,}" if goal else "") + unit)
+            if p["steps"] is not None:
+                rows.append(f"• Steps: {p['steps']:,}" + (f" of {p['targets']['steps']:,}" if p["targets"].get("steps") else ""))
+            lines = rows + ([""] + [f"– {f[1]}: {f[3]} kcal, {f[4]} g" for f in p["foods"][:LIST]] if p["foods"] else [])
+        elif kind == "fitness_week":
+            lines = [f"• {r['name']}: " + (f"{r['kcal']:,} kcal, {r['protein']} g" if r["foods"] else "not logged")
+                     + (f", {r['steps']:,} steps" if r["steps"] is not None else "") for r in p["rows"]]
         elif kind == "days":
             for d in p["days"]:
                 lines += ([""] if lines else []) + [d["label"]]

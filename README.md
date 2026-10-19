@@ -1,7 +1,8 @@
 # Doraemon
 
 Inbox to Action, v0 (single user). Reads your Gmail into a spending ledger, reminders and calendar events;
-two agents (Dorae-1 money, Dorae-2 calendar) answer in the web app, and a Telegram bot reaches your phone.
+three agents (Dorae-1 money, Dorae-2 calendar, Dorae-3 food and fitness) answer in the web app, and a Telegram
+bot reaches your phone.
 
 ## A quick tour
 
@@ -12,8 +13,8 @@ mail, money or calendar). Try it yourself, with nothing to connect:
 python -m doraemon.demo        # then open http://127.0.0.1:8100
 ```
 
-The app has two chats, picked on the left: **Dorae-2** for your calendar, bills and reminders, and **Dorae-1** for
-your money. Ask them anything in your own words. Everyday lookups answer instantly from your data (the ⚡ on a
+The app has three chats, picked on the left: **Dorae-2** for your calendar, bills and reminders, **Dorae-1** for
+your money, and **Dorae-3** for your food, steps and daily targets. Ask them anything in your own words. Everyday lookups answer instantly from your data (the ⚡ on a
 reply); questions that need thought go to the local model.
 
 **1. Start the day with Dorae-2's briefing.** Every morning it lists today and tomorrow from all your Google
@@ -372,6 +373,34 @@ Secret, put them in `.env` as `DORAEMON_WEBULL_APP_KEY` / `DORAEMON_WEBULL_APP_S
 the keys are never logged. Webull's SDK has renamed fields between versions, so check what your account
 returns first with `python -m doraemon.brokers.webull` (prints it, saves nothing). IBKR's Flex Web
 Service can plug into `doraemon/brokers` the same way later.
+
+## Food, steps and targets (Dorae-3)
+
+Dorae-3 tracks what you eat and your steps against daily targets, and checks in at 6pm.
+
+- **Targets.** Calories, protein and steps a day: type them on the **Fitness** page, say "set my protein target to
+  140", or fill in your profile (weight, height, age, how active you are, goal) and press **Suggest**: calories from
+  what your body burns (Mifflin-St Jeor times activity) adjusted for the goal, protein 1.8 g per kg (2.0 when losing
+  fat). A starting point, not medical advice.
+- **Logging food.** Tell Dorae-3 what you ate, in its chat ("chicken rice and kopi siew dai") or on Telegram
+  ("ate chicken rice", "lunch: laksa", "nutrisoy no sugar 250ml for breakfast"). It drafts each food with its portion,
+  calories, protein, carbs, fat and sugar, and nothing counts until you press **Log**:
+  1. a food you've logged before comes back with your own numbers (no model needed);
+  2. a packaged product is looked up in [Open Food Facts](https://openfoodfacts.org) (free; only its name is sent),
+     Singapore products first, and worked out for your portion;
+  3. anything else is the local model's estimate for a typical Singapore portion.
+  Fix any number under **Edit**: what you change is what it remembers, so your usual orders get accurate quickly.
+- **Steps** come from Apple Health through a Shortcuts automation on your iPhone that saves a small file to
+  OneDrive (`DORAEMON_HEALTH_FOLDER`, default `OneDrive/Doraemon/health`); Doraemon reads it every 10 minutes.
+  Set-up: [docs/apple-health-steps.md](docs/apple-health-steps.md).
+- **Asking.** "How am I doing today?", "protein left", "calories this week", "what did I eat yesterday", "my
+  targets": instant answers with bars against your targets. Questions that need thought ("what can I improve?")
+  go to the model, which gets the numbers and tips worked out by the app and only puts them into words.
+- **The 6pm check** (`DORAEMON_FITNESS_CHECK_TIME`, `off` to stop it), in Dorae-3's chat and on Telegram: protein
+  still to go with foods you eat that fit the calories left, steps as minutes of walking, or calories already over.
+  It stays quiet when you're on track.
+
+The **Fitness** page has today, your targets and profile, the week, the steps set-up and the foods it has learned.
 
 ## Rules
 

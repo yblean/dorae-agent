@@ -43,6 +43,11 @@ class Settings:
     # Dorae-2 posts a daily briefing in its chat at this time (while Doraemon runs); "off" to stop it
     briefing_time: str = os.getenv("DORAEMON_BRIEFING_TIME", "08:00")
     briefing_telegram: bool = os.getenv("DORAEMON_BRIEFING_TELEGRAM", "on").lower() != "off"  # also send it there
+    # Dorae-3's daily check (protein, calories, steps left and how to close the gap), also on Telegram; "off" to stop it
+    fitness_check_time: str = os.getenv("DORAEMON_FITNESS_CHECK_TIME", "18:00")
+    # Where your iPhone's Shortcuts automation saves Apple Health step counts (docs/apple-health-steps.md)
+    health_folder: str = os.getenv("DORAEMON_HEALTH_FOLDER", str(Path(os.getenv("OneDrive") or Path.home() / "OneDrive")
+                                                                 / "Doraemon" / "health"))
     # Send each new suggestion from your email to Telegram with Confirm / Remind me and Dismiss; "off" for the app only
     telegram_new_items: bool = os.getenv("DORAEMON_TELEGRAM_NEW_ITEMS", "on").lower() != "off"
     # Dismiss suggestions still waiting for your OK a day after their date (undo under Activity); "off" keeps them

@@ -95,6 +95,27 @@ PATTERNS: dict[str, list[tuple[str, str]]] = {  # agent -> [(intent, pattern)], 
                       r"(?:current|upcoming|active|all) reminders"),
         ("passed", r"what (?:has )?(?:already )?passed|what did i miss|(?:the )?ones? that passed"),
     ],
+    "fitness": [  # Dorae-3 (doraemon.coach answers them)
+        ("fit_week", r"(?:my )?(?:calories|kcal|protein|steps|macros)(?: and (?:calories|kcal|protein|steps))? "
+                     r"(?:(?:for |over )?(?:this|last|the past|the last) week|(?:over |for )?(?:the )?(?:last|past) 7 days)|"
+                     r"how(?:'s| is| was) my week (?:for|of) (?:calories|protein|steps|eating|food)|"
+                     r"my (?:weekly|week'?s) (?:calories|protein|steps|progress|macros)"),
+        ("fit_day", r"(?:my )?(?:calories|kcal|protein|macros|steps)(?: and (?:calories|kcal|protein|steps|macros))*"
+                    r"(?: (?:for |so far )?(?P<fday>today|yesterday))?(?: so far)?|"
+                    r"how many (?:calories|kcal|steps)(?: have i| did i| i)?(?: had| eaten| eat| done| taken| walked| got)?"
+                    r"(?: (?P<fday>today|yesterday))?(?: so far)?|"
+                    r"how much protein(?: have i| did i| i)?(?: had| eaten| eat| got)?(?: (?P<fday>today|yesterday))?(?: so far)?|"
+                    r"(?:how much )?(?:protein|calories|kcal|steps) (?:left|to go|remaining)(?: today| for today)?|"
+                    r"what (?:did|have) i (?:eat|eaten|had)(?: (?P<fday>today|yesterday))?"),
+        ("fit_targets", r"(?:what are )?my (?:daily )?(?:targets|goals)|(?:what(?:'s| is) )?my (?:calorie|protein|step|steps) "
+                        r"(?:target|goal)"),
+    ],
+}
+# Only in Dorae-3's own chat: "how am I doing?" in Dorae-1's chat is about money
+OWN_PATTERNS: dict[str, list[tuple[str, str]]] = {
+    "fitness": [("fit_day", r"how am i doing(?: (?P<fday>today|yesterday))?(?: so far)?|am i on track(?: today)?|"
+                            r"how(?:'s| is| was) (?:my )?(?P<fday>today|yesterday)(?: going)?|(?P<fday>today|yesterday)"),
+                ("fit_week", r"how(?:'s| is| was) my week|(?:this|my) week|am i on track this week")],
 }
 
 
@@ -110,6 +131,8 @@ def _numbered(pattern: str) -> str:
 
 COMPILED = {agent: [(intent, re.compile(rf"{_POLITE_START}(?:{_numbered(pattern)}){_POLITE_END}"))
                     for intent, pattern in patterns] for agent, patterns in PATTERNS.items()}
+COMPILED_OWN = {agent: [(intent, re.compile(rf"{_POLITE_START}(?:{_numbered(pattern)}){_POLITE_END}"))
+                        for intent, pattern in patterns] for agent, patterns in OWN_PATTERNS.items()}
 FOLLOW_UP = re.compile(rf"(?:and|what about|how about|ok and|and for|same for)? ?{_P}")
 TAKES_PERIOD = {"total", "breakdown", "biggest", "top", "payments", "how_was", "income"}
 
@@ -142,8 +165,9 @@ def period_name(text: str | None) -> str | None:
     return f"month:{month}" if month else None
 
 
-def _match(agent: str, q: str) -> Route | None:
-    for intent, pattern in COMPILED[agent]:
+def _match(agent: str, q: str, own: bool = False) -> Route | None:
+    """`own`: also the shapes that only count in this agent's own chat (OWN_PATTERNS)."""
+    for intent, pattern in COMPILED[agent] + (COMPILED_OWN.get(agent, []) if own else []):
         m = pattern.fullmatch(q)
         if m is None:
             continue
@@ -161,6 +185,8 @@ def _match(agent: str, q: str) -> Route | None:
         for key in ("which", "day"):
             if key in g:
                 slots[key] = g[key]
+        if "fday" in g:
+            slots["day"] = g["fday"]
         if agent == "money" and "merchant" in slots and slots["merchant"] in CATEGORY_WORDS:
             slots["category"] = CATEGORY_WORDS[slots.pop("merchant")]  # "at grab" reads as transport, not a shop
         return Route(agent, intent, slots)
@@ -173,17 +199,19 @@ def route(agent: str, question: str, previous: str | None = None) -> Route | Non
     q = clean(question)
     if not q or len(q) > 120:
         return None
-    found = _match(agent, q)
+    found = _match(agent, q, own=True)
     if found:
         return found
-    # a follow-up of your last question ("and this week?") comes before the other agent's reading of it
+    # a follow-up of your last question ("and this week?") comes before the other agents' reading of it
     if previous and (m := re.fullmatch(rf"{_POLITE_START}{FOLLOW_UP.pattern}{_POLITE_END}", q)):
         before = route(agent, previous)
         if before and before.agent == agent and before.intent in TAKES_PERIOD:
             return Route(agent, before.intent, {**before.slots, "period": period_name(m["period"])})
-    other = "calendar" if agent == "money" else "money"
-    # the other agent's question (the caller points you there), or else the looser reading below
-    return _match(other, q) or understand(agent, q, previous)
+    # another agent's question (the caller points you there), or else the looser reading below
+    for other in (a for a in PATTERNS if a != agent):
+        if found := _match(other, q):
+            return found
+    return understand(agent, q, previous)
 
 
 # --- the looser reading: topic words and time words anywhere in the question ------------------------
@@ -290,6 +318,8 @@ def understand(agent: str, q: str, previous: str | None = None) -> Route | None:
         return Route("calendar", "find", {"what": found["what"].strip()})  # "when is my dentist appointment"
     if SUMMARY.search(q):
         return Route("money", "summary", {"period": loose_period(q)} if loose_period(q) else {})
+    if FITNESS_TOPIC.search(q) and not re.search(r"\b(?:spend|spent|spending|paid|pay|cost|budgets?|sgd)\b|\$", q):
+        return _fitness(q)
     money, calendar = bool(MONEY_TOPIC.search(q)), bool(CALENDAR_TOPIC.search(q))
     if money and calendar:  # "bills" and "spend" both: read the stronger signals
         money = not re.search(r"\b(?:bills?|due|deadlines?|reminders?|schedule|calendar)\b", q)
@@ -373,6 +403,20 @@ def _calendar(q: str) -> Route | None:
                                       r"what do i have|happening)\b", q):
         return None  # "when is my dentist appointment": a search for one thing, the model's to find
     return _calendar_route(when or "this_week", "days")
+
+
+FITNESS_TOPIC = re.compile(r"\b(?:calories|calorie|kcal|protein|carbs?|carbohydrates?|macros?|steps|walked|ate|eaten|"
+                           r"what did i eat|diet)\b")
+
+
+def _fitness(q: str) -> Route:
+    """Dorae-3's lookups: a day (today, yesterday), the week, or your targets."""
+    if re.search(r"\b(?:targets?|goals?)\b", q) and not re.search(r"\b(?:hit|reach|reached|met|on track)\b", q):
+        return Route("fitness", "fit_targets")
+    when = spoken_when(q)
+    if when in ("this_week", "last_week") or re.search(r"\b(?:week|weekly|7 days)\b", q):
+        return Route("fitness", "fit_week", {"which": "last" if when == "last_week" else "this"})
+    return Route("fitness", "fit_day", {"day": "yesterday" if re.search(r"\byesterday\b", q) else "today"})
 
 
 def _calendar_route(when: str, intent: str) -> Route:

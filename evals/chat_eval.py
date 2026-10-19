@@ -81,6 +81,12 @@ INSTANT = [
     ("calendar", "am i free on saturday", "days"),
     ("calendar", "when is my dentist appointment?", "find"),
     ("money", "monthly summary", "summary"),
+    # Dorae-3
+    ("fitness", "how am I doing today?", "fit_day"),
+    ("fitness", "protein left", "fit_day"),
+    ("fitness", "calories this week", "fit_week"),
+    ("fitness", "set my protein target to 140", "target"),
+    ("money", "how much protein have I had today", "fit_day"),
     ("calendar", 'help me set an event for this Friday 2pm titled "Zx Convocation" at 2pm', "event"),
     ("money", "what did i spend on today", "payments"),
     ("money", "did i have a 4.87 transaction?", "payments"),
@@ -96,7 +102,7 @@ INSTANT = [
 ]
 # Telegram messages (doraemon.phone): what the reply should start with
 PHONE = [
-    ("how much did I spend this week?", "You spent"),
+    ("how much did I spend this week?", ("You spent", "No payments")),  # a Monday morning has none yet
     ("what needs my ok", ""),
     ("remind me to buy milk", "When should I remind you to buy milk?"),
     ("friday 6pm", "📝 New reminder: Buy milk"),

@@ -19,7 +19,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from doraemon import budgets as bud
-from doraemon import income
+from doraemon import coach, foodlog, income
 from doraemon.income import CATEGORIES
 from doraemon.assistant import last_full_month, month_name, spending as spending_text
 from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
@@ -29,8 +29,9 @@ from doraemon.display import describe_when
 from doraemon.ledger import counted_between, refunded_purchases, spending_totals
 from doraemon.networth import KINDS, NetWorth, shift_month
 from doraemon.events import draft_event, split_event
+from doraemon.fitness import Fitness, suggest_targets
 from doraemon.reminders import draft_reminder, short_time, split_request
-from doraemon.router import route
+from doraemon.router import Route, route
 from doraemon.rules import name_key
 from doraemon.schema import Category
 
@@ -64,7 +65,15 @@ CALENDAR = Agent(
      ("Morning briefing", "Every day", "Briefing"),
      ("Telegram reminders", "Bills, deadlines, deliveries, RSVPs", "Telegram")),
 )
-AGENTS = {a.id: a for a in (MONEY, CALENDAR)}
+FITNESS = Agent(
+    "fitness", "Dorae-3", "Fitness & food", "#22C55E",
+    ("How am I doing today?", "Protein left today", "Calories this week", "Chicken rice and kopi siew dai",
+     "My targets"),
+    (("6pm check", "Protein, calories and steps, also on Telegram", "Fitness"),
+     ("Steps from Apple Health", "From your OneDrive folder", "Steps"),
+     ("Learns your foods", "From what you log and correct", "On")),
+)
+AGENTS = {a.id: a for a in (MONEY, CALENDAR, FITNESS)}
 HELP_TEXT = {  # "what can you do?": answered instantly, in each agent's own lane
     "money": "I look after your spending. Ask me things like: how much did I spend this week, what did I spend on "
              "today, my spending breakdown last month, top merchants, my latest or biggest purchase, did I have a "
@@ -74,6 +83,10 @@ HELP_TEXT = {  # "what can you do?": answered instantly, in each agent's own lan
                 "next week, anything this weekend, do I have anything in November, what's due, my trips, my "
                 "reminders, or what needs my OK. You can also say “remind me to call mom at 5pm tmr” or “add "
                 "dinner with Sam on friday 7-9pm”.",
+    "fitness": "I look after your food, steps and daily targets. Tell me what you ate (“chicken rice and kopi "
+               "siew dai”, “nutrisoy no sugar 250ml”) and I'll work out the calories and macros for you to Log. Ask "
+               "me how you're doing today, protein left, calories this week, steps, or your targets; or say “set my "
+               "protein target to 140”. At 6pm I check what's left and how to close the gap.",
 }
 # The swatches offered when you customize an agent
 COLORS = ["#8B5E3C", "#EF4444", "#F97316", "#F59E0B", "#22C55E", "#14B8A6", "#3B82F6", "#8B5CF6", "#EC4899", "#6B7280"]
@@ -135,6 +148,8 @@ class Brain:
         self.tz = ZoneInfo(settings.timezone)
         self.home = settings.home_currency
         self.nw = NetWorth(db, self.home, fx)
+        self.fit = Fitness(db, settings.timezone)  # Dorae-3
+        self.food_backend = None  # the model that reads what you ate (doraemon.foodlog); made when first needed
 
     def today(self) -> date:
         return datetime.now(self.tz).date()
@@ -920,6 +935,53 @@ class Brain:
                         "Doraemon calendar, or change it first under Edit.",
                 "kind": "items", "payload": {"ids": [item_id]}}
 
+    # --- Dorae-3 -----------------------------------------------------------------------------------
+
+    def fitness_first(self, question: str, previous: str | None) -> list[dict] | None:
+        """What Dorae-3 answers before the usual routes: a target you set, suggested targets, or food to log."""
+        if target := coach.parse_target(question):
+            self.fit.set_targets(**target)
+            self.last_route = "target"
+            (k, v), = target.items()
+            card = coach.targets_card(self.fit)
+            return [{**card, "text": f"Done: {v:,} {'kcal' if k == 'kcal' else 'g protein' if k == 'protein' else 'steps'} "
+                                     "a day."}]
+        if coach.SUGGEST.search(question):
+            self.last_route = "targets"
+            profile = self.fit.profile()
+            if not profile.get("weight_kg"):
+                return [{"text": "To suggest targets I need your weight, height, age, how active you are and your goal: "
+                                 "fill them in on the Fitness page and I'll work them out.", "kind": "text", "payload": None}]
+            return [coach.targets_card(self.fit, suggested=suggest_targets(profile))]
+        routed = route("fitness", question, previous) if self.settings.fast_answers else None
+        explicit = coach.FOOD_LOG.match(question) or coach.FOR_MEAL.match(question)
+        food = coach.food_request(question, own_chat=True) if routed is None or explicit else None
+        if food:
+            self.last_route = "food"
+            return [self.food_reply(food)]
+        return None
+
+    def food_reply(self, text: str) -> dict:
+        """Work out what you ate and save it as a draft card waiting for Log."""
+        if self.food_backend is None:
+            from doraemon.llm import get_backend, model_ready
+            if not model_ready(self.settings, wait=20):
+                return {"text": "I need the local model to work out what you ate, and it isn't running. Open the Ollama "
+                                "app and try again.", "kind": "text", "payload": None}
+            self.food_backend = get_backend(self.settings.model, self.settings)
+        try:
+            foods = foodlog.understand(text, self.fit, self.db, self.food_backend)
+        except Exception as e:  # the model gave nothing usable
+            log.warning("reading food failed: %s", e)
+            foods = []
+        if not foods:
+            return {"text": f"I couldn't work out the food in “{text}”. Try naming each thing, like “1 plate chicken "
+                            "rice, 1 kopi siew dai”.", "kind": "text", "payload": None}
+        batch = self.fit.draft(foods)
+        kcal, protein = sum(f["kcal"] for f in foods), sum(f["protein"] for f in foods)
+        return {"text": f"Here's what I worked out: {kcal:,.0f} kcal and {protein:.0f} g protein. Check the numbers "
+                        "(change any under Edit), then press Log.", "kind": "food", "payload": {"batch": batch}}
+
     def reminder_reply(self, title: str, when: str, question: str) -> dict:
         """Draft the reminder you asked for as a card you can edit before pressing Create reminder."""
         result, item_id = draft_reminder(self.db, self.settings.timezone, self.settings.date_order, title, when,
@@ -1070,6 +1132,8 @@ class Brain:
     def instant(self, route) -> dict:
         """The answer to a question the router recognised. Same cards as the model's answers."""
         s, home = route.slots, self.home
+        if route.agent == "fitness" and route.intent.startswith("fit_"):
+            return coach.answer(self.fit, route)
         if route.intent == "help":
             return {"text": HELP_TEXT[route.agent], "kind": "text", "payload": None}
         if route.intent == "find":
@@ -1183,7 +1247,8 @@ class Brain:
             if (agent == "calendar" and not scheduled and at is not None and datetime.now(self.tz).time() < at
                     and self.db.last_message(agent) is not None):
                 return []
-            msgs = self.money_overview() if agent == "money" else self.briefing()
+            msgs = (self.money_overview() if agent == "money" else self.briefing() if agent == "calendar"
+                    else [coach.day_card(self.fit, self.today(), f"Today, {coach.short_day(self.today())}")])
             for msg in msgs:
                 self.db.add_message(agent, "agent", msg["text"], msg["kind"], msg["payload"])
             self.db.set_setting(key, today)
@@ -1200,11 +1265,15 @@ class Brain:
         ids = [self.db.add_message(agent, "user", question)]
         answers = None
         self.last_route = "model"
+        if agent == "fitness":  # Dorae-3: targets you set and food you log come before anything else
+            answers = self.fitness_first(question, previous)
         asked = split_request(question) if agent == "calendar" else None
         event = split_event(question)
         budget = bud.parse_request(question) if agent == "money" else None
         fast = route(agent, question, previous) if self.settings.fast_answers else None
-        if asked and asked[0] and asked[1]:  # "remind me to X tomorrow": clear enough to draft without the model
+        if answers is not None:
+            pass
+        elif asked and asked[0] and asked[1]:  # "remind me to X tomorrow": clear enough to draft without the model
             answers, self.last_route = [self.reminder_reply(*asked, question)], "reminder"
         elif event and event.title and event.when and not budget:  # "add date night on 26/10 7-9pm": likewise
             self.last_route = "event"
@@ -1227,7 +1296,8 @@ class Brain:
             except Exception as e:  # model not running, timed out, or gave nothing back
                 log.warning("chat model failed, using fixed answers: %s", e)
         if answers is None:
-            answers = self.money_reply(question) if agent == "money" else self.calendar_reply(question)
+            answers = self.money_reply(question) if agent == "money" else self.calendar_reply(question) \
+                if agent == "calendar" else [coach.answer(self.fit, Route("fitness", "fit_day"))]
             if self.chat is not None:
                 answers[0]["text"] += "\n(Quick answer: the local model isn't responding right now.)"
         for msg in answers:  # `via` puts a ⚡ on answers that never waited for the model

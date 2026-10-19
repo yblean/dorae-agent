@@ -33,6 +33,7 @@ from doraemon.telegram import Command, CommandListener, connect_telegram
 from doraemon import senders
 from doraemon.db import from_chat
 from doraemon.rules import RuleStore
+from doraemon.fitness import import_steps
 from doraemon.tidy import tidy
 
 log = logging.getLogger(__name__)
@@ -272,6 +273,10 @@ class Runtime:
         log.info("Telegram button pressed: %s", action)
         if action == "test":  # from python -m doraemon.telegram test
             return f"👍 Buttons work. The {self.name or 'app'} answered."
+        if action == "flog":  # Log under a meal Dorae-3 worked out
+            return self.phone.log_food(ident)
+        if action == "fdrop":
+            return "✖ Not logged." if self.brain.fit.cancel(ident) else "That one's already logged (or was cancelled)."
         if not ident.isdigit():
             return "I don't know that button."
         item_id = int(ident)
@@ -454,6 +459,38 @@ class Runtime:
                 log.warning("monthly summary on Telegram: %s", e)
         return True
 
+    def steps_tick(self) -> int:
+        """Read new step counts from the folder your iPhone's Shortcut saves Apple Health steps to."""
+        return import_steps(self.brain.fit, self.settings.health_folder)
+
+    def fitness_tick(self, now: datetime | None = None) -> bool:
+        """Dorae-3's daily check (DORAEMON_FITNESS_CHECK_TIME, 6pm): what's left today and how to close the gap, in its
+        chat and on Telegram. Once a day; quiet when you're on track or have no targets. Returns whether it spoke."""
+        check = self.settings.fitness_check_time
+        now = (now or datetime.now(self.brain.tz)).astimezone(self.brain.tz)
+        if check == "off":
+            return False
+        try:
+            at = dtime.fromisoformat(check)
+        except ValueError:
+            return False
+        key = f"fitness:checked:{now.date().isoformat()}"
+        if now.time() < at or self.db.get_setting(key):
+            return False
+        self.db.set_setting(key, now.isoformat())
+        self.steps_tick()  # the latest count first
+        text = self.brain.fit.evening_check(now.date())
+        if not text:
+            return False
+        self.db.add_message("fitness", "agent", text)
+        bot = self.get_messenger()
+        if bot is not None:
+            try:
+                bot.send(text)
+            except Exception as e:  # it's in Dorae-3's chat either way
+                log.warning("fitness check on Telegram: %s", e)
+        return True
+
     def webull_expires(self) -> datetime | None:
         if not (self.settings.webull_app_key and self.settings.webull_app_secret):
             return None
@@ -530,6 +567,8 @@ class Runtime:
         self.stops.append(every(30 * 60, self.tidy_tick, "tidy", first=25))
         self.stops.append(every(6 * 3600, self.session_tick, "sessions", first=40))
         self.stops.append(every(30 * 60, self.monthly_tick, "monthly-summary", first=20))
+        self.stops.append(every(10 * 60, self.steps_tick, "steps", first=30))
+        self.stops.append(every(5 * 60, self.fitness_tick, "fitness-check", first=45))
 
     def stop_jobs(self) -> None:
         for stop in self.stops:

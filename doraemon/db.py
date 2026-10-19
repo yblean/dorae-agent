@@ -121,6 +121,46 @@ CREATE TABLE IF NOT EXISTS budgets (
     amount TEXT NOT NULL,          -- per calendar month, in the home currency
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS food_log (       -- Dorae-3: what you ate (doraemon.fitness)
+    id INTEGER PRIMARY KEY,
+    day TEXT NOT NULL,             -- YYYY-MM-DD in your timezone
+    logged_at TEXT NOT NULL,       -- UTC
+    name TEXT NOT NULL,            -- e.g. 'Chicken rice'
+    portion TEXT,                  -- e.g. '1 plate', '250 ml'
+    kcal REAL NOT NULL DEFAULT 0,
+    protein REAL NOT NULL DEFAULT 0,
+    carbs REAL NOT NULL DEFAULT 0,
+    fat REAL NOT NULL DEFAULT 0,
+    sugar REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL,          -- estimate / database / yours / you (edited)
+    status TEXT NOT NULL DEFAULT 'draft',   -- draft (waiting for Log) / logged / cancelled
+    batch TEXT NOT NULL,           -- one message's foods, logged together
+    note TEXT                      -- e.g. the product it was matched to
+);
+CREATE TABLE IF NOT EXISTS foods (          -- your foods, learned from what you log and correct
+    key TEXT PRIMARY KEY,          -- normalised name, e.g. 'kopitiam chicken rice'
+    name TEXT NOT NULL,
+    portion TEXT,
+    kcal REAL NOT NULL DEFAULT 0,
+    protein REAL NOT NULL DEFAULT 0,
+    carbs REAL NOT NULL DEFAULT 0,
+    fat REAL NOT NULL DEFAULT 0,
+    sugar REAL NOT NULL DEFAULT 0,
+    uses INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS steps (
+    day TEXT PRIMARY KEY,          -- YYYY-MM-DD
+    steps INTEGER NOT NULL,
+    active_kcal REAL,
+    source TEXT,                   -- e.g. 'apple health'
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS food_facts (     -- Open Food Facts answers, so a product is looked up once
+    query TEXT PRIMARY KEY,
+    found TEXT NOT NULL,           -- JSON: the product picked, or null
+    fetched_at TEXT NOT NULL
+);
 """
 # Columns added after a table's first version: table -> {column: type}
 _ADDED_COLUMNS = {

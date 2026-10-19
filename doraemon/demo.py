@@ -176,6 +176,23 @@ def seed(rt, today: date) -> None:
     income.add(db, "Salary", "salary", Decimal("4200"), HOME, (today.replace(day=1) - timedelta(days=80)).replace(day=25),
                monthly=True)
 
+    # Dorae-3: targets, a week of meals and steps, and today's breakfast and lunch
+    fit = rt.brain.fit
+    fit.set_targets(kcal=1900, protein=130, steps=9000)
+    meals = [("Kaya toast set", "2 toast, 2 eggs, kopi", 480, 18, 52, 22, 20), ("Chicken rice", "1 plate", 600, 30, 75, 20, 2),
+             ("Fish soup with rice", "1 bowl", 480, 32, 60, 10, 3), ("Greek yogurt", "150 g", 130, 15, 6, 4, 5),
+             ("Yong tau foo", "8 pieces, soup", 420, 28, 40, 14, 6), ("Laksa", "1 bowl", 620, 22, 60, 32, 6),
+             ("Nasi lemak", "1 plate with chicken wing", 650, 24, 70, 30, 4), ("Unsweetened soy milk", "250 ml", 95, 9, 3, 5, 1)]
+    for back in range(6, 0, -1):  # the last 6 days, some fuller than others
+        day = today - timedelta(days=back)
+        picks = [meals[0], meals[(back + 1) % 7 + 1], meals[(back + 3) % 7 + 1]] + ([meals[3]] if back % 2 else [])
+        fit.log(fit.draft([{"name": n, "portion": p, "kcal": k, "protein": pr, "carbs": c, "fat": f, "sugar": s,
+                            "source": "estimate"} for n, p, k, pr, c, f, s in picks], day))
+        fit.set_steps(day, 6200 + (back * 1370) % 5200)
+    fit.log(fit.draft([{"name": n, "portion": p, "kcal": k, "protein": pr, "carbs": c, "fat": f, "sugar": s,
+                        "source": "yours"} for n, p, k, pr, c, f, s in (meals[0], meals[1])]))
+    fit.set_steps(today, 5400)
+
     # The morning briefing and Dorae-1's overview, then a few questions already asked, so the chats show what
     # they do (all instant: there's no model in the demo)
     rt.brain.ensure_overview("calendar", scheduled=True)
