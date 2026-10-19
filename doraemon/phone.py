@@ -64,6 +64,12 @@ class Phone:
         if target := coach.parse_target(text):  # "set my protein target to 140"
             self.brain.fit.set_targets(**target)
             return self.plain(coach.targets_card(self.brain.fit)), None
+        if subject := coach.nutrition_subject(text):  # "how many calories in a bowl of greek yogurt?"
+            card = self.brain.nutrition_reply(subject)
+            if card["kind"] != "food":
+                return card["text"], None
+            batch = card["payload"]["batch"]
+            return card["text"], [[("✅ Log it", f"flog:{batch}"), ("✖ No thanks", f"fdrop:{batch}")]]
         if coach.FOOD_IDEAS.search(text):  # "what should I eat for dinner?": the app's own ideas (no model here)
             return self.plain(coach.ideas_card(self.brain.fit)), None
         if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"

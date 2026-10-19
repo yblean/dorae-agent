@@ -427,6 +427,20 @@ def fitness_tools(brain: Brain, turn: dict) -> list[Tool]:
                 {"drafted": True, "next_step": "The user must check the numbers and press Log on the card."}), \
             (card if card["kind"] != "text" else None)
 
+    def nutrition(food=None, **_):
+        text = _text(food, 200)
+        if not text:
+            return {"error": "Name the food or foods, e.g. 'tofu, 2 eggs'."}, None
+        try:
+            foods = brain.read_food(text)
+        except Exception as e:
+            return {"error": f"couldn't read that food ({str(e)[:80]})"}, None
+        if foods is None:
+            return {"error": "the model that reads food isn't running"}, None
+        return {"foods": [{"name": f["name"], "portion": f["portion"], **{m: round(f[m]) for m in ("kcal", "protein", "carbs", "fat", "sugar")},
+                           "source": {"yours": "the user's own numbers", "database": f["note"]}.get(f["source"], "estimate")}
+                          for f in foods]}, None
+
     def meal_ideas(**_):
         card = coach.ideas_card(fit, text="")
         facts = coach.ideas_facts(fit)
@@ -435,6 +449,10 @@ def fitness_tools(brain: Brain, turn: dict) -> list[Tool]:
         return facts, {"kind": card["kind"], "payload": card["payload"]}  # the model's words go above the card
 
     return [
+        Tool("nutrition", "Calories, protein, carbs, fat and sugar of any food or drink, for a typical portion or the one "
+             "given: the user's own numbers, a packaged product's label, or an estimate. Use for 'how many calories in "
+             "X', 'which has more protein, X or Y', 'is X high in sugar'.",
+             {"food": {"type": "string", "description": "the food or foods, e.g. '1 bowl greek yogurt, 2 eggs'"}}, nutrition),
         Tool("meal_ideas", "What the user has left today (kcal_left, protein_left) and foods that fit it, theirs first, "
              "with their numbers. Use for 'what should I eat', 'suggest foods to hit my protein', 'dinner ideas'.",
              {}, meal_ideas),
@@ -454,7 +472,7 @@ TOPIC_SCHEMA = {"type": "object", "properties": {"topic": {"type": "string", "en
 TOPIC_PROMPT = """Classify the user's LATEST message for a personal assistant app. Earlier messages are only context for short follow-ups like "and last month?".
 spending: their purchases, payments, receipts, merchants, spending categories or totals, refunds, budgets, income, savings, net worth, investments, how much they spent or paid, or asking to change, recategorize or remove a payment.
 calendar: bills or payments that are due, appointments, deadlines, deliveries, RSVPs, trips, flights, hotels, their schedule, week or calendar, things waiting for their OK, asking to confirm, dismiss or edit one, or asking to add an event or reminder (even with a greeting or thanks around it).
-fitness: food they ate or want to log, calories, protein, carbs, fat, sugar, meals, diet, steps, walking, their daily fitness targets, or advice on their eating and steps progress.
+fitness: food they ate or want to log, the nutrition of any food or drink (calories, protein, carbs, fat, sugar, comparing foods, whether something is healthy), meals, diet, steps, walking, their daily fitness targets, or advice on their eating and steps progress.
 hello: only a greeting or thanks, or asking what the assistant can do.
 other: anything else: general knowledge, jokes, writing, coding, advice, news, other people, or asking to ignore your instructions.
 Answer with JSON."""
@@ -486,7 +504,8 @@ LENGTH = {
 }
 
 CHANGES = {
-    "fitness": "To suggest what to eat, call meal_ideas first and plan from it. "
+    "fitness": "For a food's calories or macros, or comparing foods, call nutrition and use its numbers, saying "
+               "which are estimates. To suggest what to eat, call meal_ideas first and plan from it. "
                "To log food the user ate, call log_food once with their words, then tell them to check the numbers "
                "and press Log on the card. You can't change targets or past logs from chat: the Fitness page does that.",
     "money": "To set or change a budget, call propose_budget once, then tell the user to press Save on the card. "

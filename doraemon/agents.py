@@ -949,6 +949,15 @@ class Brain:
                     log.warning("meal ideas from the model failed: %s", e)
             self.last_route = "ideas"
             return [coach.ideas_card(self.fit)]
+        if subject := coach.nutrition_subject(question):  # "how many calories in a bowl of greek yogurt?"
+            self.last_route = "nutrition"
+            return [self.nutrition_reply(subject)]
+        if coach.FOOD_QUESTION.search(question) and self.chat is not None:  # "which has more protein, tofu or eggs?"
+            try:
+                self.last_route = "model"
+                return self.chat.answer("fitness", question, history or [])
+            except Exception as e:
+                log.warning("food question for the model failed: %s", e)
         if target := coach.parse_target(question):
             self.fit.set_targets(**target)
             self.last_route = "target"
@@ -970,6 +979,23 @@ class Brain:
             self.last_route = "food"
             return [self.food_reply(food)]
         return None
+
+    def nutrition_reply(self, subject: str) -> dict:
+        """A food's calories and macros (your numbers, the product's, or an estimate), with Log in case you had it."""
+        card = self.food_reply(subject)
+        if card["kind"] != "food":
+            return card
+        rows = self.fit.batch(card["payload"]["batch"])
+        return {**card, "text": coach.nutrition_text(rows) + " Press Log if you had it."}
+
+    def read_food(self, text: str) -> list[dict] | None:
+        """The foods in `text` with their numbers, logged nowhere; None if the model isn't there to read them."""
+        if self.food_backend is None:
+            from doraemon.llm import get_backend, model_ready
+            if not model_ready(self.settings, wait=20):
+                return None
+            self.food_backend = get_backend(self.settings.model, self.settings)
+        return foodlog.understand(text, self.fit, self.db, self.food_backend)
 
     def food_reply(self, text: str) -> dict:
         """Work out what you ate and save it as a draft card waiting for Log."""

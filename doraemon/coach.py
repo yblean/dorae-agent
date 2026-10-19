@@ -20,6 +20,50 @@ TARGET = re.compile(r"\bset (?:my )?(?:daily )?(?P<what>calories?|calorie|kcal|p
                     r"\s*(?:to|at|=)?\s*(?P<n>\d[\d,]*)", re.I)
 SUGGEST = re.compile(r"\b(?:suggest|recommend|work out|calculate|what should)\b.*\b(?:targets?|goals?|calories|protein)\b",
                      re.I)
+# "how much will a bowl of greek yogurt be in cals and protein", "calories in chicken rice": about a food, not you
+_NUTRIENT = re.compile(r"\b(?:cal(?:orie)?s?|kcal|protein|carbs?|carbohydrates?|fats?|sugar|macros?|nutrition(?:al)?)\b", re.I)
+_ABOUT_YOU = re.compile(r"\b(?:i|i'?ve|i'?m|im|ive|my|me|today|tonight|yesterday|left|remaining|so far|this week|last week|"
+                        r"targets?|goals?|should)\b", re.I)
+_ASKING = re.compile(r"^\W*(?:how (?:much|many)|what(?:'s| is| are|s)?|whats|is|are|does|do|can you tell me|tell me|give me|"
+                     r"nutrition|calories|cals|protein|macros)\b|\?\s*$", re.I)
+_QUESTION_WORDS = re.compile(
+    r"\b(?:how (?:much|many)|what(?:'s| is| are)?|whats|tell me|give me|can you tell me|the|will|would|does|do|is|are|be|"
+    r"has|have|contains?|there|in|of|for|and|cal(?:orie)?s?|kcal|protein|carbs?|carbohydrates?|fats?|sugar|macros?|"
+    r"nutrition(?:al)?|info(?:rmation)?|amount|approx(?:imately)?|roughly|about|it|like)\b", re.I)
+
+
+# A judgement about foods ("which has more protein, tofu or eggs?", "is milo high in sugar?", "is laksa healthy?"):
+# for the model, which looks each food up with its nutrition tool
+FOOD_QUESTION = re.compile(r"(?=.*\b(?:cal(?:orie)?s?|kcal|protein|carbs?|fats?|sugar|macros?|nutrition|healthy|healthier|"
+                           r"nutritious|unhealthy)\b)(?=.*\b(?:which|compare[ds]?|vs|versus|better|healthier|worse|more|"
+                           r"less|high|higher|low|lower|healthy|unhealthy|good|bad|too much|enough|or)\b)", re.I | re.S)
+
+
+def nutrition_subject(text: str) -> str | None:
+    """The food a nutrition question is about ("a bowl greek yogurt"), or None if it isn't one (or it's about you:
+    "how much protein have I had today" is your day, not a food)."""
+    if not (_NUTRIENT.search(text) and _ASKING.search(text)) or _ABOUT_YOU.search(text):
+        return None
+    if FOOD_QUESTION.search(text):
+        return None  # "which has more protein, tofu or eggs?", "is milo high in sugar?": the model weighs it up
+    subject = " ".join(_QUESTION_WORDS.sub(" ", re.sub(r"[?!.,]", " ", text.lower())).split())
+    return subject if re.search(r"[a-z]{3}", subject) else None
+
+
+def nutrition_text(rows) -> str:
+    """'A bowl of Greek yogurt (200 g): about 190 kcal, 18 g protein, ...' for each food, and the total."""
+    parts = []
+    for r in rows:
+        where = (" (your usual)" if r["source"] == "yours" else f" (from {r['note']})" if r["source"] == "database"
+                 else " (an estimate)")
+        parts.append(f"{r['name']}" + (f", {r['portion']}" if r["portion"] else "") + f": about {r['kcal']:.0f} kcal, "
+                     f"{r['protein']:.0f} g protein, {r['carbs']:.0f} g carbs, {r['fat']:.0f} g fat, {r['sugar']:.0f} g "
+                     f"sugar{where}.")
+    if len(rows) > 1:
+        parts.append(f"Together: {sum(r['kcal'] for r in rows):.0f} kcal, {sum(r['protein'] for r in rows):.0f} g protein.")
+    return " ".join(parts)
+
+
 LEAN_ROOM = 150  # kcal: less left than this and ideas turn to the leanest protein
 # "suggest some foods to hit my targets", "what should I eat for dinner?": ideas to eat, for the model (not targets)
 FOOD_IDEAS = re.compile(r"^(?=.*\b(?:eat|eating|food|foods|meal|meals|snack|snacks|dinner|lunch|breakfast|supper|order|"

@@ -372,3 +372,77 @@ def test_meal_plans_fit_the_calories_and_add_up_here():
     assert set(best["foods"]) == {"Chicken breast (150 g)", "Fish soup with rice", "Greek yogurt (150 g)"}
     assert (best["kcal"], best["protein"]) == (860, 92)
     assert all(p["kcal"] <= 900 for p in plans) and len(plans) > 1
+
+
+# --- questions about food ---------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, subject, judgement", [
+    ("how much will a bowl of greek yogurt be in cals and protein", "a bowl greek yogurt", False),
+    ("how many calories in chicken rice", "chicken rice", False),
+    ("calories in 2 slices of white bread", "2 slices white bread", False),
+    ("how much protein does tofu have?", "tofu", False),
+    ("which has more protein, tofu or eggs?", None, True),
+    ("is milo high in sugar?", None, True),
+    ("how much protein have i had today", None, False),  # your day, not a food
+    ("calories this week", None, False),
+])
+def test_food_questions_are_told_apart(text, subject, judgement):
+    assert coach.nutrition_subject(text) == subject
+    assert bool(coach.FOOD_QUESTION.search(text)) is judgement
+
+
+def test_a_food_question_answers_with_numbers_and_offers_log(settings):
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    brain.food_backend = FakeFood([{"name": "Greek yogurt", "portion": "1 bowl (200 g)", "kcal": 190, "protein": 18,
+                                    "carbs": 8, "fat": 9, "sugar": 7, "product": ""}])
+    html = client.post("/chat/fitness/ask",
+                       data={"q": "how much will a bowl of greek yogurt be in cals and protein"}).json()["html"]
+    assert brain.last_route == "nutrition"
+    assert "Greek yogurt, 1 bowl (200 g): about 190 kcal, 18 g protein, 8 g carbs, 9 g fat, 7 g sugar (an estimate)." in html
+    assert brain.fit.totals(brain.fit.today()).kcal == 0  # asking isn't eating
+    batch = re.search(r"/food/([0-9a-f]{8})/log", html)[1]
+    client.post(f"/food/{batch}/log")
+    assert brain.fit.totals(brain.fit.today()).kcal == 190
+
+
+class ComparingModel:
+    """Calls the nutrition tool, then answers from it."""
+
+    def __init__(self):
+        self.seen = []
+
+    def complete_json(self, system, user, schema):
+        return json.dumps({"topic": "fitness"})
+
+    def chat(self, messages, tools):
+        self.seen.append(messages)
+        if len(self.seen) == 1:
+            return {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "nutrition", "arguments": {"food": "100 g tofu, 1 egg"}}}]}
+        foods = json.loads(messages[-1]["content"])["foods"]
+        best = max(foods, key=lambda f: f["protein"])
+        return {"role": "assistant", "content": f"{best['name']} has more: {best['protein']} g."}
+
+
+def test_comparing_foods_goes_to_the_model_with_looked_up_numbers(settings):
+    from doraemon.chat import AgentChat
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    brain.food_backend = FakeFood([{"name": "Tofu", "portion": "100 g", "kcal": 76, "protein": 8, "carbs": 2, "fat": 5,
+                                    "sugar": 0, "product": ""},
+                                   {"name": "Egg", "portion": "1 large", "kcal": 72, "protein": 6, "carbs": 0, "fat": 5,
+                                    "sugar": 0, "product": ""}])
+    brain.chat = AgentChat(brain, ComparingModel())
+    html = client.post("/chat/fitness/ask", data={"q": "which has more protein, tofu or eggs?"}).json()["html"]
+    assert brain.last_route == "model" and brain.chat.last_tools == ["nutrition"] and "Tofu has more: 8 g." in html
+
+
+def test_food_questions_on_telegram(settings):
+    bot = FakeBot()
+    rt = Runtime(settings, messenger=bot)
+    rt.brain.food_backend = FakeFood([{"name": "Coke", "portion": "1 can", "kcal": 140, "protein": 0, "carbs": 39,
+                                       "fat": 0, "sugar": 39, "product": ""}])
+    text, buttons = rt.phone.answer("how many calories in a can of coke")
+    assert text.startswith("Coke, 1 can: about 140 kcal") and buttons[0][0][0] == "✅ Log it"
+    assert rt.button(buttons[0][1][1]) == "✖ Not logged."
