@@ -290,6 +290,10 @@ agent's chat and on Telegram. Three days before Webull's approved session runs o
 
 ## Chat with the agents
 
+**Search** at the top of the sidebar looks through both chats as you type: what you asked and what they answered,
+newest first, with the words you typed highlighted (every word must be there). Click a result to open that chat
+at the message.
+
 Dorae-1 (spending) and Dorae-2 (calendar) answer free-form questions like "what's my latest purchase?"
 or "any bills due this month?". The local model (`DORAEMON_CHAT_MODEL`, default: your `DORAEMON_MODEL`)
 calls read-only tools over your database and Google calendars; the card under each answer is built
