@@ -380,6 +380,13 @@ code { background: var(--hover); padding: 1px 5px; border-radius: 5px; font-size
 .chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 .kind-list { margin-top: 6px; }
 .legend-name.as-is { text-transform: none; }  /* names you typed, shown as written */
+/* "Skip their emails?": who, then the button; a long address is cut short rather than running under the button */
+.skip-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.skip-row:first-child { padding-top: 2px; }
+.skip-who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 13.5px; }
+.skip-who .note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skip-row form { flex-shrink: 0; }
+.skip-row + .note { margin-top: 8px; }
 .kind-cash { background: #2A78D6; } .kind-cpf { background: #1BAF7A; } .kind-investment { background: #4A3AA7; }
 .kind-property { background: #EDA100; } .kind-other { background: #A8A7A0; } .kind-loan { background: #E34948; }
 .kept-row { display: flex; justify-content: space-between; padding-top: 4px; font-size: 13px; color: var(--ink-2); }

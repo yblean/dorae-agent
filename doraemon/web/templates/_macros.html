@@ -294,8 +294,12 @@
   {% elif m.kind == 'skip' and m.payload %}
   <div class="card">
     {% for s in m.payload.senders %}
-    <div class="legend-row">
-      <span class="legend-name as-is">{{ s.name }}<span class="note">{{ s.address }} · {{ s.dismissed }} dismissed, none confirmed</span></span>
+    <div class="skip-row">
+      <div class="skip-who">
+        <strong>{{ s.name }}</strong>
+        <span class="note" title="{{ s.address }}">{{ s.address }}</span>
+        <span class="note">{{ s.dismissed }} dismissed, none confirmed</span>
+      </div>
       <form method="post" action="/senders/skip" data-ajax>
         <input type="hidden" name="address" value="{{ s.address }}"><input type="hidden" name="back" value="/chat/calendar">
         <button class="btn btn-white btn3d">Skip their emails</button>
