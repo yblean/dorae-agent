@@ -346,12 +346,15 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return render(request, "agents.html")
 
     @app.get("/chat/{agent_id}", response_class=HTMLResponse)
-    def chat(request: Request, agent_id: str):
+    def chat(request: Request, agent_id: str, at: int = 0):
+        """`at`: a message picked from search, so the chat opens there (with what came before and after it)."""
         agent = AGENTS.get(agent_id)
         if agent is None:
             raise HTTPException(404)
         brain.ensure_overview(agent_id)
-        rows = db.messages(agent_id)
+        rows = db.messages_from(agent_id, at) if at else db.messages(agent_id)
+        if at and rows and rows[-1]["id"] != (db.last_message(agent_id) or {"id": 0})["id"]:
+            rows = db.messages(agent_id)  # more than fits after it: the usual latest page (search finds it again)
         if rows:
             db.set_setting(f"seen:{agent_id}", str(rows[-1]["id"]))
         db.set_setting("last_agent", agent_id)
@@ -359,6 +362,38 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         suggestions = [s.format(last_month=month_name(last)) for s in agent.suggestions]
         return render(request, "chat.html", current=styled(agent, db), messages=with_separators(rows),
                       suggestions=suggestions, panel=panel(agent_id))
+
+    @app.get("/search")
+    def search_chats(q: str = ""):
+        """The sidebar's search: chat messages with every word typed, newest first, each with where to open it."""
+        q = q.strip()[:80]
+        if len(q) < 2:
+            return JSONResponse({"results": []})
+        results = []
+        for row in db.search_messages(q):
+            agent = styled(AGENTS[row["agent"]], db) if row["agent"] in AGENTS else None
+            if agent is None:
+                continue
+            results.append({"id": row["id"], "agent": row["agent"], "name": agent.name, "color": agent.color,
+                            "you": row["role"] == "user", "when": search_time(row["created_at"]),
+                            "text": snippet(row["text"], q.split()[0])})
+        return JSONResponse({"results": results})
+
+    def search_time(iso: str) -> str:
+        at = datetime.fromisoformat(iso).astimezone(tz)
+        today = datetime.now(tz).date()
+        return at.strftime("%I:%M %p").lstrip("0") if at.date() == today else \
+            "Yesterday" if at.date() == today - timedelta(days=1) else f"{at.day} {at:%b}" + (
+                "" if at.year == today.year else f" {at.year}")
+
+    def snippet(text: str, word: str, width: int = 140) -> str:
+        """A piece of the message around the first match, so the match shows even in a long message."""
+        text = " ".join(text.split())
+        at = text.lower().find(word.lower())
+        if len(text) <= width or at < 0:
+            return text[:width] + ("…" if len(text) > width else "")
+        start = max(0, at - width // 3)
+        return ("…" if start else "") + text[start:start + width] + ("…" if start + width < len(text) else "")
 
     def with_separators(rows) -> list[dict]:
         """Message views with a centred time label wherever 20+ minutes passed, like a phone chat."""

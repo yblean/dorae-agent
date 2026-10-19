@@ -303,3 +303,28 @@ def test_freely_worded_calendar_questions_draw_the_days_card(client):
     html = client.post("/chat/calendar/ask", data={"q": "do i have anything tomorrow?"}).json()["html"]
     assert "Tomorrow, " in html and 'class="card briefing"' in html and "brief-head" in html
     assert client.app.state.runtime.brain.last_route == "days"
+
+
+def test_search_finds_messages_in_both_chats(client):
+    db = client.app.state.db
+    db.add_message("calendar", "user", "remind me to call mom at 5pm")
+    db.add_message("calendar", "agent", "Here's your reminder: “Call mom”, Mon 19 Oct.")
+    db.add_message("money", "agent", "You spent SGD 42.00 at FairPrice, 100% of it on groceries.")
+    hits = client.get("/search", params={"q": "call MOM"}).json()["results"]
+    assert [(h["agent"], h["you"]) for h in hits] == [("calendar", False), ("calendar", True)]  # newest first
+    assert hits[0]["name"] == "Dorae-2" and hits[0]["text"].startswith("Here's your reminder")
+    assert [h["agent"] for h in client.get("/search", params={"q": "fairprice groceries"}).json()["results"]] == ["money"]
+    assert client.get("/search", params={"q": "100%"}).json()["results"][0]["agent"] == "money"  # % is just text
+    assert client.get("/search", params={"q": "mom fairprice"}).json()["results"] == []  # every word must match
+    assert client.get("/search", params={"q": "m"}).json()["results"] == []  # too short
+
+
+def test_a_search_hit_opens_the_chat_at_that_message(client):
+    db = client.app.state.db
+    first = db.add_message("money", "user", "an old question about Uniqlo")
+    for n in range(120):
+        db.add_message("money", "agent", f"filler {n}")
+    assert f'data-msg="{first}"' not in client.get("/chat/money").text  # beyond the latest page
+    page = client.get(f"/chat/money?at={first}").text
+    assert f'data-msg="{first}"' in page and "filler 119" in page  # from it to now, so new ones still follow
+    assert 'data-search-results' in page and 'placeholder="Search chats"' in page

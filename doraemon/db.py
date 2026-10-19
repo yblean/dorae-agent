@@ -184,6 +184,23 @@ class Database:
         ).fetchall()
         return list(reversed(rows))
 
+    def search_messages(self, query: str, limit: int = 30) -> list[sqlite3.Row]:
+        """Chat messages (both agents, yours and theirs) containing every word of `query`, newest first."""
+        words = [w for w in query.split() if w][:6]
+        if not words:
+            return []
+        like = lambda w: "%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where = " AND ".join("text LIKE ? ESCAPE '\\'" for _ in words)
+        return self.conn.execute(f"SELECT * FROM chat_messages WHERE {where} ORDER BY id DESC LIMIT ?",
+                                 [*map(like, words), limit]).fetchall()
+
+    def messages_from(self, agent: str, message_id: int, before: int = 30, limit: int = 400) -> list[sqlite3.Row]:
+        """The chat from a little before `message_id` up to now: for opening it at a message found by search."""
+        start = self.conn.execute("SELECT id FROM chat_messages WHERE agent = ? AND id <= ? ORDER BY id DESC "
+                                  "LIMIT 1 OFFSET ?", (agent, message_id, before)).fetchone()
+        return self.conn.execute("SELECT * FROM chat_messages WHERE agent = ? AND id >= ? ORDER BY id LIMIT ?",
+                                 (agent, start["id"] if start else 0, limit)).fetchall()
+
     def last_message(self, agent: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT * FROM chat_messages WHERE agent = ? ORDER BY id DESC LIMIT 1", (agent,)

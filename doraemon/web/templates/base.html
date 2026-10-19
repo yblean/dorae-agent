@@ -13,11 +13,12 @@
 <div class="shell {{ 'in-chat with-panel' if current else '' }} {% block shell_class %}{% endblock %}">
   <aside class="sidebar" aria-label="Agents">
     <div class="side-top">
-      <label class="search"><span class="sr-only">Search agents</span>
+      <label class="search"><span class="sr-only">Search your chats</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-        <input type="search" placeholder="Search" data-search>
+        <input type="search" placeholder="Search chats" data-search autocomplete="off">
       </label>
     </div>
+    <div class="search-results" data-search-results hidden aria-live="polite"></div>
 
     <div class="fav-row" aria-hidden="true">
       {% for e in sidebar %}{% set a = e.agent %}

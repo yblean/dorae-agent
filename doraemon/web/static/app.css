@@ -32,6 +32,19 @@ form { margin: 0; }
 .search { display: flex; align-items: center; gap: 7px; background: #EAEAEA; border-radius: 8px; padding: 0 9px; color: var(--muted); }
 .search input { border: none; outline: none; background: transparent; height: 30px; flex: 1; min-width: 0; font-size: 13px; }
 .search input::placeholder { color: var(--muted); }
+/* chat search results, in the sidebar while you type */
+.search-results { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 8px; max-height: 60vh; overflow-y: auto;
+  border-bottom: 1px solid var(--line); }
+.search-results[hidden] { display: none; }
+.search-head { font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 4px 6px; text-transform: uppercase; letter-spacing: .03em; }
+.search-hit { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border-radius: 8px; color: inherit; text-decoration: none; }
+.search-hit:hover, .search-hit:focus-visible { background: #EAEAEA; outline: none; }
+.hit-top { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--muted); }
+.hit-who { font-weight: 600; color: var(--c, var(--ink-2)); }
+.hit-text { font-size: 12.5px; color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere; }
+.hit-text mark { background: #FFE58A; color: inherit; border-radius: 2px; padding: 0 1px; }
+.msg.found .bubble { box-shadow: 0 0 0 2px #FFC21A; transition: box-shadow .4s; }
 .fav-row { display: none; }
 .agent-list { flex: 1; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 1px; }
 .agent-row { position: relative; display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 10px; color: var(--ink); }

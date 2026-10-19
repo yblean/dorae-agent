@@ -75,8 +75,19 @@
     } catch {}
   }, 30000);
 
-  // Start at the latest message
-  if (thread) thread.scrollTop = thread.scrollHeight;
+  // Start at the latest message, or at the one picked from search (?at=), lit up for a moment
+  if (thread) {
+    const at = new URLSearchParams(location.search).get('at');
+    const picked = at && thread.querySelector(`[data-msg="${CSS.escape(at)}"]`);
+    if (picked) {
+      picked.scrollIntoView({ block: 'center' });
+      picked.classList.add('found');
+      setTimeout(() => picked.classList.remove('found'), 2600);
+      history.replaceState(null, '', location.pathname);  // a reload goes back to the latest
+    } else {
+      thread.scrollTop = thread.scrollHeight;
+    }
+  }
 
   // Card actions (confirm, dismiss, edit, change category): the agent answers in the chat
   document.addEventListener('submit', async (e) => {
@@ -239,12 +250,71 @@
   document.addEventListener('focusout', () => { tip.hidden = true; });
   window.addEventListener('scroll', () => { tip.hidden = true; }, true);
 
-  // Sidebar search filters the agent list
+  // Sidebar search: filters the agent list, and finds messages in your chats (GET /search) as you type.
+  // Results are built with text nodes, so nothing in a message is ever read as HTML.
   const search = document.querySelector('[data-search]');
-  if (search) search.addEventListener('input', () => {
-    const q = search.value.trim().toLowerCase();
-    document.querySelectorAll('.agent-row').forEach((row) => {
-      row.hidden = q && !row.dataset.name.toLowerCase().includes(q);
+  const found = document.querySelector('[data-search-results]');
+  let searchTimer;
+  const showHits = (hits, q) => {
+    found.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'search-head';
+    head.textContent = hits.length ? `Messages (${hits.length}${hits.length === 30 ? '+' : ''})` : `No messages with “${q}”`;
+    found.append(head);
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    for (const h of hits) {
+      const a = document.createElement('a');
+      a.className = 'search-hit';
+      a.href = `/chat/${h.agent}?at=${h.id}`;
+      const top = document.createElement('span');
+      top.className = 'hit-top';
+      const who = document.createElement('span');
+      who.className = 'hit-who';
+      who.style.setProperty('--c', h.color);
+      who.textContent = h.you ? `You → ${h.name}` : h.name;
+      const when = document.createElement('span');
+      when.textContent = h.when;
+      top.append(who, when);
+      const text = document.createElement('span');
+      text.className = 'hit-text';
+      // mark each word typed, case-insensitively
+      const lower = h.text.toLowerCase();
+      let i = 0;
+      while (i < h.text.length) {
+        let next = -1, len = 0;
+        for (const w of words) {
+          const j = lower.indexOf(w, i);
+          if (j >= 0 && (next < 0 || j < next)) { next = j; len = w.length; }
+        }
+        if (next < 0) { text.append(h.text.slice(i)); break; }
+        text.append(h.text.slice(i, next));
+        const mark = document.createElement('mark');
+        mark.textContent = h.text.slice(next, next + len);
+        text.append(mark);
+        i = next + len;
+      }
+      a.append(top, text);
+      found.append(a);
+    }
+    found.hidden = false;
+  };
+  if (search) {
+    search.addEventListener('input', () => {
+      const q = search.value.trim();
+      document.querySelectorAll('.agent-row').forEach((row) => {
+        row.hidden = q && !row.dataset.name.toLowerCase().includes(q.toLowerCase());
+      });
+      clearTimeout(searchTimer);
+      if (q.length < 2) { found.hidden = true; found.replaceChildren(); return; }
+      searchTimer = setTimeout(async () => {
+        try {
+          const res = await (await fetch(`/search?q=${encodeURIComponent(q)}`)).json();
+          if (search.value.trim() === q) showHits(res.results, q);
+        } catch {}
+      }, 200);
     });
-  });
+    search.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { search.value = ''; search.dispatchEvent(new Event('input')); }
+    });
+  }
 })();
