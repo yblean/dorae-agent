@@ -319,8 +319,8 @@ class PlanningModel:
         if len(self.seen) == 1:
             return {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "meal_ideas", "arguments": {}}}]}
         facts = json.loads(messages[-1]["content"])
-        pick = facts["foods"][0]
-        return {"role": "assistant", "content": f"Have {pick['name']}: {pick['kcal']} kcal, {pick['protein']} g protein."}
+        plan = facts["plans"][0]
+        return {"role": "assistant", "content": f"Have {' + '.join(plan['foods'])}: {plan['kcal']} kcal, {plan['protein']} g protein."}
 
 
 def test_asking_what_to_eat_goes_to_the_model_with_whats_left(settings):
@@ -332,9 +332,11 @@ def test_asking_what_to_eat_goes_to_the_model_with_whats_left(settings):
     brain.fit.set_targets(kcal=1800, protein=140)
     brain.fit.log(brain.fit.draft([{"name": "Chicken breast rice", "portion": "1 plate", "kcal": 520, "protein": 38}]))
     html = client.post("/chat/fitness/ask", data={"q": "suggest me some foods to eat so that i can hit my targets"}).json()["html"]
-    assert brain.last_route == "model" and "Have Chicken breast rice: 520 kcal, 38 g protein." in html
     facts = json.loads(model.seen[1][-1]["content"])
-    assert (facts["kcal_left"], facts["protein_left"]) == (1280, 102) and facts["foods"][0]["theirs"] is True
+    plan = facts["plans"][0]
+    assert brain.last_route == "model" and f"Have {' + '.join(plan['foods'])}: {plan['kcal']} kcal" in html
+    assert (facts["kcal_left"], facts["protein_left"]) == (1280, 102) and plan["kcal"] <= 1280
+    assert "foods" not in facts  # the plans are the answer
     assert facts["status"] == "calories: 1280 left; protein: 102 g still to go"
     assert "Fits what's left today" in html  # the options card under the answer
 
