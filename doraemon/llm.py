@@ -1,4 +1,5 @@
 """Model backends. Every step takes a Backend, so models are swappable per step."""
+import base64
 import logging
 import os
 import re
@@ -30,14 +31,16 @@ class OllamaBackend:
         self.think = think
         self.name = f"ollama:{model}" + (" (thinking)" if think else "")
 
-    def complete_json(self, system: str, user: str, schema: dict) -> str:
+    def complete_json(self, system: str, user: str, schema: dict, images: list[bytes] | None = None) -> str:
+        """`images`: photos for a model that can see (e.g. a nutrition label)."""
+        seen = {"images": [base64.b64encode(i).decode() for i in images]} if images else {}
         resp = httpx.post(
             f"{self.url}/api/chat",
             json={
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": user},
+                    {"role": "user", "content": user, **seen},
                 ],
                 "format": schema,  # Ollama constrains output to this JSON schema
                 "stream": False,

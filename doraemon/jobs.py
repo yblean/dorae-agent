@@ -217,7 +217,7 @@ class Runtime:
                     ("remindars", "list")),
             Command("status", "Is everything working?", lambda: self.status_text(), ("health",)),
             Command("help", "What I can do", lambda: self.commands.help_text(), ("start",)),
-        ], on_button=self.button, on_text=self.phone.answer, examples=EXAMPLES)
+        ], on_button=self.button, on_text=self.phone.answer, on_photo=self.phone.photo, examples=EXAMPLES)
         self.brokers = brokers  # None: the ones set up in .env (doraemon.brokers.connected)
         self.broker_problem = ""
         self.lock = FileLock(Path(settings.db_path).parent / "jobs.lock")

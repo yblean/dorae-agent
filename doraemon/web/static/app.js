@@ -147,10 +147,67 @@
     }
   }
   document.querySelectorAll('[data-q]').forEach((chip) => chip.addEventListener('click', () => ask(chip.dataset.q)));
+
+  // Dorae-3: a photo of a nutrition label or of your food (what's typed in the box goes with it, e.g. "2 servings")
+  function shrink(file, most = 1280) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, most / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(img.src);
+        canvas.toBlob((blob) => resolve(blob || file), 'image/jpeg', 0.88);
+      };
+      img.onerror = () => resolve(file);
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const photoInput = document.getElementById('ask-photo');
+  if (photoInput) photoInput.addEventListener('change', async () => {
+    const file = photoInput.files[0];
+    photoInput.value = '';
+    if (!file) return;
+    const input = document.getElementById('ask-q');
+    const said = input.value.trim();
+    input.value = '';
+    const preview = document.createElement('div');
+    preview.className = 'msg from-you';
+    const img = document.createElement('img');
+    img.className = 'sent-photo';
+    img.alt = 'Your photo';
+    img.src = URL.createObjectURL(file);
+    preview.append(img);
+    if (said) {
+      const body = document.createElement('div');
+      body.className = 'bubble';
+      body.textContent = said;
+      preview.append(body);
+    }
+    list.append(preview);
+    scrollDown();
+    setMood('thinking');
+    const done = typing();
+    const data = new FormData();
+    data.append('photo', await shrink(file), 'photo.jpg');
+    data.append('q', said);
+    try {
+      const res = await post(`/chat/${agent}/photo`, data);
+      done();
+      preview.remove();
+      appendHtml(res.html);
+    } catch {
+      done();
+      appendHtml('<div class="msg from-agent"><div class="bubble">Sorry, I couldn\'t read that photo just now.</div></div>');
+    }
+    setMood('idle');
+  });
   const askForm = document.getElementById('ask');
   if (askForm) askForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const input = askForm.querySelector('input');
+    const input = askForm.querySelector('input[name=q]');
     const q = input.value.trim();
     if (q) { input.value = ''; ask(q); }
   });

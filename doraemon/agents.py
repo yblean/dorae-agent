@@ -9,11 +9,12 @@ table, item cards, your week from Google Calendar). The local model answers
 questions by calling read-only tools (doraemon.chat); the keyword answers here
 are the fallback when it isn't running.
 """
+import json
 import logging
 import re
 import threading
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -38,6 +39,8 @@ from doraemon.schema import Category
 log = logging.getLogger(__name__)
 
 OTHER_NUDGE = 5  # this many payments in Other this month, and Dorae-1's overview points to the Spending page
+LABEL_KEY = "fitness:last_label"  # the nutrition label in your last photo, so "2 servings" can redo the sums
+LABEL_MINUTES = 30
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,8 @@ HELP_TEXT = {  # "what can you do?": answered instantly, in each agent's own lan
                 "reminders, or what needs my OK. You can also say “remind me to call mom at 5pm tmr” or “add "
                 "dinner with Sam on friday 7-9pm”.",
     "fitness": "I look after your food, steps and daily targets. Tell me what you ate (“chicken rice and kopi "
-               "siew dai”, “nutrisoy no sugar 250ml”) and I'll work out the calories and macros for you to Log. Ask "
+               "siew dai”, “nutrisoy no sugar 250ml”), or send a photo of a nutrition label or your meal (📷), and I'll "
+               "work out the calories and macros for you to Log. Ask "
                "me how you're doing today, protein left, calories this week, steps, or your targets; or say “set my "
                "protein target to 140”. At 6pm I check what's left and how to close the gap.",
 }
@@ -940,6 +944,9 @@ class Brain:
     def fitness_first(self, question: str, previous: str | None, history: list | None = None) -> list[dict] | None:
         """What Dorae-3 answers before the usual routes: a target you set, ideas for what to eat (the model plans
         them, from what's left and foods that fit), suggested targets, or food to log."""
+        if card := self.label_amount(question):  # "2 servings", just after a label photo
+            self.last_route = "label"
+            return [card]
         if coach.FOOD_IDEAS.search(question) and not coach.parse_target(question):
             if self.chat is not None:
                 try:
@@ -988,23 +995,92 @@ class Brain:
         rows = self.fit.batch(card["payload"]["batch"])
         return {**card, "text": coach.nutrition_text(rows) + " Press Log if you had it."}
 
-    def read_food(self, text: str) -> list[dict] | None:
-        """The foods in `text` with their numbers, logged nowhere; None if the model isn't there to read them."""
+    def food_model(self):
+        """The model that reads food and photos, started if need be; None if it can't be reached."""
         if self.food_backend is None:
             from doraemon.llm import get_backend, model_ready
             if not model_ready(self.settings, wait=20):
                 return None
             self.food_backend = get_backend(self.settings.model, self.settings)
+        return self.food_backend
+
+    def read_food(self, text: str) -> list[dict] | None:
+        """The foods in `text` with their numbers, logged nowhere; None if the model isn't there to read them."""
+        if self.food_model() is None:
+            return None
         return foodlog.understand(text, self.fit, self.db, self.food_backend)
+
+    def photo(self, image: bytes, said: str = "", file: str | None = None) -> list[int]:
+        """A photo you sent Dorae-3 (and what you said with it), and the answer: the message ids."""
+        ids = [self.db.add_message("fitness", "user", said.strip()[:500], "photo", {"file": file} if file else None)]
+        card = self.photo_reply(image, said)
+        self.last_route = "photo"
+        ids.append(self.db.add_message("fitness", "agent", card["text"], card["kind"], card["payload"], via="model"))
+        return ids
+
+    def photo_reply(self, image: bytes, said: str = "") -> dict:
+        """A photo of a nutrition label or of the food itself, worked out as a draft card waiting for Log."""
+        if self.food_model() is None:
+            return {"text": "I need the local model to read photos, and it isn't running. Open the Ollama app and try "
+                            "again.", "kind": "text", "payload": None}
+        try:
+            seen = foodlog.read_photo(image, said, self.fit, self.db, self.food_backend)
+        except Exception as e:  # the model gave nothing usable, or can't see
+            log.warning("reading a photo failed: %s", e)
+            seen = {"kind": "failed"}
+        if seen["kind"] == "label":
+            batch = self.fit.draft(seen["foods"])
+            self.db.set_setting(LABEL_KEY, json.dumps({"at": datetime.now(timezone.utc).isoformat(), "batch": batch,
+                                                       "reading": seen["reading"]}))
+            return {"text": self.label_text(seen["foods"][0]), "kind": "food", "payload": {"batch": batch}}
+        if seen["kind"] == "food":
+            foods = seen["foods"]
+            batch = self.fit.draft(foods)
+            return {"text": f"From your photo: about {sum(f['kcal'] for f in foods):,.0f} kcal and "
+                            f"{sum(f['protein'] for f in foods):.0f} g protein. Photos give rough numbers: check them "
+                            "(change any under Edit), then press Log.", "kind": "food", "payload": {"batch": batch}}
+        text = {"unreadable": "I can see a nutrition label but couldn't read its numbers. Try again closer, straight on "
+                              "and in good light.",
+                "failed": "I couldn't read that photo just now. Try again, or tell me what you had."}.get(
+            seen["kind"], "I couldn't see food or a nutrition label in that photo. Send one of your meal or of the "
+                          "label's nutrition table.")
+        return {"text": text, "kind": "text", "payload": None}
+
+    @staticmethod
+    def label_text(food: dict) -> str:
+        return (f"From the label: {food['name']}, {food['portion']}: {food['kcal']:.0f} kcal, {food['protein']:.0f} g "
+                "protein. Had a different amount? Tell me, like “330 ml”, “2 servings” or “half the pack”. Otherwise "
+                "press Log.")
+
+    def label_amount(self, text: str) -> dict | None:
+        """"2 servings" right after a label photo: the label's food again, for that amount (the old draft goes)."""
+        if (amount := foodlog.amount_reply(text)) is None:
+            return None
+        try:
+            last = json.loads(self.db.get_setting(LABEL_KEY) or "null")
+            fresh = datetime.now(timezone.utc) - datetime.fromisoformat(last["at"]) < timedelta(minutes=LABEL_MINUTES)
+        except (ValueError, TypeError, KeyError):
+            return None
+        if not fresh:
+            return None
+        unit = foodlog.label_unit(last["reading"])
+        if "size" in amount and unit not in (None, amount["size"][1]):
+            return {"text": f"That label measures in {'grams' if unit == 'g' else 'ml'}: tell me "
+                            f"{'grams, like “60 g”' if unit == 'g' else 'ml, like “330 ml”'}, or servings, like "
+                            "“2 servings”.", "kind": "text", "payload": None}
+        food = foodlog.label_food(last["reading"], text)
+        if food is None:
+            return None
+        self.fit.cancel(last["batch"])  # a draft goes; one you already logged stays
+        batch = self.fit.draft([food])
+        self.db.set_setting(LABEL_KEY, json.dumps({**last, "batch": batch}))
+        return {"text": self.label_text(food), "kind": "food", "payload": {"batch": batch}}
 
     def food_reply(self, text: str) -> dict:
         """Work out what you ate and save it as a draft card waiting for Log."""
-        if self.food_backend is None:
-            from doraemon.llm import get_backend, model_ready
-            if not model_ready(self.settings, wait=20):
-                return {"text": "I need the local model to work out what you ate, and it isn't running. Open the Ollama "
-                                "app and try again.", "kind": "text", "payload": None}
-            self.food_backend = get_backend(self.settings.model, self.settings)
+        if self.food_model() is None:
+            return {"text": "I need the local model to work out what you ate, and it isn't running. Open the Ollama "
+                            "app and try again.", "kind": "text", "payload": None}
         try:
             foods = foodlog.understand(text, self.fit, self.db, self.food_backend)
         except Exception as e:  # the model gave nothing usable

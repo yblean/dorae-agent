@@ -55,7 +55,7 @@ def nutrition_text(rows) -> str:
     parts = []
     for r in rows:
         where = (" (your usual)" if r["source"] == "yours" else f" (from {r['note']})" if r["source"] == "database"
-                 else " (an estimate)")
+                 else " (from your label photo)" if r["source"] == "label" else " (an estimate)")
         parts.append(f"{r['name']}" + (f", {r['portion']}" if r["portion"] else "") + f": about {r['kcal']:.0f} kcal, "
                      f"{r['protein']:.0f} g protein, {r['carbs']:.0f} g carbs, {r['fat']:.0f} g fat, {r['sugar']:.0f} g "
                      f"sugar{where}.")
@@ -276,9 +276,10 @@ def answer(fit: Fitness, route) -> dict:
 
 def food_lines(rows) -> list[str]:
     """A draft or logged meal as plain lines (Telegram)."""
-    lines = [f"• {r['name']}" + (f" ({r['portion']})" if r["portion"] else "")
+    lines = [f"• {r['name']}" + ((f", {r['portion']}" if "(" in r["portion"] else f" ({r['portion']})") if r["portion"] else "")
              + f": {r['kcal']:.0f} kcal, {r['protein']:.0f} g protein, {r['carbs']:.0f} g carbs, {r['fat']:.0f} g fat"
-             + (" · your usual" if r["source"] == "yours" else " · from the label database" if r["source"] == "database" else "")
+             + (" · your usual" if r["source"] == "yours" else " · from the label database" if r["source"] == "database"
+                else " · from your label photo" if r["source"] == "label" else "")
              for r in rows]
     total_k, total_p = sum(r["kcal"] for r in rows), sum(r["protein"] for r in rows)
     if len(rows) > 1:

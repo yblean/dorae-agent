@@ -34,7 +34,8 @@ ASK_MINUTES = 15                       # an answer to "when?" counts for this lo
 LIST = 8                               # lines under an answer; the rest are in the app
 EXAMPLES = ("remind me to call mom at 5pm tmr", "add dinner with Sam on friday 7-9pm",
             "how much did I spend this week?", "what's on tomorrow?", "my budget", "my reminders",
-            "ate chicken rice and kopi siew dai", "how am I doing today?")
+            "ate chicken rice and kopi siew dai", "a photo of a nutrition label (caption: 2 servings)",
+            "how am I doing today?")
 
 Buttons = list[list[tuple[str, str]]]
 
@@ -64,6 +65,8 @@ class Phone:
         if target := coach.parse_target(text):  # "set my protein target to 140"
             self.brain.fit.set_targets(**target)
             return self.plain(coach.targets_card(self.brain.fit)), None
+        if card := self.brain.label_amount(text):  # "2 servings", just after a label photo
+            return self.food_card(card, "📷 From the label:", label=True)
         if subject := coach.nutrition_subject(text):  # "how many calories in a bowl of greek yogurt?"
             card = self.brain.nutrition_reply(subject)
             if card["kind"] != "food":
@@ -91,12 +94,26 @@ class Phone:
 
     def food(self, text: str) -> tuple[str, Buttons | None]:
         """What you ate, worked out (the model, your foods, Open Food Facts) as a draft with Log and Cancel."""
-        card = self.brain.food_reply(text)
+        return self.food_card(self.brain.food_reply(text), "🍽 Here's what I worked out:")
+
+    def photo(self, image: bytes, caption: str = "") -> tuple[str, Buttons | None]:
+        """A photo of a nutrition label or of your food (its caption, e.g. "2 servings", as a hint), as a draft."""
+        try:
+            card = self.brain.photo_reply(image, caption)
+        except Exception:
+            log.exception("reading a Telegram photo failed")
+            return "Sorry, I couldn't read that photo. Try again, or tell me what you had.", None
+        label = card["kind"] == "food" and self.brain.fit.batch(card["payload"]["batch"])[0]["source"] == "label"
+        return self.food_card(card, "📷 From the label:" if label else "📷 From your photo (rough numbers):", label)
+
+    def food_card(self, card: dict, intro: str, label: bool = False) -> tuple[str, Buttons | None]:
+        """A food draft as lines with Log and Cancel; anything else as its text."""
         if card["kind"] != "food":
             return card["text"], None
         batch = card["payload"]["batch"]
-        lines = ["🍽 Here's what I worked out:", *coach.food_lines(self.brain.fit.batch(batch)),
-                 "", "Numbers off? Log it, then fix them in Dorae-3's chat (Edit): I'll remember them."]
+        hint = ("Had a different amount? Reply like “330 ml”, “2 servings” or “half the pack”." if label else
+                "Numbers off? Log it, then fix them in Dorae-3's chat (Edit): I'll remember them.")
+        lines = [intro, *coach.food_lines(self.brain.fit.batch(batch)), "", hint]
         return "\n".join(lines), [[("✅ Log", f"flog:{batch}"), ("✖ Cancel", f"fdrop:{batch}")]]
 
     def log_food(self, batch: str) -> str:

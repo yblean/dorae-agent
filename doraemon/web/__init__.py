@@ -15,12 +15,13 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import re
+import uuid
 
 from doraemon import budgets as bud
 from doraemon import income
@@ -36,6 +37,7 @@ from doraemon.jobs import CheckJob, Runtime  # noqa: F401 (CheckJob: used to liv
 from doraemon.ledger import build_ledger, refunded_purchases, spending_totals
 from doraemon.networth import CHECK_IN_DAYS, KINDS, check_in_day, shift_month
 from doraemon.llm import get_backend
+from doraemon.telegram import MAX_PHOTO
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
 from doraemon import coach, senders
@@ -506,6 +508,29 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         if wants_json(request):
             return JSONResponse({"html": render_messages(request, ids)})
         return RedirectResponse(f"/chat/{agent_id}", status_code=303)
+
+    photos = Path(settings.db_path).parent / "photos"  # the photos you sent Dorae-3, shown in its chat
+
+    @app.post("/chat/fitness/photo")
+    async def photo(request: Request, photo: UploadFile = File(...), q: str = Form("")):
+        """A photo of a nutrition label or of your food, with what you said about it ("2 servings")."""
+        image = await photo.read(MAX_PHOTO + 1)
+        if not (photo.content_type or "").startswith("image/") or not image or len(image) > MAX_PHOTO:
+            raise HTTPException(400, "Send a photo (JPG or PNG) under 10 MB.")
+        photos.mkdir(parents=True, exist_ok=True)
+        name = f"{uuid.uuid4().hex}.jpg"
+        (photos / name).write_bytes(image)
+        ids = brain.photo(image, q, file=name)
+        db.set_setting("seen:fitness", str(ids[-1]))
+        if wants_json(request):
+            return JSONResponse({"html": render_messages(request, ids)})
+        return RedirectResponse("/chat/fitness", status_code=303)
+
+    @app.get("/photos/{name}")
+    def photo_file(name: str):
+        if not re.fullmatch(r"[0-9a-f]{32}\.jpg", name) or not (photos / name).is_file():
+            raise HTTPException(404)
+        return FileResponse(photos / name, media_type="image/jpeg")
 
     @app.post("/chat/{agent_id}/clear")
     def clear(agent_id: str):

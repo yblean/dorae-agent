@@ -434,6 +434,21 @@ def test_anything_else_gets_the_command_list(db):
     assert bot.sent == [lst.help_text()] and "/reminders: List your reminders" in bot.sent[0]
 
 
+def test_photos_go_to_the_photo_handler_with_their_caption(db):
+    now = int(time.time())
+    photo = {"update_id": 1, "message": {"chat": {"id": 42}, "date": now, "caption": "2 servings",
+                                         "photo": [{"file_id": "small"}, {"file_id": "big"}]}}
+    as_file = {"update_id": 2, "message": {"chat": {"id": 42}, "date": now,
+                                           "document": {"file_id": "doc", "mime_type": "image/png", "file_size": 900}}}
+    bot = FakeChatBot([photo, as_file])
+    bot.photo_bytes = lambda file_id: f"bytes of {file_id}".encode()
+    seen = []
+    CommandListener(db, lambda: bot, [], on_text=lambda text: ("text", None),
+                    on_photo=lambda image, caption: (seen.append((image, caption)) or "logged?", None)).poll_once()
+    assert seen == [(b"bytes of big", "2 servings"), (b"bytes of doc", "")]  # the largest size
+    assert bot.sent == ["📷 Reading your photo…", "logged?"] * 2
+
+
 # --- asking Dorae-2 for a reminder -------------------------------------------------------
 
 @pytest.mark.parametrize("text, expected", [

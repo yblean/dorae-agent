@@ -91,6 +91,16 @@ class Telegram:
         return self.call("getUpdates", wait=timeout + 15, timeout=timeout,
                          allowed_updates=["message", "callback_query"], **({"offset": offset} if offset else {}))
 
+    def photo_bytes(self, file_id: str) -> bytes:
+        """A photo you sent the bot, downloaded."""
+        path = self.call("getFile", wait=15, file_id=file_id)["file_path"]
+        try:
+            resp = self.client.get(f"{API}/file/bot{self.token}/{path}", timeout=30)
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise TelegramError(f"couldn't download the photo ({type(e).__name__})") from None
+        return resp.content
+
     def answer_button(self, press_id: str, text: str) -> None:
         """Stops the button's loading spinner, showing `text` briefly."""
         self.call("answerCallbackQuery", wait=10, callback_query_id=press_id, text=text[:200])
@@ -127,6 +137,19 @@ class Command:
 Buttons = list[list[tuple[str, str]]]
 
 
+MAX_PHOTO = 10_000_000  # bytes: a bigger image sent as a file is ignored
+
+
+def photo_id(msg: dict) -> str | None:
+    """The file id of a photo in a message (its largest size), or of an image sent as a file."""
+    if msg.get("photo"):
+        return msg["photo"][-1]["file_id"]
+    doc = msg.get("document") or {}
+    if str(doc.get("mime_type", "")).startswith("image/") and doc.get("file_size", 0) <= MAX_PHOTO:
+        return doc["file_id"]
+    return None
+
+
 class CommandListener:
     """Answers commands you send the bot, other messages and the buttons you press, while Doraemon runs.
     Only your linked chat gets answers."""
@@ -134,11 +157,13 @@ class CommandListener:
     def __init__(self, db: Database, bot: Callable[[], Telegram | None], commands: list[Command],
                  on_button: Callable[[str], str] | None = None,
                  on_text: Callable[[str], tuple[str, Buttons | None]] | None = None,
+                 on_photo: Callable[[bytes, str], tuple[str, Buttons | None]] | None = None,
                  examples: tuple[str, ...] = ()) -> None:
         self.db, self.bot = db, bot  # bot: () -> your Telegram, or None until connected
         self.commands = commands
         self.on_button = on_button  # a button's data -> what to say, e.g. "done:12" -> "✅ Done: Pay bill"
         self.on_text = on_text  # a message that isn't a command -> (reply, buttons); None: the command list
+        self.on_photo = on_photo  # a photo and its caption -> (reply, buttons), e.g. a nutrition label to log
         self.examples = examples  # messages to suggest in the help text
         self.menu_set_for: str | None = None
 
@@ -174,7 +199,16 @@ class CommandListener:
                 continue
             text = msg.get("text", "")
             command = self.lookup(text) if text.strip().startswith("/") or self.on_text is None else None
-            if command:
+            if (photo := photo_id(msg)) and self.on_photo:
+                bot.send("📷 Reading your photo…")
+                try:
+                    image = bot.photo_bytes(photo)
+                except TelegramError as e:
+                    log.warning("Telegram photo: %s", e)
+                    bot.send("I couldn't download that photo. Try sending it again.")
+                else:
+                    bot.send(*self.on_photo(image, msg.get("caption", "")))
+            elif command:
                 bot.send(command.answer())
             elif self.on_text and text.strip():
                 bot.send(*self.on_text(text))

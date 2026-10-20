@@ -390,6 +390,14 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
      Singapore products first, and worked out for your portion;
   3. anything else is the local model's estimate for a typical Singapore portion.
   Fix any number under **Edit**: what you change is what it remembers, so your usual orders get accurate quickly.
+- **Photos.** Send a photo on Telegram, or with the 📷 button in Dorae-3's chat, with an optional caption ("2
+  servings", "half the pack", "no rice"). The local model looks at it:
+  - **a nutrition label**: it copies the numbers (per 100 g/ml, or per serving; kJ is converted) and the app works
+    them out for what you had: your caption, else one serving, else the pack. Had a different amount? Just reply
+    "330 ml", "2 bars" or "half the pack" within 30 minutes. Copied numbers, so this is the accurate way;
+  - **a meal or drink**: it names each food with a portion and estimates it, then your own foods and Open Food
+    Facts replace the estimates they know better. Rough numbers: check them before you press **Log**.
+  Photos are read on your computer; the ones sent in the web chat are kept in `data/photos` to show in the chat.
 - **Steps** come from Apple Health through a Shortcuts automation on your iPhone that saves a small file to
   iCloud Drive; iCloud for Windows syncs it, and Doraemon reads it every 10 minutes. It watches
   `iCloudDrive\Shortcuts\Doraemon\health`, `iCloudDrive\Doraemon\health` and `OneDrive\Doraemon\health`

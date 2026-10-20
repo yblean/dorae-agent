@@ -134,6 +134,10 @@ form { margin: 0; }
 .msg.from-you { align-self: flex-end; align-items: flex-end; }
 .bubble { background: var(--bubble); border-radius: 16px; padding: 9px 14px; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
 .from-you .bubble { background: var(--mine); color: #FFFFFF; }
+.sent-photo { display: block; max-width: min(260px, 70vw); max-height: 320px; border-radius: 14px; object-fit: cover; margin-bottom: 4px; }
+.composer .camera { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 16px; color: var(--ink-2); cursor: pointer; }
+.composer .camera:hover { color: var(--ink); background: var(--hover); }
+.composer .camera:focus-within { outline: 2px solid var(--agent, #22C55E); outline-offset: 1px; }
 .instant { margin-left: 6px; font-size: 11px; opacity: .55; cursor: help; }
 .typing { align-self: flex-start; display: flex; gap: 4px; padding: 13px 14px; background: var(--bubble); border-radius: 16px; }
 .typing span { width: 6px; height: 6px; border-radius: 3px; background: #9A9A9F; }

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from doraemon import coach
 from doraemon.db import Database
 from doraemon.fitness import Fitness, import_steps, parse_steps, suggest_targets
-from doraemon.foodlog import amount_of, lookup_product, resolve, understand
+from doraemon.foodlog import amount_of, amount_reply, label_food, lookup_product, resolve, understand
 from doraemon.jobs import Runtime
 from doraemon.router import route
 from doraemon.web import create_app
@@ -446,3 +446,116 @@ def test_food_questions_on_telegram(settings):
     text, buttons = rt.phone.answer("how many calories in a can of coke")
     assert text.startswith("Coke, 1 can: about 140 kcal") and buttons[0][0][0] == "✅ Log it"
     assert rt.button(buttons[0][1][1]) == "✖ Not logged."
+
+
+# --- photos: nutrition labels and food --------------------------------------------------------------------
+
+LABEL = {"kind": "label", "product": "NutriSoy Fresh Soya Milk", "basis": "100 ml", "serving_size": "250 ml",
+         "pack_size": "1L", "kcal": 39, "kj": 0, "protein": 3.5, "carbs": 2.2, "fat": 1.8, "sugar": 0.5, "foods": []}
+BAR = {"product": "Granola bars", "basis": "serving", "serving_size": "42 g", "pack_size": "5 x 42 g", "kcal": 0,
+       "kj": 800, "protein": 3, "carbs": 29, "fat": 7, "sugar": 11}
+
+
+class FakeEyes:
+    """The model looking at a photo: one canned reading, and what it was shown."""
+    name = "fake"
+
+    def __init__(self, answer):
+        self.answer, self.seen = answer, []
+
+    def complete_json(self, system, user, schema, images=None):
+        self.seen.append((user, images))
+        return json.dumps(self.answer)
+
+
+@pytest.mark.parametrize("reading, said, portion, kcal", [
+    (LABEL, None, "1 serving (250 ml)", 97.5),
+    (LABEL, "330ml", "330 ml", 128.7),
+    (LABEL, "2 servings", "2 servings (500 ml)", 195),
+    (LABEL, "had 2 glasses", "2 servings (500 ml)", 195),
+    (LABEL, "half the carton", "half a pack (500 ml)", 195),
+    (LABEL, "drank the whole thing", "1 pack (1000 ml)", 390),
+    (BAR, None, "1 serving (42 g)", 191.2),  # 800 kJ
+    (BAR, "2 bars", "2 servings (84 g)", 382.4),  # bars of the 5 x 42 g box, not 2 boxes
+    (BAR, "60 g", "1.43 servings (60 g)", 273.4),
+    (BAR, "330 ml", "1 serving (42 g)", 191.2),  # ml of a label in grams: the usual amount
+])
+def test_the_app_works_out_a_labels_numbers_for_what_you_had(reading, said, portion, kcal):
+    food = label_food(reading, said)
+    assert (food["portion"], food["kcal"], food["source"]) == (portion, kcal, "label")
+
+
+def test_a_label_without_numbers_is_no_food():
+    assert label_food({**LABEL, "kcal": 0, "protein": 0}) is None
+
+
+@pytest.mark.parametrize("text, amount", [
+    ("330ml", {"size": (330.0, "ml")}), ("1.5L", {"size": (1500.0, "ml")}), ("2 servings", {"servings": 2.0}),
+    ("actually half the pack", {"packs": 0.5}), ("I had the whole thing", {"packs": 1.0}),
+    ("2 servings of rice", None), ("had chicken rice", None), ("how many calories", None), ("yes", None),
+])
+def test_only_a_bare_amount_answers_a_label(text, amount):
+    assert amount_reply(text) == amount
+
+
+def test_a_label_photo_in_dorae3s_chat(settings):
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    brain.food_backend = eyes = FakeEyes(LABEL)
+    html = client.post("/chat/fitness/photo", files={"photo": ("label.jpg", b"jpeg bytes", "image/jpeg")},
+                       data={"q": ""}).json()["html"]
+    assert eyes.seen[0][1] == [b"jpeg bytes"]
+    assert "From the label: NutriSoy Fresh Soya Milk, 1 serving (250 ml): 98 kcal, 9 g protein." in html
+    assert "from your label photo" in html and brain.fit.totals(brain.fit.today()).kcal == 0
+    photo = re.search(r'src="(/photos/[0-9a-f]{32}\.jpg)"', html)[1]
+    assert client.get(photo).content == b"jpeg bytes"
+    first = re.search(r"/food/([0-9a-f]{8})/log", html)[1]
+    # "2 servings" redoes the sums, without the model
+    html = client.post("/chat/fitness/ask", data={"q": "2 servings"}).json()["html"]
+    assert brain.last_route == "label" and len(eyes.seen) == 1
+    assert "From the label: NutriSoy Fresh Soya Milk, 2 servings (500 ml): 195 kcal, 18 g protein." in html
+    assert {r["status"] for r in brain.fit.batch(first)} == {"cancelled"}
+    client.post(f"/food/{re.search(r'/food/([0-9a-f]{8})/log', html)[1]}/log")
+    assert brain.fit.totals(brain.fit.today()).kcal == 195
+
+
+def test_only_photos_are_taken_and_kept(settings):
+    client = chat_client(settings)
+    assert client.post("/chat/fitness/photo", files={"photo": ("a.txt", b"hello", "text/plain")}).status_code == 400
+    assert client.get("/photos/..%2Fd.db").status_code == 404
+    assert client.get("/photos/" + "0" * 32 + ".jpg").status_code == 404
+
+
+def test_a_food_photo_is_estimated_with_what_you_said(settings, fit):
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    brain.food_backend = eyes = FakeEyes({**LABEL, "kind": "food", "foods": [
+        {"name": "Chicken rice", "portion": "1 plate", "kcal": 450, "protein": 22, "carbs": 40, "fat": 18, "sugar": 1,
+         "product": ""}]})
+    html = client.post("/chat/fitness/photo", files={"photo": ("lunch.jpg", b"jpeg", "image/jpeg")},
+                       data={"q": "no rice"}).json()["html"]
+    assert eyes.seen[0][0].endswith('They said: "no rice"')
+    assert "From your photo: about 450 kcal and 22 g protein. Photos give rough numbers" in html
+    assert "no rice" in html and "estimate" in html
+
+
+def test_a_photo_of_something_else(settings):
+    client = chat_client(settings)
+    client.app.state.runtime.brain.food_backend = FakeEyes({**LABEL, "kind": "neither"})
+    html = client.post("/chat/fitness/photo", files={"photo": ("cat.jpg", b"jpeg", "image/jpeg")}).json()["html"]
+    assert "I couldn&#39;t see food or a nutrition label in that photo." in html
+
+
+def test_label_photos_on_telegram(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = FakeEyes(LABEL)
+    text, buttons = rt.phone.photo(b"jpeg", "drank half the carton")
+    assert text.startswith("📷 From the label:\n• NutriSoy Fresh Soya Milk, half a pack (500 ml): 195 kcal")
+    assert "Reply like “330 ml”" in text and buttons[0][0] == ("✅ Log", buttons[0][0][1])
+    text, buttons = rt.phone.answer("330 ml")
+    assert "NutriSoy Fresh Soya Milk (330 ml): 129 kcal" in text
+    assert rt.button(buttons[0][0][1]).startswith("✅ Logged. Today: 129")
+    # a label from long ago: "2 servings" is something else
+    old = json.loads(rt.db.get_setting("fitness:last_label"))
+    rt.db.set_setting("fitness:last_label", json.dumps({**old, "at": "2026-01-01T00:00:00+00:00"}))
+    assert "From the label" not in rt.phone.answer("2 servings")[0]
