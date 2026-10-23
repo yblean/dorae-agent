@@ -34,6 +34,7 @@ PROMPT = """You estimate the nutrition of what someone in Singapore ate, from th
 Split the message into separate foods and drinks. For each give a short name, the portion (theirs if they said one, otherwise a typical single serving in Singapore, e.g. a hawker plate or a cup), and for that portion: kcal, protein, carbs, fat and sugar in grams.
 Use typical values for Singapore hawker food and drinks (kopi/teh with condensed milk, siew dai = less sweet, kosong = no sugar, peng = iced).
 If it's a branded packaged product (e.g. NutriSoy, Yakult, Pokka), put the brand and product in "product".
+If they give numbers themselves (e.g. "15g protein each", "300 kcal"), use them: "each" means per piece, so multiply by how many they had.
 Don't add foods they didn't mention. Numbers only, no ranges. Answer with JSON."""
 
 _AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(ml|l|litres?|liters?|g|kg)\b", re.I)
@@ -125,14 +126,111 @@ def estimate(text: str, backend) -> list[dict]:
     return foods
 
 
-def resolve(foods: list[dict], fit: Fitness, db: Database, fetch=None) -> list[dict]:
-    """Better numbers where there are some: yours from the library, then the product's own from Open Food Facts."""
+# --- how much you said you had, and numbers you gave -------------------------------------------------
+
+_NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                 "eight": 8, "nine": 9, "ten": 10, "half": 0.5}
+_COUNTED = re.compile(r"\s*(\d+(?:\.\d+)?|(?:" + "|".join(_NUMBER_WORDS) + r")\b)\s*([a-z]+)", re.I)
+
+
+def _stem(word: str) -> str:
+    """'pieces' -> 'piece', 'slices' -> 'slice', 'glasses' -> 'glass', 'pcs' -> 'piece'."""
+    word = word.lower()
+    if word in ("pc", "pcs"):
+        return "piece"
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith(("sses", "shes", "ches", "xes")):
+        return word[:-2]
+    return word[:-1] if word.endswith("s") and not word.endswith("ss") else word
+
+
+def count_of(portion: str | None) -> tuple[float, str] | None:
+    """(3, 'piece') from '3 pieces', '3 pieces (90 g)', 'three slices'; None for '200 g' or 'a plate'-less text."""
+    m = _COUNTED.match(portion or "")
+    if not m or amount_of(m[0]):  # "200 g" is an amount, not a count
+        return None
+    n = m[1].lower()
+    return float(_NUMBER_WORDS.get(n, n) if n in _NUMBER_WORDS else n), _stem(m[2])
+
+
+def _said(text: str, food: dict) -> bool:
+    """Did they say how much of this food they had (the portion the model read is in their own words)?"""
+    size = amount_of(food["portion"])
+    if size:
+        return any(amount_of(m[0]) == size for m in _AMOUNT.finditer(text))
+    counted = count_of(food["portion"])
+    if counted is None:
+        return False
+    n, stem = counted
+    numbers = [f"{n:g}"] + [w for w, v in _NUMBER_WORDS.items() if v == n]
+    things = [re.escape(stem[:-1] if len(stem) > 4 else stem)] + [re.escape(w) for w in key_of(food["name"]).split()
+                                                                     if len(w) > 2]
+    return re.search(r"\b(?:" + "|".join(map(re.escape, numbers)) + r")\s*(?:[a-z]+\s+){0,3}?(?:" + "|".join(things) + ")",
+                     text, re.I) is not None
+
+
+def _yours(mine, food: dict, text: str) -> dict | None:
+    """Your numbers for a food, worked out for how much you said ("3 pieces" of your usual 2 is 1.5 times them);
+    None when you said an amount that can't be compared with your usual ("300 g" of a usual "2 pieces")."""
+    usual = {"name": mine["name"], "portion": mine["portion"] or food["portion"], **{m: mine[m] for m in MACROS},
+             "source": "yours", "note": "your usual"}
+    if not text or not _said(text, food):
+        return usual
+    said, before = count_of(food["portion"]), count_of(mine["portion"])
+    if said and before and said[1] == before[1]:
+        factor = said[0] / before[0]
+    elif not before and (size := amount_of(food["portion"])) and (was := amount_of(mine["portion"])) and size[1] == was[1]:
+        factor = size[0] / was[0]
+    else:
+        return None
+    if factor == 1:
+        return usual
+    return {**usual, "portion": food["portion"], **{m: r1(mine[m] * factor) for m in MACROS},
+            "note": f"your usual {mine['portion']}, scaled"[:120]}
+
+
+_GIVEN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:g|grams?|gm)\s*(?:of\s+)?(protein|prot|pro|p|carbs?|carbohydrates?|fats?|sugars?)\b"
+                    r"|(\d+(?:\.\d+)?)\s*(protein|carbs?|fats?|sugars?)\b(?!\s*(?:bars?|shakes?|powder|balls?|cookies?|"
+                    r"chips|yogh?urts?|drinks?|snacks?|bread|noodles?|pasta))"
+                    r"|\b(protein|carbs?|fats?|sugars?)\s*(?:is|of|:|=)?\s*(\d+(?:\.\d+)?)\s*(?:g|grams?)\b"
+                    r"|(\d+(?:\.\d+)?)\s*(?:kcal|cals?|calories)\b"
+                    r"|\b(?:kcal|cals?|calories)\s*(?:is|of|:|=)?\s*(\d+(?:\.\d+)?)\b", re.I)
+_EACH = re.compile(r"\b(?:each|apiece|per (?:piece|pc|slice|one|egg|bar|cup|serving)|a piece)\b", re.I)
+
+
+def given_numbers(text: str) -> dict:
+    """Numbers you typed for a food: "15g of p", "protein 30g", "300 kcal" -> {"protein": 15.0, "kcal": 300.0}."""
+    found = {}
+    for m in _GIVEN.finditer(text or ""):
+        if m[1] or m[3] or m[5]:
+            value, word = (m[1], m[2]) if m[1] else (m[3], m[4]) if m[3] else (m[6], m[5])
+            word = word.lower()
+            key = ("protein" if word.startswith("p") else "carbs" if word.startswith("carb") else
+                   "fat" if word.startswith("fat") else "sugar")
+        else:
+            value, key = m[7] or m[8], "kcal"
+        found.setdefault(key, float(value))
+    return found
+
+
+def with_your_numbers(food: dict, text: str) -> dict:
+    """A food with the numbers you gave in place of the looked-up ones ("15g of p each" of 3 pieces is 45 g)."""
+    given = given_numbers(text)
+    if not given:
+        return food
+    times = (count_of(food["portion"]) or (1.0, ""))[0] if _EACH.search(text) else 1.0
+    return {**food, **{m: r1(v * times) for m, v in given.items()}, "source": "you", "note": "your numbers"}
+
+
+def resolve(foods: list[dict], fit: Fitness, db: Database, fetch=None, text: str = "") -> list[dict]:
+    """Better numbers where there are some: yours from the library (for the amount you said, in `text`), then the
+    product's own from Open Food Facts."""
     out = []
     for f in foods:
         mine = fit.known(f["name"]) or (fit.known(f["product"]) if f.get("product") else None)
-        if mine is not None:
-            out.append({"name": mine["name"], "portion": mine["portion"] or f["portion"],
-                        **{m: mine[m] for m in MACROS}, "source": "yours", "note": "your usual"})
+        if mine is not None and (yours := _yours(mine, f, text)) is not None:
+            out.append(yours)
             continue
         product = lookup_product(db, f["product"], fetch) if f.get("product") else None
         size = amount_of(f["portion"]) or (product or {}).get("pack") or (product or {}).get("serving")
@@ -153,7 +251,10 @@ def understand(text: str, fit: Fitness, db: Database, backend, fetch=None) -> li
     if mine is not None:
         return [{"name": mine["name"], "portion": mine["portion"], **{m: mine[m] for m in MACROS},
                  "source": "yours", "note": "your usual"}]
-    return resolve(estimate(text, backend), fit, db, fetch)
+    foods = resolve(estimate(text, backend), fit, db, fetch, text)
+    if len(foods) == 1:  # "3 pieces of chicken breast, 15g of p each": your numbers win
+        foods = [with_your_numbers(foods[0], text)]
+    return foods
 
 
 # --- photos: a nutrition label or the food itself -----------------------------------------------------

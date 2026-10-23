@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from doraemon import coach
 from doraemon.db import Database
 from doraemon.fitness import Fitness, import_steps, parse_steps, suggest_targets
-from doraemon.foodlog import amount_of, amount_reply, label_food, lookup_product, resolve, understand
+from doraemon.foodlog import (amount_of, amount_reply, given_numbers, label_food, lookup_product, resolve,
+                              understand)
 from doraemon.jobs import Runtime
 from doraemon.router import route
 from doraemon.web import create_app
@@ -106,6 +107,36 @@ def test_your_foods_come_back_with_your_numbers_without_the_model(fit):
     model = FakeFood()
     foods = understand("my usual breakfast", fit, fit.db, model)
     assert model.calls == [] and foods[0]["kcal"] == 420 and foods[0]["source"] == "yours"
+
+
+def chicken(portion):
+    return FakeFood([{"name": "chicken breast", "portion": portion, "kcal": 200, "protein": 40, "carbs": 0, "fat": 4,
+                      "sugar": 0, "product": ""}])
+
+
+@pytest.mark.parametrize("text, portion, kcal, protein, source", [
+    ("had chicken breast", "2 pieces", 84, 30, "yours"),  # no amount said: your usual as it is
+    ("had 3 piece of chicken breast", "3 pieces", 126, 45, "yours"),  # 3 of your usual 2
+    ("three chicken breasts", "3 pieces", 126, 45, "yours"),
+    ("3 piece of chicken breast for lunch its 15g of p each", "3 pieces", 126, 45, "you"),  # your numbers, x3
+    ("chicken breast, 50g protein", "2 pieces", 84, 50, "you"),
+    ("300g chicken breast", "300 g", 200, 40, "estimate"),  # grams of a usual in pieces: can't compare
+])
+def test_your_usual_is_worked_out_for_how_much_you_said(fit, text, portion, kcal, protein, source):
+    fit.log(fit.draft([{"name": "chicken breast", "portion": "2 pieces (30g)", "kcal": 84, "protein": 30, "fat": 1.5}]))
+    said = portion if portion != "2 pieces" else "1 piece"  # what the model reads: theirs, or a typical one
+    (food,) = understand(text, fit, fit.db, chicken(said))
+    assert (food["kcal"], food["protein"], food["source"]) == (kcal, protein, source)
+    assert food["portion"] == (portion if portion != "2 pieces" else "2 pieces (30g)")
+
+
+@pytest.mark.parametrize("text, given", [
+    ("its 15g of p each", {"protein": 15}), ("protein 30g", {"protein": 30}), ("30 protein", {"protein": 30}),
+    ("300 kcal and 20 g protein", {"kcal": 300, "protein": 20}), ("calories: 250", {"kcal": 250}),
+    ("had 15 protein bar", {}), ("2 eggs", {}),
+])
+def test_numbers_you_give_are_read(text, given):
+    assert given_numbers(text) == given
 
 
 def test_packaged_products_use_open_food_facts_for_the_portion(fit):
