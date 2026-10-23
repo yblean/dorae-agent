@@ -36,6 +36,12 @@ STALE_SECONDS = 600  # commands sent while the app was closed are ignored after 
 log = logging.getLogger(__name__)
 
 
+def markup(buttons: list[list[tuple[str, str]]] | None) -> dict:
+    """Rows of (label, data) as Telegram's inline keyboard; pressing one sends `data` back to the bot."""
+    return {"reply_markup": {"inline_keyboard": [[{"text": label, "callback_data": data} for label, data in row]
+                                                 for row in buttons]}} if buttons else {}
+
+
 class TelegramError(Exception):
     """A failed call, described without the request URL (it contains the bot token)."""
 
@@ -81,10 +87,8 @@ class Telegram:
         """`buttons`: rows of (label, data); pressing one sends `data` back to the bot."""
         if not self.chat_id:
             raise TelegramError("no chat yet: run python -m doraemon.telegram connect")
-        markup = {"reply_markup": {"inline_keyboard": [[{"text": label, "callback_data": data} for label, data in row]
-                                                       for row in buttons]}} if buttons else {}
         self.call("sendMessage", wait=10, chat_id=self.chat_id, text=text[:4000],
-                  link_preview_options={"is_disabled": True}, **markup)
+                  link_preview_options={"is_disabled": True}, **markup(buttons))
 
     def updates(self, offset: int | None, timeout: int = 25) -> list[dict]:
         """New messages and button presses, waiting up to `timeout` seconds for one (long polling)."""
@@ -105,10 +109,10 @@ class Telegram:
         """Stops the button's loading spinner, showing `text` briefly."""
         self.call("answerCallbackQuery", wait=10, callback_query_id=press_id, text=text[:200])
 
-    def edit(self, message_id: int, text: str) -> None:
-        """Replace a message's text, which also removes its buttons."""
+    def edit(self, message_id: int, text: str, buttons: list[list[tuple[str, str]]] | None = None) -> None:
+        """Replace a message's text and its buttons (none unless given)."""
         self.call("editMessageText", wait=10, chat_id=self.chat_id, message_id=message_id, text=text[:4000],
-                  link_preview_options={"is_disabled": True})
+                  link_preview_options={"is_disabled": True}, **markup(buttons))
 
     def set_commands(self, commands: list[tuple[str, str]]) -> None:
         """The menu Telegram shows when you type "/"."""
@@ -155,13 +159,14 @@ class CommandListener:
     Only your linked chat gets answers."""
 
     def __init__(self, db: Database, bot: Callable[[], Telegram | None], commands: list[Command],
-                 on_button: Callable[[str], str] | None = None,
+                 on_button: Callable[[str], "str | tuple[str, Buttons | None]"] | None = None,
                  on_text: Callable[[str], tuple[str, Buttons | None]] | None = None,
                  on_photo: Callable[[bytes, str], tuple[str, Buttons | None]] | None = None,
                  examples: tuple[str, ...] = ()) -> None:
         self.db, self.bot = db, bot  # bot: () -> your Telegram, or None until connected
         self.commands = commands
-        self.on_button = on_button  # a button's data -> what to say, e.g. "done:12" -> "✅ Done: Pay bill"
+        self.on_button = on_button  # a button's data -> what to say, e.g. "done:12" -> "✅ Done: Pay bill"; or
+        # (what to say, the buttons the message keeps), e.g. Edit under food just logged
         self.on_text = on_text  # a message that isn't a command -> (reply, buttons); None: the command list
         self.on_photo = on_photo  # a photo and its caption -> (reply, buttons), e.g. a nutrition label to log
         self.examples = examples  # messages to suggest in the help text
@@ -223,9 +228,19 @@ class CommandListener:
         if str((msg.get("chat") or {}).get("id")) != str(bot.chat_id) or self.on_button is None:
             return 0
         reply = self.on_button(press.get("data", ""))
+        reply, buttons = reply if isinstance(reply, tuple) else (reply, None)
         bot.answer_button(press["id"], reply)
         if msg.get("message_id"):
-            bot.edit(msg["message_id"], f"{msg.get('text', '')}\n\n{reply}".strip())
+            before = msg.get("text", "")
+            text = before if reply in before else f"{before}\n\n{reply}".strip()  # pressed twice: said once
+            try:
+                if buttons:
+                    bot.edit(msg["message_id"], text, buttons)
+                else:
+                    bot.edit(msg["message_id"], text)
+            except TelegramError as e:
+                if "not modified" not in str(e):  # pressed again: the message already says it
+                    raise
         return 1
 
     def run(self) -> threading.Event:

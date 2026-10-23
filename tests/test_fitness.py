@@ -279,10 +279,42 @@ def test_logging_food_from_telegram(settings):
     rt.brain.food_backend = FakeFood()
     text, buttons = rt.phone.answer("ate chicken rice and kopi siew dai")
     assert text.startswith("🍽 Here's what I worked out:\n• Chicken rice (1 plate): 600 kcal, 25 g protein")
-    assert "Total: 710 kcal, 27 g protein" in text and buttons[0][0][0] == "✅ Log"
-    assert rt.button(buttons[0][0][1]).startswith("✅ Logged. Today: 710 kcal")
+    assert "Total: 710 kcal, 27 g protein" in text and [b[0] for b in buttons[0]] == ["✅ Log", "✏️ Edit", "✖ Cancel"]
+    said, kept = rt.button(buttons[0][0][1])
+    assert said.startswith("✅ Logged. Today: 710 kcal") and kept == [[("✏️ Edit", buttons[0][1][1])]]
     assert rt.button(buttons[0][0][1]) == "That one's already logged (or was cancelled)."
     assert rt.phone.answer("how am i doing today?")[0].startswith("Today, ")
+
+
+def test_editing_food_on_telegram(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = FakeFood()
+    _, buttons = rt.phone.answer("ate chicken rice and kopi siew dai")
+    edit_button = buttons[0][1][1]
+    said, kept = rt.button(edit_button)
+    assert said == "✏️ Send the new numbers, like “protein 45, kcal 160”, starting with the food, like “Kopi siew dai: kcal 80”."
+    assert kept == buttons  # still a draft: Log, Edit and Cancel stay
+    assert rt.phone.answer("kcal 500")[0] == "Which one? Start with the food, like “Kopi siew dai: kcal 500”."
+    text, again = rt.phone.answer("chicken rice: protein 30, kcal 650")
+    assert text.startswith("✏️ Updated:\n• Chicken rice (1 plate): 650 kcal, 30 g protein") and again == buttons
+    assert rt.phone.answer("protein 99")[0] != text  # Edit is over: that's not an edit any more
+    rt.button(buttons[0][0][1])  # Log
+    assert rt.brain.fit.known("chicken rice")["kcal"] == 650  # what you changed is remembered
+    # after logging, Edit still changes it, and today's totals with it
+    rt.button(edit_button)
+    text, kept = rt.phone.answer("kopi siew dai: 90 kcal")
+    assert "Kopi siew dai (1 cup): 90 kcal" in text and "Today: 740 kcal" in text
+    assert kept == [[("✏️ Edit", edit_button)]]
+    assert rt.brain.fit.totals(rt.brain.fit.today()).kcal == 740
+
+
+def test_a_new_meal_after_edit_is_a_new_meal(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = FakeFood()
+    _, buttons = rt.phone.answer("ate chicken rice")
+    rt.button(buttons[0][1][1])
+    text, _ = rt.phone.answer("ate 2 eggs, 12g protein")
+    assert text.startswith("🍽 Here's what I worked out")
 
 
 def test_the_6pm_check_comes_once_and_reaches_telegram(settings, tmp_path):
@@ -476,7 +508,7 @@ def test_food_questions_on_telegram(settings):
                                        "fat": 0, "sugar": 39, "product": ""}])
     text, buttons = rt.phone.answer("how many calories in a can of coke")
     assert text.startswith("Coke, 1 can: about 140 kcal") and buttons[0][0][0] == "✅ Log it"
-    assert rt.button(buttons[0][1][1]) == "✖ Not logged."
+    assert rt.button(buttons[0][2][1]) == "✖ Not logged."
 
 
 # --- photos: nutrition labels and food --------------------------------------------------------------------
@@ -585,7 +617,7 @@ def test_label_photos_on_telegram(settings):
     assert "Reply like “330 ml”" in text and buttons[0][0] == ("✅ Log", buttons[0][0][1])
     text, buttons = rt.phone.answer("330 ml")
     assert "NutriSoy Fresh Soya Milk (330 ml): 129 kcal" in text
-    assert rt.button(buttons[0][0][1]).startswith("✅ Logged. Today: 129")
+    assert rt.button(buttons[0][0][1])[0].startswith("✅ Logged. Today: 129")
     # a label from long ago: "2 servings" is something else
     old = json.loads(rt.db.get_setting("fitness:last_label"))
     rt.db.set_setting("fitness:last_label", json.dumps({**old, "at": "2026-01-01T00:00:00+00:00"}))

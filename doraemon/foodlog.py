@@ -214,6 +214,28 @@ def given_numbers(text: str) -> dict:
     return found
 
 
+_NUTRIENT_WORD = r"(kcal|cals?|calories|energy|protein|prot|p|carbs?|carbohydrates?|fats?|sugars?)"
+_WORD_THEN_NUMBER = re.compile(r"\b" + _NUTRIENT_WORD + r"\s*(?:is|to|:|=|-)?\s*(\d+(?:\.\d+)?)", re.I)
+_FIRST = re.compile(r"\b" + _NUTRIENT_WORD + r"\b|\d", re.I)
+
+
+def edit_numbers(text: str) -> dict:
+    """New numbers for a food: "protein 45, kcal 160", "kopi: kcal 80", "change protein to 40" or "45g protein,
+    160 kcal" -> {"protein": 45.0, "kcal": 160.0}. Which comes first (word or number) says how to pair them."""
+    first = _FIRST.search(text or "")
+    if first is None:
+        return {}
+    if not first.group(1):
+        return given_numbers(text)
+    found = {}
+    for m in _WORD_THEN_NUMBER.finditer(text):
+        word = m[1].lower()
+        key = ("kcal" if word.startswith(("k", "cal", "en")) else "protein" if word.startswith("p") else
+               "carbs" if word.startswith("carb") else "fat" if word.startswith("fat") else "sugar")
+        found.setdefault(key, float(m[2]))
+    return found
+
+
 def with_your_numbers(food: dict, text: str) -> dict:
     """A food with the numbers you gave in place of the looked-up ones ("15g of p each" of 3 pieces is 45 g)."""
     given = given_numbers(text)

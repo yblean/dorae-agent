@@ -476,8 +476,8 @@ class ButtonBot(FakeChatBot):
     def answer_button(self, press_id, text):
         self.answers.append((press_id, text))
 
-    def edit(self, message_id, text):
-        self.edits.append((message_id, text))
+    def edit(self, message_id, text, buttons=None):
+        self.edits.append((message_id, text) + ((buttons,) if buttons else ()))
 
 
 def press(n, data, chat="42"):
@@ -493,6 +493,13 @@ def test_pressing_done_answers_and_edits_the_message(db):
     assert pressed == ["done:1"]
     assert bot.answers == [("cb1", "✅ Done: Electricity bill")]
     assert bot.edits == [(7, "🔔 Electricity bill\n\n✅ Done: Electricity bill")]
+
+
+def test_a_button_can_keep_buttons_and_says_things_once(db):
+    bot = ButtonBot([press(1, "fedit:ab"), press(2, "fedit:ab")])
+    bot.inbox[1]["callback_query"]["message"]["text"] = "🔔 Electricity bill\n\nSend the new numbers."
+    CommandListener(db, lambda: bot, [], on_button=lambda data: ("Send the new numbers.", [[("Edit", data)]])).poll_once()
+    assert bot.edits == [(7, "🔔 Electricity bill\n\nSend the new numbers.", [[("Edit", "fedit:ab")]])] * 2
 
 
 def test_the_bot_gets_dorae_as_its_picture():

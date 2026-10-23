@@ -265,7 +265,7 @@ class Runtime:
 
     # --- what the jobs do -------------------------------------------------------------
 
-    def button(self, data: str) -> str:
+    def button(self, data: str) -> str | tuple[str, list | None]:
         """A button pressed on Telegram: Done or Snooze under a reminder ("snooze:12:180", or "snooze:12" from
         before there were lengths), or Create/Cancel under a drafted one. Returns what to show there."""
         action, _, rest = data.partition(":")
@@ -273,8 +273,11 @@ class Runtime:
         log.info("Telegram button pressed: %s", action)
         if action == "test":  # from python -m doraemon.telegram test
             return f"👍 Buttons work. The {self.name or 'app'} answered."
-        if action == "flog":  # Log under a meal Dorae-3 worked out
-            return self.phone.log_food(ident)
+        if action == "flog":  # Log under a meal Dorae-3 worked out; Edit stays, for numbers that were off
+            text = self.phone.log_food(ident)
+            return (text, [[("✏️ Edit", f"fedit:{ident}")]]) if text.startswith("✅") else text
+        if action == "fedit":  # Edit under food, logged or not: your next message changes its numbers
+            return self.phone.start_edit(ident)
         if action == "fdrop":
             return "✖ Not logged." if self.brain.fit.cancel(ident) else "That one's already logged (or was cancelled)."
         if not ident.isdigit():

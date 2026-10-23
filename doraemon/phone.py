@@ -13,6 +13,7 @@ an answer should be instant or not at all.
 """
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -22,6 +23,8 @@ from doraemon.agents import Brain, money, short_clock
 from doraemon.calendar_sync import add_to_calendar
 from doraemon.db import item_model, transaction_model
 from doraemon.events import draft_event, split_event
+from doraemon.fitness import key_of
+from doraemon.foodlog import edit_numbers
 from doraemon.reminders import (defaults_for, draft_reminder, plan, short_time, split_request, wants_reminder,
                                 when_line)
 from doraemon.router import route
@@ -31,6 +34,8 @@ log = logging.getLogger(__name__)
 ASK_KEY = "telegram:asking"            # {"title", "kind", "at"}: the bot asked when this reminder or event is
 LAST_KEY = "telegram:last_question"    # for follow-ups like "and last month?"
 ASK_MINUTES = 15                       # an answer to "when?" counts for this long
+EDIT_KEY = "telegram:editing_food"     # {"batch", "at"}: Edit was pressed under this food
+NEW_FOOD = re.compile(r"\s*(?:i\s+)?(?:just\s+)?(?:had|ate|eaten|drank|breakfast|lunch|dinner|supper|snack)\b", re.I)
 LIST = 8                               # lines under an answer; the rest are in the app
 EXAMPLES = ("remind me to call mom at 5pm tmr", "add dinner with Sam on friday 7-9pm",
             "how much did I spend this week?", "what's on tomorrow?", "my budget", "my reminders",
@@ -38,6 +43,10 @@ EXAMPLES = ("remind me to call mom at 5pm tmr", "add dinner with Sam on friday 7
             "how am I doing today?")
 
 Buttons = list[list[tuple[str, str]]]
+
+
+def food_buttons(batch: str) -> Buttons:
+    return [[("✅ Log", f"flog:{batch}"), ("✏️ Edit", f"fedit:{batch}"), ("✖ Cancel", f"fdrop:{batch}")]]
 
 
 class Phone:
@@ -56,6 +65,8 @@ class Phone:
             return "Sorry, something went wrong answering that. Try again, or ask in the Doraemon app.", None
 
     def _answer(self, text: str, now: datetime) -> tuple[str, Buttons | None]:
+        if (edited := self.edit_food(text, now)) is not None:  # "protein 45, kcal 160" after Edit
+            return edited
         asking = self.asked_about(now)
         self.db.set_setting(ASK_KEY, None)
         if (asked := split_request(text)) is not None:
@@ -72,7 +83,8 @@ class Phone:
             if card["kind"] != "food":
                 return card["text"], None
             batch = card["payload"]["batch"]
-            return card["text"], [[("✅ Log it", f"flog:{batch}"), ("✖ No thanks", f"fdrop:{batch}")]]
+            return card["text"], [[("✅ Log it", f"flog:{batch}"), ("✏️ Edit", f"fedit:{batch}"),
+                                   ("✖ No thanks", f"fdrop:{batch}")]]
         if coach.FOOD_IDEAS.search(text):  # "what should I eat for dinner?": the app's own ideas (no model here)
             return self.plain(coach.ideas_card(self.brain.fit)), None
         if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"
@@ -112,20 +124,69 @@ class Phone:
             return card["text"], None
         batch = card["payload"]["batch"]
         hint = ("Had a different amount? Reply like “330 ml”, “2 servings” or “half the pack”." if label else
-                "Numbers off? Log it, then fix them in Dorae-3's chat (Edit): I'll remember them.")
+                "Numbers off? Press Edit: I'll remember what you change.")
         lines = [intro, *coach.food_lines(self.brain.fit.batch(batch)), "", hint]
-        return "\n".join(lines), [[("✅ Log", f"flog:{batch}"), ("✖ Cancel", f"fdrop:{batch}")]]
+        return "\n".join(lines), food_buttons(batch)
+
+    def live_food(self, batch: str) -> list:
+        return [r for r in self.brain.fit.batch(batch) if r["status"] != "cancelled"]
+
+    def start_edit(self, batch: str) -> tuple[str, Buttons | None]:
+        """Edit pressed under food: the next message ("protein 45, kcal 160") changes its numbers."""
+        rows = self.live_food(batch)
+        if not rows:
+            return "That one was cancelled.", None
+        self.db.set_setting(EDIT_KEY, json.dumps({"batch": batch, "at": datetime.now(self.tz).isoformat()}))
+        which = f", starting with the food, like “{rows[-1]['name']}: kcal 80”" if len(rows) > 1 else ""
+        text = f"✏️ Send the new numbers, like “protein 45, kcal 160”{which}."
+        drafts = any(r["status"] == "draft" for r in rows)
+        return text, food_buttons(batch) if drafts else [[("✏️ Edit", f"fedit:{batch}")]]
+
+    def edit_food(self, text: str, now: datetime) -> tuple[str, Buttons | None] | None:
+        """A message with new numbers for the food Edit was pressed under; None if it isn't one (or Edit is stale)."""
+        try:
+            editing = json.loads(self.db.get_setting(EDIT_KEY) or "null")
+            fresh = now - datetime.fromisoformat(editing["at"]) < timedelta(minutes=ASK_MINUTES)
+        except (ValueError, TypeError, KeyError):
+            return None
+        new_food = NEW_FOOD.match(text) or coach.food_request(text, own_chat=False)  # "had 2 eggs, 12g protein"
+        changes = edit_numbers(text) if not new_food else {}
+        if not fresh or not changes:
+            self.db.set_setting(EDIT_KEY, None)  # something else: Edit is over
+            return None
+        batch = editing["batch"]
+        rows = self.live_food(batch)
+        if not rows:
+            self.db.set_setting(EDIT_KEY, None)
+            return "That one was cancelled, so there's nothing to change.", None
+        words = set(key_of(text).split())
+        scored = sorted(((len(words & {w for w in key_of(r["name"]).split() if len(w) > 2}), r) for r in rows),
+                        key=lambda s: -s[0])
+        if len(rows) > 1 and (scored[0][0] == 0 or scored[0][0] == scored[1][0]):
+            return (f"Which one? Start with the food, like “{rows[-1]['name']}: "
+                    + ", ".join(f"{k} {v:g}" for k, v in changes.items()) + "”."), None
+        row = rows[0] if len(rows) == 1 else scored[0][1]
+        self.brain.fit.edit(row["id"], **changes)  # a logged one: the library learns it too
+        self.db.set_setting(EDIT_KEY, None)
+        rows = self.live_food(batch)
+        logged = all(r["status"] == "logged" for r in rows)
+        lines = ["✏️ Updated:", *coach.food_lines(rows), "", self.today_text() if logged else
+                 "I'll remember these numbers. Press Log when it's right."]
+        return "\n".join(lines), [[("✏️ Edit", f"fedit:{batch}")]] if logged else food_buttons(batch)
+
+    def today_text(self) -> str:
+        s = self.brain.fit.day_status()
+        t, goals = s["totals"], s["targets"]
+        return (f"Today: {t.kcal:,.0f}" + (f" of {goals['kcal']:,}" if goals["kcal"] else "") + " kcal, "
+                f"{t.protein:.0f}" + (f" of {goals['protein']}" if goals["protein"] else "") + " g protein.")
 
     def log_food(self, batch: str) -> str:
         rows = self.brain.fit.log(batch)
         if not rows:
             return "That one's already logged (or was cancelled)."
-        s = self.brain.fit.day_status()
-        t, goals = s["totals"], s["targets"]
         self.db.add_message("fitness", "agent", f"🍽 Logged on Telegram: " + ", ".join(r["name"] for r in rows)
                             + f" ({sum(r['kcal'] for r in rows):,.0f} kcal).")
-        return (f"✅ Logged. Today: {t.kcal:,.0f}" + (f" of {goals['kcal']:,}" if goals["kcal"] else "") + " kcal, "
-                f"{t.protein:.0f}" + (f" of {goals['protein']}" if goals["protein"] else "") + " g protein.")
+        return f"✅ Logged. {self.today_text()}"
 
     def asked_about(self, now: datetime) -> dict | None:
         """{"title", "kind"} of the reminder or event the bot just asked "when?" about, if it's still a fresh question."""

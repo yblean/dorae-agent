@@ -390,6 +390,10 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
      Singapore products first, and worked out for your portion;
   3. anything else is the local model's estimate for a typical Singapore portion.
   Fix any number under **Edit**: what you change is what it remembers, so your usual orders get accurate quickly.
+  On Telegram, press **✏️ Edit** (there before and after Log) and send the new numbers: "protein 45, kcal 160", or
+  "kopi: kcal 80" when there are several foods.
+  Say how much ("3 pieces of chicken breast") and your usual is scaled to it; numbers you give ("15g of p each")
+  are used as they are.
 - **Photos.** Send a photo on Telegram, or with the 📷 button in Dorae-3's chat, with an optional caption ("2
   servings", "half the pack", "no rice"). The local model looks at it:
   - **a nutrition label**: it copies the numbers (per 100 g/ml, or per serving; kJ is converted) and the app works
