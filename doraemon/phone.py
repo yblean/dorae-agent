@@ -89,6 +89,8 @@ class Phone:
             return self.plain(coach.ideas_card(self.brain.fit)), None
         if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"
             return self.food(food)
+        if coach.food_with_numbers(text):  # "2 eggs, 12g protein": food, not a question about your protein
+            return self.food(text)
         # Dorae-3's own shapes first ("how am I doing today?"), then everyone else's
         found = route("fitness", text, self.db.get_setting(LAST_KEY))
         if found is not None and found.intent == "help":

@@ -978,7 +978,8 @@ class Brain:
                                  "fill them in on the Fitness page and I'll work them out.", "kind": "text", "payload": None}]
             return [coach.targets_card(self.fit, suggested=suggest_targets(profile))]
         routed = route("fitness", question, previous) if self.settings.fast_answers else None
-        explicit = coach.FOOD_LOG.match(question) or coach.FOR_MEAL.match(question)
+        explicit = (coach.FOOD_LOG.match(question) or coach.FOR_MEAL.match(question)
+                    or coach.food_with_numbers(question))  # "2 eggs, 12g protein" isn't asking about your protein
         food = coach.food_request(question, own_chat=True) if routed is None or explicit else None
         if food:
             self.last_route = "food"

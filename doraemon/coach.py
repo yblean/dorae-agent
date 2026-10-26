@@ -9,6 +9,7 @@ import re
 from datetime import date, timedelta
 
 from doraemon.fitness import TARGET_NAMES, Fitness
+from doraemon.foodlog import given_numbers
 
 # "had chicken rice", "can you log 2 eggs", "this morning i had oats", "im eating laksa", "my lunch was laksa",
 # "lunch: laksa" (not "tea and biscuits", which is food itself, or "lunch with Sam")
@@ -137,6 +138,16 @@ def food_request(text: str, own_chat: bool) -> str | None:
     if own_chat and text and not QUESTION.search(text) and len(text) <= 200:
         return text.strip(" .")
     return None
+
+
+def food_with_numbers(text: str) -> bool:
+    """"2 eggs, 12g protein", "chicken breast 3 pieces 15g protein each": a food and your numbers for it (not a
+    question, and not "protein 140" about you, which names no food)."""
+    if QUESTION.search(text) or _ABOUT_YOU.search(text) or not given_numbers(text):
+        return False
+    rest = re.sub(r"\b(?:\d+(?:\.\d+)?\s*(?:g|grams?|gm|kcal|cals?|calories?|ml)?|kcal|cals?|calories?|protein|prot|pro|p|"
+                  r"carbs?|fats?|sugars?|each|and|of|with|per|its|it's|is)\b", " ", text, flags=re.I)
+    return bool(re.search(r"[a-z]{3}", rest, re.I))
 
 
 def _number(raw: str) -> float:

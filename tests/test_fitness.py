@@ -153,6 +153,19 @@ def test_what_counts_as_food_to_log(text, own, expected):
     assert coach.food_request(text, own) == expected
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("2 eggs, 12g protein", True),
+    ("chicken breast 3 pieces 15g protein each", True),
+    ("protein bar 200 kcal", True),
+    ("calories 1950", False),  # no food named
+    ("protein 40g", False),
+    ("how much protein in 2 eggs", False),
+    ("my protein today 50g", False),
+])
+def test_a_food_with_your_numbers(text, expected):
+    assert coach.food_with_numbers(text) is expected
+
+
 def test_food_never_changes_a_target():
     assert coach.parse_target("had a 1000 calorie lunch, ended up full", NOW) is None
     assert coach.parse_target("up my protein to 150", NOW) == {"protein": 150}
