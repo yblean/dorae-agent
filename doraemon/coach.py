@@ -10,9 +10,30 @@ from datetime import date, timedelta
 
 from doraemon.fitness import TARGET_NAMES, Fitness
 
-FOOD_LOG = re.compile(r"^\W*(?:(?:i |just |i just )?(?:ate|had|eaten|drank)|log(?:ged)?(?: food)?|"
-                      r"(?:for )?(?:breakfast|brunch|lunch|dinner|supper|snack|tea)(?: was| is)?)\b[:,-]?\s*(?P<what>.+)$", re.I)
+# "had chicken rice", "can you log 2 eggs", "this morning i had oats", "im eating laksa", "my lunch was laksa",
+# "lunch: laksa" (not "tea and biscuits", which is food itself, or "lunch with Sam")
+_POLITE = r"(?:(?:can|could|would|will|pls|please|plz|kindly)\s+(?:you\s+|u\s+)?)*"
+_WHEN = r"(?:(?:this\s+(?:morning|afternoon|evening)|earlier(?:\s+today)?|just\s+now|today|tonight|yesterday)\W*\s+)?"
+_ME = r"(?:(?:i|i'?ve|i\s+have|i'?m|i\s+am)\s+)?(?:just\s+|also\s+|already\s+)?"
+_ATE = (r"(?:ate|had|have\s+had|eaten|drank|drunk|eating|having|drinking|finished|snacked\s+on|"
+        r"log(?:ged)?|add|track|record)(?:\s+(?:food|this|these))?")
+_MEAL = (r"(?:for\s+|my\s+)?(?:breakfast|brunch|lunch|dinner|supper|snack|tea)(?!\s+(?:and|with|or|&)\b)"
+         r"(?:\s+(?:was|is|today|just\s+now))?")
+FOOD_LOG = re.compile(r"^\W*" + _POLITE + _WHEN + r"(?:" + _ME + r"(?P<verb>" + _ATE + r")|" + _MEAL + r")\b"
+                      r"[:,-]?\s*[:,-]?\s*(?P<what>.+)$", re.I | re.S)
 FOR_MEAL = re.compile(r"^(?P<what>.+?)\s+for\s+(?:breakfast|brunch|lunch|dinner|supper|snack|tea)\W*$", re.I)
+_TAIL = re.compile(r"\s+(?:for me|to (?:my|the) (?:food )?(?:log|diary|tracker|day|list)|please|pls|plz|thanks?|thx|"
+                   r"ty|now|just now|today|earlier(?: today)?|this (?:morning|afternoon|evening)|yesterday|tonight)\W*$",
+                   re.I)
+# On Telegram "had" or "add" may not be food: "had a long meeting", "had to go", "track my protein"
+_NOT_FOOD = re.compile(
+    r"^\W*(?:to\b|(?:(?:a|an|the|my|our|some|such|so|been|really|very|pretty)\s+)*(?:[\w']+\s+){0,2}?(?:meetings?|"
+    r"calls?|chats?|talks?|class(?:es)?|lessons?|lectures?|appointments?|sessions?|interviews?|days?|time|nights?|"
+    r"mornings?|afternoons?|evenings?|weeks?|weekends?|fun|dreams?|naps?|sleep|showers?|baths?|workouts?|runs?|walks?|"
+    r"swims?|gym|training|games?|match(?:es)?|look|try|fights?|arguments?|party|parties|trips?|exams?|tests?|fever|"
+    r"headaches?|flu|cough|issues?|problems?|questions?|ideas?|feelings?|blast|rest|haircut|massages?|visits?|"
+    r"reminders?|events?|tasks?|reports?|work|homework|assignments?)\b|"
+    r"my\s+(?:calories|kcal|protein|carbs|macros|steps|weight|progress|intake|targets?|goals?)\b)", re.I)
 QUESTION = re.compile(r"\?|^\W*(?:what|how|why|when|which|who|where|can|could|should|is|am|are|do|does|did|will|would|"
                       r"tell|show|give|any|list|help|set|suggest|recommend|change|remove|delete|undo|hi|hello|hey|thanks?)\b",
                       re.I)
@@ -82,15 +103,37 @@ FOOD_IDEAS = re.compile(r"^(?=.*\b(?:eat|eating|food|foods|meal|meals|snack|snac
                         r"what to|help me|give me|any)\b", re.I | re.S)
 
 
+def _just_food(what: str) -> str:
+    """'chicken rice' from 'chicken rice for lunch', 'chicken rice to my food log', 'laksa now'."""
+    what = what.strip(" .")
+    if meal := FOR_MEAL.match(what):
+        what = meal["what"]
+    while (shorter := _TAIL.sub("", what)) != what:
+        what = shorter
+    return what.strip(" .,-?!")
+
+
+def _eaten(text: str) -> str | None:
+    """What follows "had", "can you log", "lunch:"..., and once more for "for lunch i had laksa" or "log my lunch:
+    laksa" (but not "had tea and biscuits", where "tea" is the food)."""
+    if not (m := FOOD_LOG.match(text)):
+        return None
+    what = m["what"]
+    if (again := FOOD_LOG.match(what)) and (again["verb"] or re.search(r"(?:^\W*(?:my|for)\b.*|[:,-]\s*)$",
+                                                                       what[:again.start("what")], re.I)):
+        what = again["what"]
+    return _just_food(what)
+
+
 def food_request(text: str, own_chat: bool) -> str | None:
     """The foods to log in a message, or None if it isn't one. In Dorae-3's chat a plain statement counts too.
-    Elsewhere (Telegram) "had ..." alone isn't enough ("had a meeting"): it takes ate, drank, log or a meal word."""
+    Elsewhere (Telegram) it takes a word like had, ate, log or a meal, and "had a long meeting" isn't food."""
     text = text.strip()
-    if (m := FOOD_LOG.match(text)) and (own_chat or not re.match(r"^\W*(?:i |just )*had\b", text, re.I)):
-        what = m["what"].strip(" .")
-        return meal["what"].strip(" .") if (meal := FOR_MEAL.match(what)) else what  # not "... for lunch"
+    asked = text.endswith("?") and not re.search(r"\b(?:log|add|track|record)\b", text, re.I)  # "had enough protein?"
+    if (what := _eaten(text)) is not None and not asked:
+        return what if what and (own_chat or not _NOT_FOOD.match(what)) else None
     if (m := FOR_MEAL.match(text)) and not QUESTION.search(text):  # "what should I eat for dinner" is a question
-        return m["what"].strip(" .")
+        return _just_food(m["what"])
     if own_chat and text and not QUESTION.search(text) and len(text) <= 200:
         return text.strip(" .")
     return None

@@ -123,6 +123,31 @@ def test_changing_a_target_in_chat_and_on_telegram(settings):
     ("chicken rice and kopi siew dai", False, None),
     ("how much protein today?", True, None),
     ("set my protein target to 140", True, None),
+    ("i had 3 eggs and 2 bread", False, "3 eggs and 2 bread"),  # "had" is food on Telegram too...
+    ("had a protein bar", False, "a protein bar"),
+    ("i've had a burger", False, "a burger"),
+    ("had to go to work", False, None),  # ...unless it's plainly not
+    ("had a call with mom", False, None),
+    ("i had a good time", False, None),
+    ("can you log chicken rice for me", False, "chicken rice"),
+    ("please log 3 eggs", False, "3 eggs"),
+    ("pls log my lunch, chicken rice", False, "chicken rice"),
+    ("log my breakfast: 2 eggs and toast", False, "2 eggs and toast"),
+    ("add chicken rice to my food log", False, "chicken rice"),
+    ("track 2 eggs and toast", False, "2 eggs and toast"),
+    ("track my protein", False, None),
+    ("for lunch i had chicken rice", False, "chicken rice"),
+    ("this morning i had oats", False, "oats"),
+    ("yesterday i had chicken rice", False, "chicken rice"),
+    ("im eating laksa now", False, "laksa"),
+    ("just finished a bowl of pho", False, "a bowl of pho"),
+    ("dinner - laksa", False, "laksa"),
+    ("my lunch was chicken rice", False, "chicken rice"),
+    ("had tea and biscuits", False, "tea and biscuits"),  # "tea" is the food here, not the meal
+    ("tea and biscuits", True, "tea and biscuits"),
+    ("lunch with sam", False, None),
+    ("had enough protein today?", False, None),
+    ("can you log 2 eggs?", False, "2 eggs"),
 ])
 def test_what_counts_as_food_to_log(text, own, expected):
     assert coach.food_request(text, own) == expected
