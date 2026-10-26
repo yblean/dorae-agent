@@ -171,6 +171,13 @@ def test_food_never_changes_a_target():
     assert coach.parse_target("up my protein to 150", NOW) == {"protein": 150}
 
 
+def test_a_meal_with_only_its_calories(fit):
+    nothing = FakeFood()
+    nothing.foods = []  # the model finds no food named
+    foods = understand("had a 1000 calorie lunch", fit, fit.db, nothing)
+    assert [(f["name"], f["kcal"], f["source"]) for f in foods] == [("Lunch (1000 kcal)", 1000, "you")]
+
+
 def test_a_meal_is_a_draft_until_logged_then_remembered(fit):
     batch = fit.draft([{"name": "Chicken rice", "portion": "1 plate", "kcal": 600, "protein": 25}])
     assert fit.totals(fit.today()).kcal == 0  # a draft doesn't count

@@ -236,8 +236,8 @@ _GIVEN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:g|grams?|gm)\s*(?:of\s+)?(protein|pro
                     r"|(\d+(?:\.\d+)?)\s*(protein|carbs?|fats?|sugars?)\b(?!\s*(?:bars?|shakes?|powder|balls?|cookies?|"
                     r"chips|yogh?urts?|drinks?|snacks?|bread|noodles?|pasta))"
                     r"|\b(protein|carbs?|fats?|sugars?)\s*(?:is|of|:|=)?\s*(\d+(?:\.\d+)?)\s*(?:g|grams?)\b"
-                    r"|(\d+(?:\.\d+)?)\s*(?:kcal|cals?|calories)\b"
-                    r"|\b(?:kcal|cals?|calories)\s*(?:is|of|:|=)?\s*(\d+(?:\.\d+)?)\b", re.I)
+                    r"|(\d+(?:\.\d+)?)\s*(?:kcal|cals?|calories?)\b"
+                    r"|\b(?:kcal|cals?|calories?)\s*(?:is|of|:|=)?\s*(\d+(?:\.\d+)?)\b", re.I)
 _EACH = re.compile(r"\b(?:each|apiece|per (?:piece|pc|slice|one|egg|bar|cup|serving)|a piece)\b", re.I)
 
 
@@ -341,6 +341,10 @@ def understand(text: str, fit: Fitness, db: Database, backend, fetch=None) -> li
     foods = resolve(estimate(text, backend), fit, db, fetch, text)
     if len(foods) == 1:  # "3 pieces of chicken breast, 15g of p each": your numbers win
         foods = [with_your_numbers(foods[0], text)]
+    if not foods and (given := given_numbers(text)).get("kcal"):  # "a 1000 calorie lunch": no food named, your numbers
+        meal = re.search(r"\b(breakfast|brunch|lunch|dinner|supper|snack)\b", text, re.I)
+        foods = [{"name": f"{meal[1].capitalize() if meal else 'Food'} ({given['kcal']:g} kcal)", "portion": "",
+                  **{m: given.get(m, 0.0) for m in MACROS}, "source": "you", "note": ""}]
     return foods
 
 
