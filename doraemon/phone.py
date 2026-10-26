@@ -73,9 +73,9 @@ class Phone:
             return self.draft(*asked, text, now)
         if (event := split_event(text)) is not None:
             return self.event(event.title, event.when, event.end, text, now)
-        if target := coach.parse_target(text):  # "set my protein target to 140"
+        if target := coach.parse_target(text, self.brain.fit.targets()):  # "change my daily calories to 1950"
             self.brain.fit.set_targets(**target)
-            return self.plain(coach.targets_card(self.brain.fit)), None
+            return f"✅ Done: {coach.target_text(target)}.\n\n" + self.plain(coach.targets_card(self.brain.fit)), None
         if card := self.brain.label_amount(text):  # "2 servings", just after a label photo
             return self.food_card(card, "📷 From the label:", label=True)
         if subject := coach.nutrition_subject(text):  # "how many calories in a bowl of greek yogurt?"

@@ -75,6 +75,42 @@ def test_targets_set_in_words():
     assert coach.parse_target("set my dining budget to 300") is None
 
 
+NOW = {"kcal": 2150, "protein": 120, "steps": 8000}
+
+
+@pytest.mark.parametrize("text, target", [
+    ("change my daily calories to 1950", {"kcal": 1950}),
+    ("make my calories 1950", {"kcal": 1950}),
+    ("my calorie target should be 1950", {"kcal": 1950}),
+    ("update calorie goal to 1950kcal", {"kcal": 1950}),
+    ("change my calorie intake to 1,950", {"kcal": 1950}),
+    ("i want to eat 1950 calories a day", {"kcal": 1950}),
+    ("can you change protein to 130g", {"protein": 130}),
+    ("set steps to 10k", {"steps": 10000}),
+    ("set calories to 1950 and protein to 140", {"kcal": 1950, "protein": 140}),
+    ("lower my calories by 100", {"kcal": 2050}),  # from today's 2150
+    ("raise protein by 20", {"protein": 140}),
+    ("had 300 calories", None),
+    ("change protein to 5", None),  # not a sensible target
+    ("how can i lower my calories by 200?", None),  # a question, not a change
+    ("what should i set my calories to?", None),
+    ("ate 2 eggs 140 kcal", None),
+])
+def test_targets_changed_in_your_own_words(text, target):
+    assert coach.parse_target(text, NOW) == target
+
+
+def test_changing_a_target_in_chat_and_on_telegram(settings):
+    client = chat_client(settings)
+    brain = client.app.state.runtime.brain
+    brain.fit.set_targets(**NOW)
+    html = client.post("/chat/fitness/ask", data={"q": "change my daily calories to 1950"}).json()["html"]
+    assert "Done: 1,950 kcal a day." in html and brain.fit.targets()["kcal"] == 1950
+    text, _ = Runtime(settings, messenger=FakeBot()).phone.answer("set protein to 140 and steps to 10k")
+    assert text.startswith("✅ Done: 140 g protein and 10,000 steps a day.")
+    assert brain.fit.targets() == {"kcal": 1950, "protein": 140, "steps": 10000}
+
+
 # --- food ---------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, own, expected", [

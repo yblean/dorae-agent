@@ -16,8 +16,19 @@ FOR_MEAL = re.compile(r"^(?P<what>.+?)\s+for\s+(?:breakfast|brunch|lunch|dinner|
 QUESTION = re.compile(r"\?|^\W*(?:what|how|why|when|which|who|where|can|could|should|is|am|are|do|does|did|will|would|"
                       r"tell|show|give|any|list|help|set|suggest|recommend|change|remove|delete|undo|hi|hello|hey|thanks?)\b",
                       re.I)
-TARGET = re.compile(r"\bset (?:my )?(?:daily )?(?P<what>calories?|calorie|kcal|protein|steps?)(?: (?:target|goal|intake))?"
-                    r"\s*(?:to|at|=)?\s*(?P<n>\d[\d,]*)", re.I)
+# "set my protein target to 140", "change my daily calories to 1950", "lower my calories by 100", "my step goal should
+# be 10k", "i want to eat 1950 calories a day": a verb (or one of those shapes) and one or more "what ... number"
+_WHAT = r"(?P<what>cal(?:orie)?s?|kcal|protein|steps?)"
+_NUMBER = r"(?P<n>\d[\d,]*(?:\.\d+)?(?:\s*k\b)?)(?:\s*(?:g|grams?)\b)?"
+_CHANGE = re.compile(r"\b(?:set|change|make|update|put|move|raise|increase|lower|reduce|drop|cut|bump|adjust|switch|"
+                     r"up|bring)\b|\bmy\s+(?:daily\s+)?(?:cal(?:orie)?s?|kcal|protein|steps?)\s+(?:target|goal|intake|limit)\s+"
+                     r"(?:should be|is now|to be)\b|\bi\s+(?:want|wanna|need|plan)\s+to\s+(?:eat|have|hit|get|walk|do)\b", re.I)
+_WONDERING = re.compile(r"\W*(?:how|what|whats|why|should|would|is|does|do|when|which)\b", re.I)  # not "can you..."
+_DOWN = re.compile(r"\b(?:lower|reduce|drop|cut|decrease)\b", re.I)
+TARGET = re.compile(r"\b" + _WHAT + r"(?:\s+(?:target|goal|intake|limit|budget))?(?:\s+(?:a|per|each|every)\s+day)?"
+                    r"\s*(?:should be|is now|to be|to|at|=|:|of|by)?\s*" + _NUMBER
+                    + r"|\b" + _NUMBER.replace("?P<n>", "?P<n2>") + r"\s*" + _WHAT.replace("?P<what>", "?P<what2>"), re.I)
+SENSIBLE = {"kcal": (800, 6000), "protein": (20, 400), "steps": (500, 60000)}
 SUGGEST = re.compile(r"\b(?:suggest|recommend|work out|calculate|what should)\b.*\b(?:targets?|goals?|calories|protein)\b",
                      re.I)
 # "how much will a bowl of greek yogurt be in cals and protein", "calories in chicken rice": about a food, not you
@@ -85,13 +96,36 @@ def food_request(text: str, own_chat: bool) -> str | None:
     return None
 
 
-def parse_target(text: str) -> dict | None:
-    m = TARGET.search(text)
-    if not m:
+def _number(raw: str) -> float:
+    raw = raw.replace(",", "").strip().lower()
+    return float(raw[:-1].strip()) * 1000 if raw.endswith("k") else float(raw)
+
+
+def parse_target(text: str, current: dict | None = None) -> dict | None:
+    """New daily targets you asked for: {"kcal": 1950}, or several at once ("calories 1950 and protein 140"). "By"
+    changes your `current` target ("lower my calories by 100"). None if it isn't a change, or a number isn't sensible
+    for that target (so "had 300 calories" or "change protein to 5" never move them)."""
+    if not _CHANGE.search(text or "") or _WONDERING.match(text):
         return None
-    what = m["what"].lower()
-    key = "protein" if what.startswith("protein") else "steps" if what.startswith("step") else "kcal"
-    return {key: int(m["n"].replace(",", ""))}
+    found = {}
+    for m in TARGET.finditer(text):
+        what = (m["what"] or m["what2"]).lower()
+        key = "protein" if what.startswith("protein") else "steps" if what.startswith("step") else "kcal"
+        value = _number(m["n"] or m["n2"])
+        if m["n"] and re.search(r"\bby\s*$", text[m.start():m.start("n")], re.I):  # "by 100": from your target
+            if not (current or {}).get(key):
+                continue
+            value = current[key] + (-value if _DOWN.search(text) else value)
+        low, high = SENSIBLE[key]
+        if low <= value <= high:
+            found.setdefault(key, int(round(value)))
+    return found or None
+
+
+def target_text(target: dict) -> str:
+    """"1,950 kcal and 140 g protein a day"."""
+    parts = [f"{v:,} {'kcal' if k == 'kcal' else 'g protein' if k == 'protein' else 'steps'}" for k, v in target.items()]
+    return (" and ".join(parts) if len(parts) < 3 else ", ".join(parts[:-1]) + f" and {parts[-1]}") + " a day"
 
 
 def short_day(d: date) -> str:

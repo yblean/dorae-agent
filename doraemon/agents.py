@@ -89,8 +89,8 @@ HELP_TEXT = {  # "what can you do?": answered instantly, in each agent's own lan
     "fitness": "I look after your food, steps and daily targets. Tell me what you ate (“chicken rice and kopi "
                "siew dai”, “nutrisoy no sugar 250ml”), or send a photo of a nutrition label or your meal (📷), and I'll "
                "work out the calories and macros for you to Log. Ask "
-               "me how you're doing today, protein left, calories this week, steps, or your targets; or say “set my "
-               "protein target to 140”. At 6pm I check what's left and how to close the gap.",
+               "me how you're doing today, protein left, calories this week, steps, or your targets; or say “change my "
+               "daily calories to 1950” or “lower my calories by 100”. At 6pm I check what's left and how to close the gap.",
 }
 # The swatches offered when you customize an agent
 COLORS = ["#8B5E3C", "#EF4444", "#F97316", "#F59E0B", "#22C55E", "#14B8A6", "#3B82F6", "#8B5CF6", "#EC4899", "#6B7280"]
@@ -947,7 +947,7 @@ class Brain:
         if card := self.label_amount(question):  # "2 servings", just after a label photo
             self.last_route = "label"
             return [card]
-        if coach.FOOD_IDEAS.search(question) and not coach.parse_target(question):
+        if coach.FOOD_IDEAS.search(question) and not coach.parse_target(question, self.fit.targets()):
             if self.chat is not None:
                 try:
                     self.last_route = "model"
@@ -965,13 +965,11 @@ class Brain:
                 return self.chat.answer("fitness", question, history or [])
             except Exception as e:
                 log.warning("food question for the model failed: %s", e)
-        if target := coach.parse_target(question):
+        if target := coach.parse_target(question, self.fit.targets()):  # "change my daily calories to 1950"
             self.fit.set_targets(**target)
             self.last_route = "target"
-            (k, v), = target.items()
             card = coach.targets_card(self.fit)
-            return [{**card, "text": f"Done: {v:,} {'kcal' if k == 'kcal' else 'g protein' if k == 'protein' else 'steps'} "
-                                     "a day."}]
+            return [{**card, "text": f"Done: {coach.target_text(target)}."}]
         if coach.SUGGEST.search(question):
             self.last_route = "targets"
             profile = self.fit.profile()

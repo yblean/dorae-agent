@@ -378,8 +378,8 @@ Service can plug into `doraemon/brokers` the same way later.
 
 Dorae-3 tracks what you eat and your steps against daily targets, and checks in at 6pm.
 
-- **Targets.** Calories, protein and steps a day: type them on the **Fitness** page, say "set my protein target to
-  140", or fill in your profile (weight, height, age, how active you are, goal) and press **Suggest**: calories from
+- **Targets.** Calories, protein and steps a day: type them on the **Fitness** page, say so in Dorae-3's chat or on
+  Telegram ("change my daily calories to 1950", "set protein to 140 and steps to 10k", "lower my calories by 100"), or fill in your profile (weight, height, age, how active you are, goal) and press **Suggest**: calories from
   what your body burns (Mifflin-St Jeor times activity) adjusted for the goal, protein 1.8 g per kg (2.0 when losing
   fat). A starting point, not medical advice.
 - **Logging food.** Tell Dorae-3 what you ate, in its chat ("chicken rice and kopi siew dai") or on Telegram
