@@ -88,9 +88,9 @@ class Phone:
         if coach.FOOD_IDEAS.search(text):  # "what should I eat for dinner?": the app's own ideas (no model here)
             return self.plain(coach.ideas_card(self.brain.fit)), None
         if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"
-            return self.food(food)
+            return self.food(food, text)
         if coach.food_with_numbers(text):  # "2 eggs, 12g protein": food, not a question about your protein
-            return self.food(text)
+            return self.food(text, text)
         # Dorae-3's own shapes first ("how am I doing today?"), then everyone else's
         found = route("fitness", text, self.db.get_setting(LAST_KEY))
         if found is not None and found.intent == "help":
@@ -106,16 +106,19 @@ class Phone:
             return self.draft(asking["title"], text.strip(), f"remind me to {asking['title']} {text.strip()}", now)
         if coach.might_be_food(text):  # "3 eggs and 2 bread", "chicken rice": the model says if it's food
             try:
-                reply, buttons = self.food(text)
+                reply, buttons = self.food(text, text)
                 if buttons:
                     return reply, buttons
             except Exception:  # only a guess: what works here instead
                 log.exception("asking the model if a Telegram message was food failed")
         return self.help_text(), None
 
-    def food(self, text: str) -> tuple[str, Buttons | None]:
-        """What you ate, worked out (the model, your foods, Open Food Facts) as a draft with Log and Cancel."""
-        return self.food_card(self.brain.food_reply(text), "🍽 Here's what I worked out:")
+    def food(self, food: str, said: str) -> tuple[str, Buttons | None]:
+        """What you ate, worked out (the model, your foods, Open Food Facts) as a draft with Log and Cancel. "Yesterday"
+        in what you `said` puts it on yesterday."""
+        day = coach.food_day(said, self.brain.today())
+        intro = "🍽 Here's what I worked out" + (" for yesterday:" if day else ":")
+        return self.food_card(self.brain.food_reply(food, day), intro)
 
     def photo(self, image: bytes, caption: str = "") -> tuple[str, Buttons | None]:
         """A photo of a nutrition label or of your food (its caption, e.g. "2 servings", as a hint), as a draft."""

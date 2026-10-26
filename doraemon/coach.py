@@ -161,6 +161,11 @@ def might_be_food(text: str) -> bool:
             and not _CHATTER.match(text))
 
 
+def food_day(text: str, today: date) -> date | None:
+    """Yesterday's date for "yesterday i had laksa"; None for today."""
+    return today - timedelta(days=1) if re.search(r"\byesterday\b", text, re.I) else None
+
+
 def _number(raw: str) -> float:
     raw = raw.replace(",", "").strip().lower()
     return float(raw[:-1].strip()) * 1000 if raw.endswith("k") else float(raw)

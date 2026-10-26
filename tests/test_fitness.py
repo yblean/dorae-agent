@@ -430,6 +430,15 @@ def test_telegram_asks_the_model_about_a_plain_list_of_foods(settings):
     assert len(nothing.calls) == calls
 
 
+def test_yesterdays_food_from_telegram(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = FakeFood()
+    text, buttons = rt.phone.answer("yesterday i had chicken rice")
+    assert text.startswith("🍽 Here's what I worked out for yesterday:")
+    rows = rt.brain.fit.batch(buttons[0][0][1].split(":")[1])
+    assert {r["day"] for r in rows} == {(rt.brain.today() - timedelta(days=1)).isoformat()}
+
+
 def test_editing_food_on_telegram(settings):
     rt = Runtime(settings, messenger=FakeBot())
     rt.brain.food_backend = FakeFood()

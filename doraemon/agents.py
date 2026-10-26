@@ -983,7 +983,7 @@ class Brain:
         food = coach.food_request(question, own_chat=True) if routed is None or explicit else None
         if food:
             self.last_route = "food"
-            return [self.food_reply(food)]
+            return [self.food_reply(food, coach.food_day(question, self.today()))]
         return None
 
     def nutrition_reply(self, subject: str) -> dict:
@@ -1075,8 +1075,8 @@ class Brain:
         self.db.set_setting(LABEL_KEY, json.dumps({**last, "batch": batch}))
         return {"text": self.label_text(food), "kind": "food", "payload": {"batch": batch}}
 
-    def food_reply(self, text: str) -> dict:
-        """Work out what you ate and save it as a draft card waiting for Log."""
+    def food_reply(self, text: str, day: date | None = None) -> dict:
+        """Work out what you ate and save it as a draft card waiting for Log (on `day`, or today)."""
         if self.food_model() is None:
             return {"text": "I need the local model to work out what you ate, and it isn't running. Open the Ollama "
                             "app and try again.", "kind": "text", "payload": None}
@@ -1088,9 +1088,10 @@ class Brain:
         if not foods:
             return {"text": f"I couldn't work out the food in “{text}”. Try naming each thing, like “1 plate chicken "
                             "rice, 1 kopi siew dai”.", "kind": "text", "payload": None}
-        batch = self.fit.draft(foods)
+        batch = self.fit.draft(foods, day)
         kcal, protein = sum(f["kcal"] for f in foods), sum(f["protein"] for f in foods)
-        return {"text": f"Here's what I worked out: {kcal:,.0f} kcal and {protein:.0f} g protein. Check the numbers "
+        when = " for yesterday" if day and day < self.today() else ""
+        return {"text": f"Here's what I worked out{when}: {kcal:,.0f} kcal and {protein:.0f} g protein. Check the numbers "
                         "(change any under Edit), then press Log.", "kind": "food", "payload": {"batch": batch}}
 
     def reminder_reply(self, title: str, when: str, question: str) -> dict:
