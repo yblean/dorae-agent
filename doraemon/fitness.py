@@ -173,8 +173,14 @@ class Fitness:
              datetime.now(timezone.utc).isoformat()))
 
     def known(self, name: str):
-        """Your own numbers for a food you've logged before, or None."""
-        return self.db.conn.execute("SELECT * FROM foods WHERE key = ?", (key_of(name),)).fetchone()
+        """Your own numbers for a food you've logged before, or None. "Eggs" finds your "Egg", and the other way."""
+        key = key_of(name)
+        if not key:
+            return None
+        keys = [key, key + "s"] + ([key[:-1]] if key.endswith("s") and not key.endswith("ss") else []) \
+            + ([key[:-2]] if key.endswith(("ses", "shes", "ches", "xes")) else [])
+        found = self.db.conn.execute(f"SELECT * FROM foods WHERE key IN ({', '.join('?' * len(keys))})", keys).fetchall()
+        return min(found, key=lambda r: keys.index(r["key"])) if found else None  # the exact name first
 
     def library(self, limit: int = 200):
         return self.db.conn.execute("SELECT * FROM foods ORDER BY uses DESC, updated_at DESC LIMIT ?", (limit,)).fetchall()

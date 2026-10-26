@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from doraemon import coach
 from doraemon.db import Database
 from doraemon.fitness import Fitness, import_steps, parse_steps, suggest_targets
-from doraemon.foodlog import (amount_of, amount_reply, given_numbers, label_food, lookup_product, resolve,
+from doraemon.foodlog import (amount_of, amount_reply, given_numbers, label_food, lookup_product, resolve, said_count,
                               understand)
 from doraemon.jobs import Runtime
 from doraemon.router import route
@@ -117,7 +117,7 @@ def chicken(portion):
 @pytest.mark.parametrize("text, portion, kcal, protein, source", [
     ("had chicken breast", "2 pieces", 84, 30, "yours"),  # no amount said: your usual as it is
     ("had 3 piece of chicken breast", "3 pieces", 126, 45, "yours"),  # 3 of your usual 2
-    ("three chicken breasts", "3 pieces", 126, 45, "yours"),
+    ("three chicken breasts", "three chicken breasts", 126, 45, "yours"),
     ("3 piece of chicken breast for lunch its 15g of p each", "3 pieces", 126, 45, "you"),  # your numbers, x3
     ("chicken breast, 50g protein", "2 pieces", 84, 50, "you"),
     ("300g chicken breast", "300 g", 200, 40, "estimate"),  # grams of a usual in pieces: can't compare
@@ -137,6 +137,57 @@ def test_your_usual_is_worked_out_for_how_much_you_said(fit, text, portion, kcal
 ])
 def test_numbers_you_give_are_read(text, given):
     assert given_numbers(text) == given
+
+
+@pytest.mark.parametrize("text, name, said", [
+    ("i had 3 eggs and 2 bread", "egg", (3, "egg", "3 eggs")),
+    ("i had 3 eggs and 2 bread", "bread", (2, "bread", "2 bread")),
+    ("3 soft boiled eggs and 2 pc of sunshine hokkaido milk bread", "soft boiled eggs", (3, "egg", "3 soft boiled eggs")),
+    ("3 soft boiled eggs and 2 pc of sunshine hokkaido milk bread", "Sunshine Hokkaido Milk Bread", (2, "piece", "2 pieces")),
+    ("a can of coke", "coke", (1, "can", "1 can")),
+    ("3 eggs and rice", "rice", None),  # the 3 is the eggs'
+    ("300g chicken breast", "chicken breast", None),  # an amount, not 300 of them
+    ("had chicken breast at 3 pm", "chicken breast", None),
+])
+def test_how_many_of_each_food_you_said(text, name, said):
+    assert said_count(text, name) == said
+
+
+def test_three_eggs_and_two_breads_count_three_and_two(fit):
+    """The model may give numbers for one ("each"); your words say how many."""
+    fit.log(fit.draft([{"name": "Egg", "portion": "1 large", "kcal": 78, "protein": 6}]))
+    model = FakeFood([{"name": "eggs", "portion": "each", "kcal": 70, "protein": 6, "carbs": 0, "fat": 5, "sugar": 0,
+                       "product": ""},
+                      {"name": "bread", "portion": "each", "kcal": 80, "protein": 3, "carbs": 15, "fat": 1, "sugar": 2,
+                       "product": ""}])
+    eggs, bread = understand("i had 3 eggs and 2 bread", fit, fit.db, model)
+    assert (eggs["name"], eggs["portion"], eggs["kcal"], eggs["protein"], eggs["source"]) == ("Egg", "3 eggs", 234, 18,
+                                                                                              "yours")
+    assert (bread["portion"], bread["kcal"], bread["protein"]) == ("2 bread", 160, 6)
+
+
+def test_your_food_is_found_under_a_plural_or_plainer_name(fit):
+    fit.log(fit.draft([{"name": "Boiled Egg", "portion": "1 large", "kcal": 78, "protein": 6}]))
+    assert fit.known("boiled eggs")["name"] == "Boiled Egg"
+    model = FakeFood([{"name": "soft boiled eggs", "portion": "3 eggs", "kcal": 180, "protein": 12, "carbs": 0,
+                       "fat": 12, "sugar": 0, "product": ""}])
+    (eggs,) = understand("3 soft boiled eggs", fit, fit.db, model)
+    assert (eggs["name"], eggs["kcal"], eggs["protein"]) == ("Boiled Egg", 234, 18)
+    fit.log(fit.draft([{"name": "Rice", "portion": "1 bowl", "kcal": 200, "protein": 4}]))
+    model = FakeFood([{"name": "chicken rice", "portion": "1 plate", "kcal": 600, "protein": 25, "carbs": 75, "fat": 20,
+                       "sugar": 2, "product": ""}])
+    assert understand("chicken rice", fit, fit.db, model)[0]["kcal"] == 600  # not your plain rice
+
+
+def test_pieces_of_a_packaged_loaf_are_servings_not_loaves(fit):
+    def fetch(url, params):
+        return {"hits": [{"product_name": "Hokkaido Milk Bread", "brands": ["Sunshine"], "code": "8888",
+                          "countries_tags": ["en:singapore"], "quantity": "400 g", "serving_size": "30 g",
+                          "nutriments": {"energy-kcal_100g": 270, "proteins_100g": 8}}]}
+    model = FakeFood([{"name": "Sunshine Hokkaido Milk Bread", "portion": "each", "kcal": 90, "protein": 3, "carbs": 15,
+                       "fat": 2, "sugar": 3, "product": "Sunshine Hokkaido Milk Bread"}])
+    (bread,) = understand("2 pc of sunshine hokkaido milk bread", fit, fit.db, model, fetch=fetch)
+    assert (bread["portion"], bread["kcal"], bread["source"]) == ("2 pieces", 162, "database")  # 2 x 30 g, not 400 g
 
 
 def test_packaged_products_use_open_food_facts_for_the_portion(fit):
