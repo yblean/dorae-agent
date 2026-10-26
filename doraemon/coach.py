@@ -21,7 +21,7 @@ QUESTION = re.compile(r"\?|^\W*(?:what|how|why|when|which|who|where|can|could|sh
 _WHAT = r"(?P<what>cal(?:orie)?s?|kcal|protein|steps?)"
 _NUMBER = r"(?P<n>\d[\d,]*(?:\.\d+)?(?:\s*k\b)?)(?:\s*(?:g|grams?)\b)?"
 _CHANGE = re.compile(r"\b(?:set|change|make|update|put|move|raise|increase|lower|reduce|drop|cut|bump|adjust|switch|"
-                     r"up|bring)\b|\bmy\s+(?:daily\s+)?(?:cal(?:orie)?s?|kcal|protein|steps?)\s+(?:target|goal|intake|limit)\s+"
+                     r"up\s+(?:my|the)|bring)\b|\bmy\s+(?:daily\s+)?(?:cal(?:orie)?s?|kcal|protein|steps?)\s+(?:target|goal|intake|limit)\s+"
                      r"(?:should be|is now|to be)\b|\bi\s+(?:want|wanna|need|plan)\s+to\s+(?:eat|have|hit|get|walk|do)\b", re.I)
 _WONDERING = re.compile(r"\W*(?:how|what|whats|why|should|would|is|does|do|when|which)\b", re.I)  # not "can you..."
 _DOWN = re.compile(r"\b(?:lower|reduce|drop|cut|decrease)\b", re.I)
@@ -105,7 +105,7 @@ def parse_target(text: str, current: dict | None = None) -> dict | None:
     """New daily targets you asked for: {"kcal": 1950}, or several at once ("calories 1950 and protein 140"). "By"
     changes your `current` target ("lower my calories by 100"). None if it isn't a change, or a number isn't sensible
     for that target (so "had 300 calories" or "change protein to 5" never move them)."""
-    if not _CHANGE.search(text or "") or _WONDERING.match(text):
+    if not _CHANGE.search(text or "") or _WONDERING.match(text) or FOOD_LOG.match(text):  # "had a 1000 cal lunch"
         return None
     found = {}
     for m in TARGET.finditer(text):

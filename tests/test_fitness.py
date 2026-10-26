@@ -128,6 +128,11 @@ def test_what_counts_as_food_to_log(text, own, expected):
     assert coach.food_request(text, own) == expected
 
 
+def test_food_never_changes_a_target():
+    assert coach.parse_target("had a 1000 calorie lunch, ended up full", NOW) is None
+    assert coach.parse_target("up my protein to 150", NOW) == {"protein": 150}
+
+
 def test_a_meal_is_a_draft_until_logged_then_remembered(fit):
     batch = fit.draft([{"name": "Chicken rice", "portion": "1 plate", "kcal": 600, "protein": 25}])
     assert fit.totals(fit.today()).kcal == 0  # a draft doesn't count
