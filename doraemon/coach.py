@@ -35,6 +35,9 @@ _NOT_FOOD = re.compile(
     r"headaches?|flu|cough|issues?|problems?|questions?|ideas?|feelings?|blast|rest|haircut|massages?|visits?|"
     r"reminders?|events?|tasks?|reports?|work|homework|assignments?)\b|"
     r"my\s+(?:calories|kcal|protein|carbs|macros|steps|weight|progress|intake|targets?|goals?)\b)", re.I)
+# Telegram's chatter, never worth asking the model about
+_CHATTER = re.compile(r"^\W*(?:ok(?:ay)?|k|kk|lol|lmao|haha\w*|hehe\w*|test(?:ing)?|cool|nice|yes|yeah|yep|yup|ya|no|"
+                      r"nope|nah|sure|good|great|done|bye|gn|gm|good (?:morning|night)|sorry|oops|hm+|ah+|oh+)\W*$", re.I)
 QUESTION = re.compile(r"\?|^\W*(?:what|how|why|when|which|who|where|can|could|should|is|am|are|do|does|did|will|would|"
                       r"tell|show|give|any|list|help|set|suggest|recommend|change|remove|delete|undo|hi|hello|hey|thanks?)\b",
                       re.I)
@@ -148,6 +151,14 @@ def food_with_numbers(text: str) -> bool:
     rest = re.sub(r"\b(?:\d+(?:\.\d+)?\s*(?:g|grams?|gm|kcal|cals?|calories?|ml)?|kcal|cals?|calories?|protein|prot|pro|p|"
                   r"carbs?|fats?|sugars?|each|and|of|with|per|its|it's|is)\b", " ", text, flags=re.I)
     return bool(re.search(r"[a-z]{3}", rest, re.I))
+
+
+def might_be_food(text: str) -> bool:
+    """A short statement that may be only foods ("3 eggs and 2 bread", "chicken rice"): worth asking the model on
+    Telegram before saying what works there."""
+    text = text.strip()
+    return (len(text) <= 200 and bool(re.search(r"[a-z]{3}", text, re.I)) and not QUESTION.search(text)
+            and not _CHATTER.match(text))
 
 
 def _number(raw: str) -> float:

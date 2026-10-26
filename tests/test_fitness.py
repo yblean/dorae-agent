@@ -416,6 +416,20 @@ def test_logging_food_from_telegram(settings):
     assert rt.phone.answer("how am i doing today?")[0].startswith("Today, ")
 
 
+def test_telegram_asks_the_model_about_a_plain_list_of_foods(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = FakeFood()
+    text, buttons = rt.phone.answer("chicken rice and kopi siew dai")
+    assert text.startswith("🍽 Here's what I worked out:") and buttons
+    rt.brain.food_backend = nothing = FakeFood()
+    nothing.foods = []
+    text, buttons = rt.phone.answer("had a meeting with sam about the project")
+    assert buttons is None and not text.startswith("🍽")  # not food: what works here instead
+    calls = len(nothing.calls)
+    rt.phone.answer("ok")  # chatter never waits for the model
+    assert len(nothing.calls) == calls
+
+
 def test_editing_food_on_telegram(settings):
     rt = Runtime(settings, messenger=FakeBot())
     rt.brain.food_backend = FakeFood()

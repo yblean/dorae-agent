@@ -35,7 +35,7 @@ Split the message into separate foods and drinks. For each give a short name, th
 Use typical values for Singapore hawker food and drinks (kopi/teh with condensed milk, siew dai = less sweet, kosong = no sugar, peng = iced).
 If it's a branded packaged product (e.g. NutriSoy, Yakult, Pokka), put the brand and product in "product".
 If they give numbers themselves (e.g. "15g protein each", "300 kcal"), use them: "each" means per piece, so multiply by how many they had.
-Don't add foods they didn't mention. Numbers only, no ranges. Answer with JSON."""
+Don't add foods they didn't mention, and if they name no food or drink at all (e.g. "had a long meeting"), give no foods. Numbers only, no ranges. Answer with JSON."""
 
 _AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(ml|l|litres?|liters?|g|kg)\b", re.I)
 

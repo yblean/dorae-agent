@@ -104,6 +104,13 @@ class Phone:
                               text, now)
         if asking:  # "When should I remind you to buy milk?" -> "tomorrow 6pm"
             return self.draft(asking["title"], text.strip(), f"remind me to {asking['title']} {text.strip()}", now)
+        if coach.might_be_food(text):  # "3 eggs and 2 bread", "chicken rice": the model says if it's food
+            try:
+                reply, buttons = self.food(text)
+                if buttons:
+                    return reply, buttons
+            except Exception:  # only a guess: what works here instead
+                log.exception("asking the model if a Telegram message was food failed")
         return self.help_text(), None
 
     def food(self, text: str) -> tuple[str, Buttons | None]:
