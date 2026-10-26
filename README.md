@@ -383,7 +383,9 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
   what your body burns (Mifflin-St Jeor times activity) adjusted for the goal, protein 1.8 g per kg (2.0 when losing
   fat). A starting point, not medical advice.
 - **Logging food.** Tell Dorae-3 what you ate, in its chat ("chicken rice and kopi siew dai") or on Telegram
-  ("ate chicken rice", "lunch: laksa", "nutrisoy no sugar 250ml for breakfast"). It drafts each food with its portion,
+  ("i had 3 eggs and 2 bread", "can you log chicken rice", "lunch: laksa", "nutrisoy no sugar 250ml for breakfast",
+  "2 eggs, 12g protein"). On Telegram a plain "chicken rice" works too: the model is asked whether it's food ("had a
+  long meeting" isn't). "Yesterday i had laksa" goes on yesterday. It drafts each food with its portion,
   calories, protein, carbs, fat and sugar, and nothing counts until you press **Log**:
   1. a food you've logged before comes back with your own numbers (no model needed);
   2. a packaged product is looked up in [Open Food Facts](https://openfoodfacts.org) (free; only its name is sent),
