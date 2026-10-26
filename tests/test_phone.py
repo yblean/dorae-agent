@@ -130,7 +130,7 @@ def test_an_event_is_drafted_then_added_to_the_calendar(with_calendar):
 
 
 def test_without_google_calendar_the_event_is_kept_and_it_says_how_to_connect(rt):
-    _, buttons = rt.phone.answer("add date night on 26/10 7pm")
+    _, buttons = rt.phone.answer("add date night tomorrow 7pm")
     said = rt.button(buttons[0][0][1])
     assert said.startswith("Saved “Date night”. To put it in Google Calendar, connect it once")
 
