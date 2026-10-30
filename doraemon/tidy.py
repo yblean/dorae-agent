@@ -18,6 +18,7 @@ from doraemon.schema import ActionItem
 
 EXPIRE_AFTER = timedelta(days=1)  # how long past its last day a waiting suggestion is kept
 TWIN, EXPIRED = "dismiss (same as another item)", "dismiss (passed without your OK)"
+HELD_EXPIRED = "dismiss (held back, passed)"  # never shown to you, so it says nothing about the sender
 
 
 def _day(item: ActionItem, at: datetime | None) -> date | None:
@@ -41,7 +42,7 @@ def same_item(a: ActionItem, b: ActionItem) -> bool:
 
 def find_twin(db: Database, item: ActionItem, gmail_id: str):
     """An item from another email that's the same as `item` (whatever you did with it), or None."""
-    for row in db.items(("proposed", "confirmed", "dismissed")):
+    for row in db.items(("proposed", "held", "confirmed", "dismissed")):
         if row["gmail_id"] != gmail_id and same_item(item_model(row), item):
             return row
     return None
@@ -62,16 +63,19 @@ def dismiss_twins(db: Database) -> list[str]:
 
 
 def expire_passed(db: Database, user_tz: str, now: datetime) -> list[str]:
-    """Dismiss suggestions still waiting more than EXPIRE_AFTER after their last day. Returns their titles."""
+    """Dismiss suggestions still waiting more than EXPIRE_AFTER after their last day. Returns their titles (not the
+    held-back ones, which are cleared quietly)."""
     today = now.astimezone(ZoneInfo(user_tz)).date()
     cleared = []
-    for row in db.items(("proposed",)):
+    for row in db.items(("proposed", "held")):
         item = item_model(row)
         days = [d for d in (_day(item, item.start_at), _day(item, item.end_at)) if d]
         last = max(days) if days else None  # the later one: a misread end date mustn't make it look over
         if last is not None and last + EXPIRE_AFTER < today:
-            db.update("item", row["id"], EXPIRED, status="dismissed")
-            cleared.append(row["title"])
+            held = row["status"] == "held"
+            db.update("item", row["id"], HELD_EXPIRED if held else EXPIRED, status="dismissed")
+            if not held:
+                cleared.append(row["title"])
     return cleared
 
 

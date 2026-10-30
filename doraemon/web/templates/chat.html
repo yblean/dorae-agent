@@ -81,6 +81,7 @@
         <a href="/pocket?show=past"><strong>{{ panel.passed }}</strong><span>passed</span></a>
         <a href="/upcoming"><strong>{{ panel.week|length }}</strong><span>next 7 days</span></a>
       </div>
+      {% if panel.held %}<a class="screen-sub" href="/pocket?show=held">{{ panel.held }} held back as newsletters or mass mail</a>{% endif %}
       {% for c in panel.week[:4] %}
       <div class="mini-row"><span class="dot" style="background: {{ c.chip_fg }}"></span>
         <span><strong>{{ c.row.title }}</strong><span>{{ c.detail }}</span></span></div>

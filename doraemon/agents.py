@@ -600,6 +600,11 @@ class Brain:
                       key=lambda r: r["start_at"], reverse=True)
         return [r["id"] for r in upcoming], [r["id"] for r in past]
 
+    def held(self) -> list[int]:
+        """Suggestions held back as newsletters or mass mail (doraemon.quiet), soonest first."""
+        rows = self.db.items(("held",))
+        return [r["id"] for r in sorted(rows, key=lambda r: (r["start_at"] is None, r["start_at"] or ""))]
+
     def agenda(self, days: int, types: tuple[str, ...] = ()) -> list[int]:
         today = self.today()
         rows = [r for r in self.db.items(("proposed", "confirmed"))

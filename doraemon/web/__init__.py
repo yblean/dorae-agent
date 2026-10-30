@@ -40,7 +40,7 @@ from doraemon.llm import get_backend
 from doraemon.telegram import MAX_PHOTO
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
-from doraemon import coach, senders
+from doraemon import coach, quiet, senders
 from doraemon.fitness import health_folders, suggest_targets
 from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
@@ -165,6 +165,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             "steps": TIMED_STEPS if draft else steps_for(item) if remind else [],
             "reminders": [short_time(datetime.fromisoformat(r["remind_at"]), tz) for r in db.reminders(row["id"])],
             "sender": sender["sender"] if sender else "",
+            "held": quiet.reason(db, row["id"]) if row["status"] == "held" else "",
             "is_travel": row["type"] in TRAVEL,
             "date": local.date().isoformat() if local else "",
             "time": "" if item.all_day or not local else local.strftime("%H:%M"),
@@ -476,7 +477,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         week = [card(db.get("item", i)) for i in brain.agenda(7)]
         checked = db.get_setting("gmail_checked_at")
         every = f"Every {settings.poll_minutes} min" if settings.poll_minutes > 0 else "When you press Run now"
-        return {"kind": "calendar", "waiting": len(upcoming), "passed": len(past), "week": week,
+        return {"kind": "calendar", "waiting": len(upcoming), "passed": len(past), "held": len(brain.held()), "week": week,
                 "calendar_connected": get_calendar() is not None, "checking": job.running,
                 "telegram": get_messenger() is not None,
                 "briefing_when": f"Every day, {clock(brain.briefing_time().strftime('%H:%M'))}"
@@ -746,9 +747,10 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     @app.get("/pocket", response_class=HTMLResponse)
     def pocket(request: Request, show: str = "upcoming"):
         upcoming, past = brain.pending()
-        ids = upcoming if show == "upcoming" else past
+        held = brain.held()
+        ids = held if show == "held" else upcoming if show == "upcoming" else past
         return render(request, "pocket.html", cards=[card(db.get("item", i)) for i in ids],
-                      show=show, n_upcoming=len(upcoming), n_past=len(past))
+                      show=show, n_upcoming=len(upcoming), n_past=len(past), n_held=len(held))
 
     @app.get("/upcoming", response_class=HTMLResponse)
     def upcoming_page(request: Request):

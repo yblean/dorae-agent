@@ -44,6 +44,7 @@ class TxnSource(StrEnum):
 
 class Status(StrEnum):
     PROPOSED = "proposed"
+    HELD = "held"  # waiting under Held back, out of the way (doraemon.quiet)
     CONFIRMED = "confirmed"
     DISMISSED = "dismissed"
     UNDONE = "undone"

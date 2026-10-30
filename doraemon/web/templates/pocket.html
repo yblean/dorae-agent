@@ -4,10 +4,12 @@
 <div class="tabs">
   <a href="/pocket?show=upcoming" class="tab" {{ 'aria-current=page' if show == 'upcoming' }}>Coming up · {{ n_upcoming }}</a>
   <a href="/pocket?show=past" class="tab" {{ 'aria-current=page' if show == 'past' }}>Already passed · {{ n_past }}</a>
+  <a href="/pocket?show=held" class="tab" {{ 'aria-current=page' if show == 'held' }}>Held back · {{ n_held }}</a>
 </div>
 <div class="items" id="items">
   {% for c in cards %}{{ item_card(c, types, '/pocket?show=' ~ show) }}
-  {% else %}<div class="empty">{{ "Your pocket's empty. Nothing waiting for your OK! 🎉" if show == 'upcoming' else 'Nothing here.' }}</div>
+  {% else %}<div class="empty">{{ "Your pocket's empty. Nothing waiting for your OK! 🎉" if show == 'upcoming' else
+    "Nothing held back. Newsletters and mass mail land here instead of asking for your OK." if show == 'held' else 'Nothing here.' }}</div>
   {% endfor %}
 </div>
 <div id="thread" class="stack"></div>

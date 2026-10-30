@@ -125,6 +125,7 @@ class ParsedEmail:
     sent_at: datetime
     body: str
     gmail_categories: frozenset[str] = frozenset()  # Gmail tabs: promotions, updates, purchases...
+    bulk: bool = False  # mass mail: an unsubscribe link in its headers, or marked bulk (doraemon.quiet)
 
 
 def gmail_categories(labels: list[str]) -> frozenset[str]:
@@ -171,4 +172,5 @@ def parse_eml(raw: bytes) -> ParsedEmail:
         body=_tidy(body),
         # Takeout exports carry Gmail's labels in this header; the API passes them separately.
         gmail_categories=gmail_categories(str(msg["X-Gmail-Labels"] or "").split(",")),
+        bulk=bool(msg["List-Unsubscribe"]) or str(msg["Precedence"] or "").strip().lower() in ("bulk", "list", "junk"),
     )

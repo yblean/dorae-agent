@@ -107,6 +107,7 @@
     <span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span>
     <span class="item-title">{{ r.title }}{% if r.confidence < 0.6 %} <span class="check">· please check</span>{% endif %}</span>
     <span class="item-detail">{{ c.detail }}</span>
+    {% if c.held %}<span class="item-held">Held back: {{ c.held }}</span>{% endif %}
     {% if r.evidence_snippet %}<span class="item-quote">{{ 'You asked' if r.gmail_id.startswith('chat:') else 'From email' }}: “{{ r.evidence_snippet }}”</span>{% endif %}
   </div>
   {% if r.status == 'proposed' and c.draft %}
@@ -115,7 +116,7 @@
     <input type="hidden" name="back" value="{{ back }}">
     <button class="btn-link">Cancel this reminder</button>
   </form>
-  {% elif r.status == 'proposed' %}
+  {% elif r.status in ('proposed', 'held') %}
   <div class="item-actions">
     {% if c.remind %}{{ remind_form(c, back) }}{% else %}
     <form method="post" action="/items/{{ r.id }}/confirm" data-ajax>

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS action_items (
     departs_from TEXT, location TEXT, booking_ref TEXT,
     amount TEXT, currency TEXT, date_text TEXT,
     evidence_snippet TEXT NOT NULL, confidence REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'proposed',   -- proposed / confirmed / dismissed
+    status TEXT NOT NULL DEFAULT 'proposed',   -- proposed / held / confirmed / dismissed
     edited INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS transactions (
@@ -358,7 +358,7 @@ class Database:
             "UPDATE processed_emails SET subject = ?, sender = ?, sent_at = ?, notes = ? WHERE message_id = ?",
             (email.subject, email.sender, email.sent_at.isoformat(), notes, gmail_id),
         )
-        self.conn.execute("DELETE FROM action_items WHERE gmail_id = ? AND status = 'proposed' AND edited = 0",
+        self.conn.execute("DELETE FROM action_items WHERE gmail_id = ? AND status IN ('proposed', 'held') AND edited = 0",
                           (gmail_id,))
         self.conn.execute("DELETE FROM transactions WHERE gmail_id = ? AND status = 'counted' AND edited = 0",
                           (gmail_id,))

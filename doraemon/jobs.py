@@ -151,13 +151,15 @@ class CheckJob:
             self.problem(auto, f"{summary['counts']['failed']} email(s) couldn't be read just now. I'll try again later.")
         else:
             self.last_problem = ""
+        held = summary.get("held", 0)
+        quietly = f" ({held} more held back as newsletters or mass mail, under All items → Held back)" if held else ""
         if items:
-            self.db.add_message("calendar", "agent", f"📬 {n} new email(s): {items} new thing(s) for you. "
+            self.db.add_message("calendar", "agent", f"📬 {n} new email(s): {items} new thing(s) for you{quietly}. "
                                                      "Ask \"What needs my OK?\" to see them.")
             if self.after_items:
                 self.after_items()
         elif not auto and not summary.get("stopped"):
-            self.db.add_message("calendar", "agent", f"Checked {n} new email(s): nothing that needs you." if n
+            self.db.add_message("calendar", "agent", f"Checked {n} new email(s): nothing that needs you{quietly}." if n
                                 else "Checked your inbox just now. Nothing new since my last look.")
         if txns:
             self.db.add_message("money", "agent", f"{txns} new payment(s) came in with Dorae-2's inbox check.")

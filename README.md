@@ -264,6 +264,13 @@ Dorae-2's chat. Each one is a dismissal in Activity, so you can undo it.
   emails aren't read at all, so the model never runs on them) and dismisses what's still waiting from them; undo it
   under Learned rules. It never asks about your own address (your forwards), and never decides for you
   (`doraemon/senders.py`).
+- **Held back.** Suggestions you'd dismiss anyway never ask for your OK: they wait under **All items → Held back**
+  (with the usual Confirm and Dismiss, and why each was held), and stay out of Telegram and the briefing. That's an
+  email with 3 or more things in it (a library's events newsletter, a schedule for every year group), mass mail
+  (an unsubscribe link in its headers: job alerts, course promotions), and a sender whose 3 or more suggestions you
+  all dismissed. Never held: flights, hotels, deliveries, bills, your own reminders, your forwards, and anything
+  from a sender you've confirmed something from. On the first 138 suggestions this would have held back 76 of the
+  119 dismissed and 1 of the 16 kept (`doraemon/quiet.py`). Held ones that pass are cleared without a word.
 
 ### Run in the background
 
@@ -456,7 +463,7 @@ python -m evals.run_eval --reuse evals/results/<run>.jsonl --rules defaults --le
 - `doraemon/router.py`: instant answers for everyday questions, without the model
 - `doraemon/ledger.py`: one ledger from bank alerts and receipts, duplicates and refunds settled
 - `doraemon/reminders.py`, `doraemon/events.py`: reminders and calendar events asked for in your own words
-- `doraemon/tidy.py`, `doraemon/senders.py`: keeping "needs your OK" short (repeats, passed ones, senders to skip)
+- `doraemon/tidy.py`, `doraemon/senders.py`, `doraemon/quiet.py`: keeping "needs your OK" short (repeats, passed ones, senders to skip, newsletters held back)
 - `doraemon/jobs.py`, `doraemon/service.py`: the background jobs and the service that runs them
 - `doraemon/telegram.py`, `doraemon/phone.py`: the Telegram bot and what it answers
 - `doraemon/demo.py`: the web app on made-up data (`python -m doraemon.demo`), also used for `docs/screenshots/`

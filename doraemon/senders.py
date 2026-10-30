@@ -9,7 +9,7 @@ from email.utils import parseaddr
 
 from doraemon.db import Database, from_chat
 from doraemon.rules import RuleStore
-from doraemon.tidy import TWIN
+from doraemon.tidy import HELD_EXPIRED, TWIN
 
 OFFER_AFTER = 3
 OFFERED = "skip-offered:"  # app_settings key prefix: asked about this sender already
@@ -27,9 +27,10 @@ def name(sender: str) -> str:
 
 def records(db: Database) -> dict[str, dict]:
     """Per sender address: {"sender", "dismissed", "confirmed", "item"} over every item found in their emails.
-    Dismissals that only removed a repeat of another item (doraemon.tidy) don't count against them."""
+    Dismissals that only removed a repeat of another item, or a held-back one you never saw (doraemon.tidy), don't
+    count against them."""
     twins = {r[0] for r in db.conn.execute(
-        "SELECT row_id FROM action_log WHERE kind = 'item' AND action = ? AND undone = 0", (TWIN,))}
+        "SELECT row_id FROM action_log WHERE kind = 'item' AND action IN (?, ?) AND undone = 0", (TWIN, HELD_EXPIRED))}
     found: dict[str, dict] = {}
     for r in db.conn.execute("""SELECT i.id, i.status, i.gmail_id, e.sender FROM action_items i
                                 JOIN processed_emails e ON e.message_id = i.gmail_id"""):

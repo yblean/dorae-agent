@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from doraemon import income
+from doraemon import income, quiet
 from doraemon.config import Settings, in_project
 from doraemon.db import item_model
 from doraemon.email_parse import ParsedEmail
@@ -149,6 +149,16 @@ def seed(rt, today: date) -> None:
          day(1), True, evidence="Estimated delivery tomorrow.")
     item(6, "Sam & Jo <rsvp@wedding.example>", "You're invited!", "rsvp", "RSVP to Sam & Jo's wedding",
          day(9), True, evidence="Kindly reply by the date below.")
+    # held back: a library's events newsletter (doraemon.quiet)
+    library = ParsedEmail(message_id="m", subject="This month at your library", sender="City Library <events@library.example>",
+                          sent_at=noon(today - timedelta(days=2)), body="", bulk=True)
+    talks = [ActionItem(message_id="m", type="appointment", title=title, start_at=at(n, 14), end_at=None, all_day=False,
+                        timezone=TZ, evidence_snippet=quote, confidence=0.9)
+             for n, title, quote in ((8, "Read Together: Picture Books for Grown-ups", "Sign up at any branch."),
+                                     (11, "Create Your First Mobile Game with AI", "Free for members, ages 13 and up."),
+                                     (15, "Career Resilience in Uncertain Times", "A talk and Q&A with career coaches."))]
+    db.save_result("mail-library", "thread-library", library, Extraction(message_id="m", items=talks), "extracted")
+    quiet.hold(db, "mail-library", library)
     # confirmed, with Telegram reminders set
     for n, (kind, title, start, all_day, amount) in enumerate([
             ("bill", "Credit card bill", day(3), True, Decimal("1240.55")),

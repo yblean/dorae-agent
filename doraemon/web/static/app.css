@@ -214,6 +214,7 @@ a.ev:hover { background: color-mix(in srgb, var(--c) 26%, #FFFFFF); }
 .item-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .item-detail { font-size: 13px; color: var(--ink-2); }
 .item-quote { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.item-held { font-size: 12px; color: var(--muted); font-style: italic; }
 .check { color: #B25E00; font-size: 12px; font-weight: 600; }
 .item-actions { display: flex; gap: 4px; align-items: center; }
 .item-actions, .remind { flex-wrap: wrap; }

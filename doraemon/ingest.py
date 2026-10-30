@@ -27,6 +27,7 @@ from doraemon.fx import FxRates
 from doraemon.ledger import build_ledger, spending_totals
 from doraemon.llm import Backend, get_backend
 from doraemon.pipeline import process
+from doraemon.quiet import hold
 from doraemon.rules import RuleStore
 from doraemon.schema import Extraction
 from doraemon.tidy import find_twin, same_item
@@ -100,7 +101,7 @@ def run_ingest(settings: Settings, days: int | None = None, limit: int = 0, agai
 
     counts: dict[str, int] = defaultdict(int)
     transactions = []
-    found = 0
+    found = held = 0
     stopped = ""
     for n, message_id in enumerate(todo, 1):
         try:
@@ -120,16 +121,20 @@ def run_ingest(settings: Settings, days: int | None = None, limit: int = 0, agai
         result = without_twins(db, result, msg.id)
         db.save_result(msg.id, msg.thread_id, email, result, label)
         transactions += result.transactions
-        found += len(result.items)
+        waiting = hold(db, msg.id, email, settings.user_emails)  # newsletters, mass mail: under Held back
+        found += len(result.items) - waiting
+        held += waiting
         if result.items or result.transactions:
             print_result(email.subject, result, settings, say)  # the web app's checks stay quiet
+            if waiting:
+                say(f"   · held back {waiting} (see All items → Held back)")
         else:
             say(f"[{n}/{len(todo)}] {label}: {email.subject[:70]}")
     if settings.convert_currencies:
         warm_exchange_rates(db, settings)
     if not counts["failed"] and not (limit and len(ids) >= limit):
         db.set_setting(CHECKED_AT, started.isoformat())  # next time, only ask Gmail for newer mail
-    return {"processed": len(todo) - counts["failed"], "items": found, "transactions": transactions,
+    return {"processed": len(todo) - counts["failed"], "items": found, "held": held, "transactions": transactions,
             "counts": dict(counts), "stopped": stopped}
 
 
