@@ -41,7 +41,7 @@ from doraemon.telegram import MAX_PHOTO
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
 from doraemon import coach, quiet, senders
-from doraemon.fitness import health_folders, suggest_targets
+from doraemon.fitness import health_folders, import_steps, suggest_targets
 from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.web import charts
@@ -860,6 +860,20 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         brain.fit.set_profile(profile)
         return RedirectResponse("/fitness?suggest=1", status_code=303)
 
+    @app.post("/fitness/health")
+    def fitness_health(path: str = Form(""), reset: str = Form("")):
+        """Where to read Apple Health steps from: a file or folder (several separated by ";"), read right away."""
+        fit = brain.fit
+        fit.set_health_path(None if reset else path)
+        where = fit.health_path(settings.health_folder)
+        import_steps(fit, where)
+        steps = fit.steps_on(fit.today())
+        msg = ("Back to the default places. " if reset else "Saved. ") + (
+            "Nothing there yet: check the path, or wait for iCloud to sync it."
+            if not any(p.exists() for p in health_folders(where)) else
+            f"Today so far: {steps:,} steps." if steps is not None else "No steps for today in there yet.")
+        return RedirectResponse("/fitness?msg=" + quote(msg), status_code=303)
+
     @app.get("/fitness", response_class=HTMLResponse)
     def fitness_page(request: Request, suggest: int = 0):
         fit = brain.fit
@@ -868,10 +882,12 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         profile = fit.profile()
         suggested = suggest_targets(profile) if suggest and profile.get("weight_kg") else None
         week = coach.week_card(fit)["payload"]
+        health = fit.health_path(settings.health_folder)
         return render(request, "fitness.html", today=today, rows=fit_rows({"kcal": t.kcal, "protein": t.protein},
                       today["steps"], today["targets"]), week=week, targets=fit.targets(), suggested=suggested,
                       profile=profile, library=fit.library(30),
-                      health=[{"path": str(f), "found": f.is_dir()} for f in health_folders(settings.health_folder)],
+                      health=[{"path": str(f), "found": f.exists()} for f in health_folders(health)],
+                      health_path=health, health_custom=fit.health_path("") != "",
                       icloud=(Path.home() / "iCloudDrive").is_dir(),
                       check_time=settings.fitness_check_time)
 

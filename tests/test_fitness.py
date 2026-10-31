@@ -505,6 +505,32 @@ def test_steps_are_read_from_every_watched_folder(fit, tmp_path):
     assert fit.steps_on(date(2026, 10, 19)) == 8423
 
 
+def test_steps_are_read_from_a_file_or_a_folder_shortcuts_named_like_one(fit, tmp_path):
+    file = tmp_path / "Steps" / "today.txt"
+    file.parent.mkdir()
+    file.write_text("2026-10-19 steps 8423")
+    assert import_steps(fit, str(file)) == 1 and fit.steps_on(date(2026, 10, 19)) == 8423
+    # Shortcuts' Save File made "steps.txt" a folder and named the file after the count, with no date anywhere
+    odd = tmp_path / "Steps" / "steps.txt" / "1730.txt"
+    odd.parent.mkdir()
+    odd.write_text("1730\n")
+    assert import_steps(fit, f'"{odd.parent}"') == 1  # quotes from "Copy as path" are fine
+    assert fit.steps_on(datetime.fromtimestamp(odd.stat().st_mtime, fit.tz).date()) == 1730  # the day it was saved
+
+
+def test_the_steps_path_is_changed_on_the_fitness_page(settings, tmp_path):
+    folder = tmp_path / "Steps" / "steps.txt"
+    folder.mkdir(parents=True)
+    (folder / "1730.txt").write_text("1730")
+    client = chat_client(settings)
+    page = client.post("/fitness/health", data={"path": f'"{folder}"'}).text
+    assert "Today so far: 1,730 steps." in page and str(folder) in page and "Use the default places" in page
+    assert client.app.state.runtime.steps_tick() == 0  # the service reads the same path (nothing new since)
+    page = client.post("/fitness/health", data={"reset": "1"}).text
+    assert "Back to the default places. Nothing there yet" in page  # the test's default folder doesn't exist
+    assert str(tmp_path / "health") in page and "Use the default places" not in page
+
+
 def test_the_fitness_page_shows_which_folders_it_watches(settings, tmp_path):
     folder = tmp_path / "icloud-health"
     folder.mkdir()

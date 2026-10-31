@@ -12,8 +12,10 @@ It takes about 10 minutes the first time.
 1. Install **iCloud** from the Microsoft Store and sign in with the same Apple ID as your iPhone.
 2. Tick **iCloud Drive** and press **Apply**. A folder `C:\Users\<you>\iCloudDrive` appears in File Explorer.
 
-That's all Doraemon needs: it already watches `iCloudDrive\Shortcuts\Doraemon\health` (where the Shortcut below
-saves) and `iCloudDrive\Doraemon\health`. The **Fitness** page shows which one it found.
+That's all Doraemon needs: it already watches the Shortcuts app's folder, which iCloud for Windows names
+`iCloudDrive\iCloud~is~workflow~my~workflows` (the Shortcut below saves to `Doraemon\health` in it), and
+`iCloudDrive\Doraemon\health`. The **Fitness** page shows which one it found, and you can paste any other file or
+folder there.
 
 ## 2. On your iPhone: the automation
 
@@ -48,15 +50,20 @@ saves) and `iCloudDrive\Doraemon\health`. The **Fitness** page shows which one i
 
 - Tap the automation's ▶ (or open the app you chose). In the **Files** app, *iCloud Drive → Shortcuts → Doraemon →
   health* now has a file like `steps-2026-10-19.txt` containing `2026-10-19 steps 8423`.
-- On your computer it appears under `iCloudDrive\Shortcuts\Doraemon\health` within a minute or two, and within
-  about 10 minutes the **Fitness** page shows today's steps and Dorae-3 answers "how many steps today?".
-- If the Fitness page says *not there yet* for every folder, look in File Explorer for where the file landed and put
-  that folder in `.env` as `DORAEMON_HEALTH_FOLDER=...` (several folders can be separated by `;`).
+- On your computer it appears under `iCloudDrive\iCloud~is~workflow~my~workflows\Doraemon\health` within a minute
+  or two, and within about 10 minutes the **Fitness** page shows today's steps and Dorae-3 answers "how many steps
+  today?".
+- If the Fitness page says *not there yet* for every folder, find where the file landed in File Explorer,
+  right-click it (or its folder) → **Copy as path**, paste it into the box on the **Fitness** page and press
+  **Save**. Doraemon reads it straight away and tells you today's count. Several paths can be separated by `;`.
 
 ## Good to know
 
-- Doraemon reads lines like `2026-10-19 steps 8423`, `2026-10-19,8423,412` or `Steps: 8,423` (thousands separators
-  and day-first dates are fine). A line without a date takes it from the file's name.
+- Doraemon reads lines like `2026-10-19 steps 8423`, `2026-10-19,8423,412`, `Steps: 8,423` or just `8423`
+  (thousands separators and day-first dates are fine). A line without a date takes it from the file's name, else
+  from the day the file was saved.
+- If **Save File** turns `steps.txt` into a folder holding a file named after the count (`steps.txt\1730.txt`),
+  that works too: Doraemon also looks one folder down.
 - Files can stay in the folder; each day keeps its highest count. Delete old ones whenever you like.
 - iCloud for Windows may keep new files online-only until they're opened; Doraemon opening them downloads them.
   To keep them on the computer, right-click the `Doraemon` folder → **Always keep on this device**.

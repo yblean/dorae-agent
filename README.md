@@ -412,9 +412,10 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
     Facts replace the estimates they know better. Rough numbers: check them before you press **Log**.
   Photos are read on your computer; the ones sent in the web chat are kept in `data/photos` to show in the chat.
 - **Steps** come from Apple Health through a Shortcuts automation on your iPhone that saves a small file to
-  iCloud Drive; iCloud for Windows syncs it, and Doraemon reads it every 10 minutes. It watches
-  `iCloudDrive\Shortcuts\Doraemon\health`, `iCloudDrive\Doraemon\health` and `OneDrive\Doraemon\health`
-  (`DORAEMON_HEALTH_FOLDER` for others, separated by `;`). Set-up: [docs/apple-health-steps.md](docs/apple-health-steps.md).
+  iCloud Drive; iCloud for Windows syncs it, and Doraemon reads it every 10 minutes. It watches the Shortcuts
+  folder (`iCloudDrive\iCloud~is~workflow~my~workflows\Doraemon\health`), `iCloudDrive\Doraemon\health` and
+  `OneDrive\Doraemon\health`; to read another file or folder, paste its path on the **Fitness** page.
+  Set-up: [docs/apple-health-steps.md](docs/apple-health-steps.md).
 - **Asking.** "How am I doing today?", "protein left", "calories this week", "what did I eat yesterday", "my
   targets": instant answers with bars against your targets. Questions that need thought ("what can I improve?")
   go to the model, which gets the numbers and tips worked out by the app and only puts them into words.

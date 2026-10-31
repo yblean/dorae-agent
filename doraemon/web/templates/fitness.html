@@ -69,12 +69,18 @@
     syncs them here, and Doraemon reads them every 10 minutes. Set-up (about 5 minutes): <code>docs/apple-health-steps.md</code>.
     {% if not icloud %}<strong>iCloud for Windows isn't set up on this computer yet</strong>: install it from the Microsoft Store,
     sign in and turn on iCloud Drive.{% endif %}</p>
-  <table class="payments">
+  <table class="payments health-paths">
     {% for f in health %}
     <tr><td><code>{{ f.path }}</code></td><td class="num note">{{ '✓ found' if f.found else 'not there yet' }}</td></tr>
     {% endfor %}
   </table>
-  <p class="note">Doraemon watches all of these; the Shortcut only needs to save to one.</p>
+  <form class="health-form" method="post" action="/fitness/health">
+    <input class="field" name="path" value="{{ health_path }}" placeholder="C:\Users\you\iCloudDrive\...\steps.txt" aria-label="Steps file or folder">
+    <button class="btn btn-primary btn3d">Save</button>
+    {% if health_custom %}<button class="btn btn-ghost" name="reset" value="1">Use the default places</button>{% endif %}
+  </form>
+  <p class="note">{{ 'Your own path.' if health_custom else 'The default places; Doraemon watches all of them.' }}
+    Paste the file or folder your Shortcut saves to (in File Explorer: right-click it, <em>Copy as path</em>); several can be separated by <code>;</code>.</p>
 </div>
 
 <div class="panel-box">

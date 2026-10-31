@@ -5,8 +5,9 @@
 - Food: a message ("chicken rice and kopi siew dai") becomes a draft of foods with their calories and
   macros (doraemon.foodlog works them out), waiting for Log. Logged foods teach the library, so your
   usual orders come back with your own numbers.
-- Steps: read from a folder your iPhone's Shortcuts automation saves Apple Health counts to
-  (import_steps); the highest count for a day wins, so an early run never undoes a later one.
+- Steps: read from the file or folder your iPhone's Shortcuts automation saves Apple Health counts to
+  (import_steps; set on the Fitness page, or DORAEMON_HEALTH_FOLDER); the highest count for a day wins,
+  so an early run never undoes a later one.
 - The evening check (evening_check): what's left for the day and how to close the gap, from foods
   you actually eat. Every number is worked out here; nothing is invented by a model.
 """
@@ -21,7 +22,7 @@ from zoneinfo import ZoneInfo
 from doraemon.db import Database
 
 MACROS = ("kcal", "protein", "carbs", "fat", "sugar")
-TARGETS_KEY, PROFILE_KEY = "fitness:targets", "fitness:profile"
+TARGETS_KEY, PROFILE_KEY, HEALTH_KEY = "fitness:targets", "fitness:profile", "fitness:health_path"
 TARGET_NAMES = {"kcal": "calories", "protein": "protein", "steps": "steps"}
 UNITS = {"kcal": "kcal", "protein": "g", "carbs": "g", "fat": "g", "sugar": "g", "steps": ""}
 STEPS_PER_MINUTE = 100  # a brisk walk
@@ -187,6 +188,15 @@ class Fitness:
 
     # --- steps --------------------------------------------------------------------------------------
 
+    def health_path(self, default: str) -> str:
+        """Where to read steps from: the path saved on the Fitness page, else `default` (DORAEMON_HEALTH_FOLDER)."""
+        return self.db.get_setting(HEALTH_KEY) or default
+
+    def set_health_path(self, path: str | None) -> None:
+        """Save the file or folder(s) to read steps from; empty goes back to the default places."""
+        paths = [p.strip().strip('"').strip() for p in (path or "").split(";")]  # "Copy as path" adds quotes
+        self.db.set_setting(HEALTH_KEY, ";".join(p for p in paths if p) or None)
+
     def set_steps(self, day: date, steps: int, active_kcal: float | None = None, source: str = "apple health") -> bool:
         """Save a day's steps; the highest count for the day wins. Returns whether it changed."""
         old = self.steps_on(day)
@@ -285,7 +295,7 @@ class Fitness:
         return [f"{f['name']} ({f['kcal']:.0f} kcal, {f['protein']:.0f} g)" for f in self.food_options(kcal_left, n)]
 
 
-# --- steps from Apple Health (a Shortcuts automation saving to a OneDrive folder) ---------------------------
+# --- steps from Apple Health (a Shortcuts automation saving to iCloud Drive or OneDrive) -------------------
 
 _DATE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})/(\d{1,2})/(\d{4})")
 # a number: "8,423" or "8 423" (a comma or space before exactly three digits separates thousands), "8423", "412.5"
@@ -301,7 +311,7 @@ def _number(text: str) -> float:
 def parse_steps(text: str, fallback_day: date | None = None) -> list[tuple[date, int, float | None]]:
     """(day, steps, active kcal) from what the Shortcut saves. Best labelled ('2026-10-19 steps 8423 active 412'), but
     '2026-10-19,8423,412' works too, as do thousands commas ('8,423'), decimals and day-first dates. A line without a
-    date uses `fallback_day` (from the file's name)."""
+    date uses `fallback_day` (from the file's name or when it was saved)."""
     found = []
     for line in text.splitlines():
         line = re.sub(r"[\u00a0\u202f]", " ", line.strip())  # no-break spaces in numbers
@@ -324,24 +334,32 @@ def parse_steps(text: str, fallback_day: date | None = None) -> list[tuple[date,
 
 
 def health_folders(setting: str) -> list[Path]:
-    """The folders DORAEMON_HEALTH_FOLDER names (separated by ";"), whether they exist yet or not."""
-    return [Path(p.strip()) for p in setting.split(";") if p.strip()]
+    """The files or folders the steps setting names (separated by ";"), whether they exist yet or not."""
+    return [Path(p.strip().strip('"')) for p in setting.split(";") if p.strip().strip('"')]
+
+
+def step_files(path: Path) -> list[Path]:
+    """`path` itself if it's a file; else the files in that folder and one level down (Shortcuts' Save File can turn
+    "steps.txt" into a folder holding the file)."""
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        return []
+    return [f for f in sorted([*path.glob("*"), *path.glob("*/*")])
+            if f.suffix.lower() in (".txt", ".csv", "") and f.is_file()]
 
 
 def import_steps(fit: Fitness, folder: str | Path) -> int:
-    """Read the step files in `folder` (or in each of several separated by ";"). Returns how many days changed."""
+    """Read the step file, or the step files in a folder (or in each of several separated by ";"). Lines without a
+    date take it from the file's name, else from the day the file was last saved. Returns how many days changed."""
     if isinstance(folder, str) and ";" in folder:
         return sum(import_steps(fit, f) for f in health_folders(folder))
-    folder = Path(folder)
-    if not folder.is_dir():
-        return 0
     changed = 0
-    for path in sorted(folder.glob("*")):
-        if path.suffix.lower() not in (".txt", ".csv", "") or not path.is_file():
-            continue
+    for path in step_files(Path(str(folder).strip().strip('"'))):
         m = _DATE.search(path.stem)
-        named = (date(int(m[1]), int(m[2]), int(m[3])) if m and m[1] else None)
         try:
+            named = (date(int(m[1]), int(m[2]), int(m[3])) if m and m[1] else
+                     datetime.fromtimestamp(path.stat().st_mtime, fit.tz).date())
             text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue

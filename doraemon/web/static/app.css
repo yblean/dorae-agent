@@ -58,6 +58,10 @@ form { margin: 0; }
 .food-edit > .field { flex: 1 1 140px; min-width: 0; }
 .food-num { display: flex; flex-direction: column; width: 72px; }
 .food-num .field { width: 100%; }
+.health-paths code { word-break: break-all; }
+.health-paths .num { white-space: nowrap; }
+.health-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.health-form > .field { flex: 1 1 260px; height: 30px; }
 .fit-week td.hit { color: #12805A; font-weight: 600; }
 .fit-week td.over { color: #B42318; font-weight: 600; }
 .fit-targets { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }

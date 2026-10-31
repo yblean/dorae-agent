@@ -465,8 +465,8 @@ class Runtime:
         return True
 
     def steps_tick(self) -> int:
-        """Read new step counts from the folder your iPhone's Shortcut saves Apple Health steps to."""
-        return import_steps(self.brain.fit, self.settings.health_folder)
+        """Read new step counts from where your iPhone's Shortcut saves Apple Health steps (set on the Fitness page)."""
+        return import_steps(self.brain.fit, self.brain.fit.health_path(self.settings.health_folder))
 
     def fitness_tick(self, now: datetime | None = None) -> bool:
         """Dorae-3's daily check (DORAEMON_FITNESS_CHECK_TIME, 6pm): what's left today and how to close the gap, in its

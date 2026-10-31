@@ -45,10 +45,13 @@ class Settings:
     briefing_telegram: bool = os.getenv("DORAEMON_BRIEFING_TELEGRAM", "on").lower() != "off"  # also send it there
     # Dorae-3's daily check (protein, calories, steps left and how to close the gap), also on Telegram; "off" to stop it
     fitness_check_time: str = os.getenv("DORAEMON_FITNESS_CHECK_TIME", "18:00")
-    # Where your iPhone's Shortcuts automation saves Apple Health step counts (docs/apple-health-steps.md); several
-    # folders separated by ";". By default the places iCloud Drive (iCloud for Windows) and OneDrive put them.
+    # Where your iPhone's Shortcuts automation saves Apple Health step counts (docs/apple-health-steps.md): files or
+    # folders separated by ";". By default the places iCloud Drive (iCloud for Windows) and OneDrive put them. A path
+    # set on the Fitness page wins over this.
     health_folder: str = os.getenv("DORAEMON_HEALTH_FOLDER", ";".join(str(p) for p in (
-        Path.home() / "iCloudDrive" / "Shortcuts" / "Doraemon" / "health",  # a Shortcut's Save File, not asking where
+        # a Shortcut's Save File, not asking where: iCloud for Windows names the Shortcuts folder like this
+        Path.home() / "iCloudDrive" / "iCloud~is~workflow~my~workflows" / "Doraemon" / "health",
+        Path.home() / "iCloudDrive" / "Shortcuts" / "Doraemon" / "health",
         Path.home() / "iCloudDrive" / "Doraemon" / "health",                # or a folder picked in iCloud Drive
         Path(os.getenv("OneDrive") or Path.home() / "OneDrive") / "Doraemon" / "health")))
     # Send each new suggestion from your email to Telegram with Confirm / Remind me and Dismiss; "off" for the app only
