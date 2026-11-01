@@ -153,7 +153,8 @@ _CLOCK = r"(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\b\.?|\d{1,2}:\d{2}\b|noon\b|midnight
 _WHEN_RE = re.compile(
     rf"(?:\b(?:on|at|by|this|next|coming)\s+)*(?:\btoday\b|\btomorrow\b|\b{_WEEKDAY}\b|\bin\s+(?:\d+|an?)\s*"
     rf"(?:mins?|minutes?|hrs?|hours?|days?|weeks?)\b|\b\d{{1,2}}[/.-]\d{{1,2}}(?:[/.-]\d{{2,4}})?\b|"
-    rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}\b|\b{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b|\b{_CLOCK}|\bnext\s+week\b)",
+    rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}(?:,?\s+\d{{4}})?\b|\b{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b|"
+    rf"\b{_CLOCK}|\bnext\s+week\b)",
     re.I)
 
 

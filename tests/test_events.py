@@ -20,9 +20,18 @@ NOW = datetime(2026, 10, 14, 12, 0, tzinfo=SG)  # a Wednesday
     ("add an event: team lunch friday 12:30 to 2pm", EventAsk("Team lunch", "friday 12:30", "2pm")),
     ("add an appointment for physio wed 4:30pm", EventAsk("Physio", "wed 4:30pm")),
     ("add meeting with prof thu 2pm", EventAsk("Meeting with prof", "thu 2pm")),
-    ("add flight to tokyo on 20/11 11-1pm", EventAsk("Flight to tokyo", "on 20/11 11am", "1pm")),
+    ("add flight to tokyo on 20/11 11-1pm", EventAsk("Flight to tokyo", "on 20/11 11am", "1pm", "flight")),
     ("add party from 10pm until 2am saturday", EventAsk("Party", "10pm saturday", "2am")),
-    ("add trip to KL 20/11 to 23/11", EventAsk("Trip to KL", "20/11", "23/11")),
+    ("add trip to KL 20/11 to 23/11", EventAsk("Trip to KL", "20/11", "23/11", "other_travel")),
+    ("help me log Dali Cang'er Hotel 5th Nov to 7th Nov", EventAsk("Dali Cang'er Hotel", "5th Nov", "7th Nov", "hotel")),
+    ("help me add Dali Cang'er Hotel as travel 5th Nov to 7th Nov",
+     EventAsk("Dali Cang'er Hotel", "5th Nov", "7th Nov", "other_travel")),
+    ("add bali trip 5-7 dec", EventAsk("Bali trip", "5 dec", "7 dec", "other_travel")),
+    ("add holiday in japan dec 18 - dec 27", EventAsk("Holiday in japan", "dec 18", "dec 27", "other_travel")),
+    ("book hotel from 3 jan until 6 jan", EventAsk("Hotel", "3 jan", "6 jan", "hotel")),
+    ("add conference 5th to 7th november 2027", EventAsk("Conference", "5th november 2027", "7th november 2027")),
+    ("add dinner with sam nov 5 7-9pm", EventAsk("Dinner with sam", "nov 5 7pm", "9pm")),
+    ("log laksa yesterday", None),  # food, not an event
     ("event: haircut", EventAsk("Haircut", "")),  # says it's an event, so the bot asks when
     ("make dinner tomorrow", None),
     ("add 300 to my dining budget", None),
@@ -59,6 +68,13 @@ def test_an_end_after_midnight_is_the_next_day(db):
 def test_days_make_an_all_day_event_through_the_last_one(db):
     _, item = drafted(db, "Trip to KL", "20/11", end="23/11")
     assert item.all_day and item.end_at.astimezone(SG).strftime("%d %b") == "23 Nov"
+
+
+def test_a_hotel_stay_is_drafted_through_its_last_day(db):
+    result, item = drafted(db, "Dali Cang'er Hotel", "5th Nov", end="7th Nov", kind="hotel")
+    assert item.type == "hotel" and item.all_day
+    assert (item.start_at.astimezone(SG).day, item.end_at.astimezone(SG).day) == (5, 7)
+    assert result["when"] == "Thu 5 – Sat 7 Nov 2026 (3 days)"
 
 
 def test_without_a_time_its_all_day_and_past_dates_are_refused(db):

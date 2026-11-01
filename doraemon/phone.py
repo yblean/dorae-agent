@@ -39,6 +39,10 @@ LAST_KEY = "telegram:last_question"    # for follow-ups like "and last month?"
 ASK_MINUTES = 15                       # an answer to "when?" counts for this long
 LATE = timedelta(minutes=10)           # a message older than this was sent while the bot was off
 MODEL_DOWN = "I need the local model"  # how Brain.food_reply starts when Ollama can't be reached
+# A photo's caption saying it's a booking screenshot (for Dorae-2's calendar, not a meal)
+BOOKING_HINT = re.compile(r"\b(?:book(?:ing|ed)?|hotels?|hostel|homestay|airbnb|stay|check[- ]?in|trains?|tickets?|"
+                          r"flights?|bus|ferry|trip|travel|reservation|appointment|calendar|itinerary|schedule|event)\b",
+                          re.I)
 EDIT_KEY = "telegram:editing_food"     # {"batch", "at"}: Edit was pressed under this food
 NEW_FOOD = re.compile(r"\s*(?:i\s+)?(?:just\s+)?(?:had|ate|eaten|drank|breakfast|lunch|dinner|supper|snack)\b", re.I)
 LIST = 8                               # lines under an answer; the rest are in the app
@@ -103,7 +107,7 @@ class Phone:
         if (asked := split_request(text)) is not None:
             return self.draft(*asked, text, now)
         if (event := split_event(text)) is not None:
-            return self.event(event.title, event.when, event.end, text, now)
+            return self.event(event.title, event.when, event.end, text, now, event.kind)
         if target := coach.parse_target(text, self.brain.fit.targets()):  # "change my daily calories to 1950"
             self.brain.fit.set_targets(**target)
             return f"✅ Done: {coach.target_text(target)}.\n\n" + self.plain(coach.targets_card(self.brain.fit)), None
@@ -199,14 +203,35 @@ class Phone:
         return "✏️ What did you have? Reply like “chicken rice and kopi” and I'll work it out."
 
     def photo(self, image: bytes, caption: str = "") -> tuple[str, Buttons | None]:
-        """A photo of a nutrition label or of your food (its caption, e.g. "2 servings", as a hint), as a draft."""
+        """A photo of a nutrition label or of your food (its caption, e.g. "2 servings", as a hint), as a draft; or a
+        screenshot of a booking, for Dorae-2: said in the caption ("hotel"), or found when the photo isn't food."""
         try:
+            if BOOKING_HINT.search(caption):
+                return self.booking(image, caption)
             card = self.brain.photo_reply(image, caption)
+            if card.get("neither"):
+                return self.booking(image, caption)
         except Exception:
             log.exception("reading a Telegram photo failed")
             return "Sorry, I couldn't read that photo. Try again, or tell me what you had.", None
         label = card["kind"] == "food" and self.brain.fit.batch(card["payload"]["batch"])[0]["source"] == "label"
         return self.food_card(card, "📷 From the label:" if label else "📷 From your photo (rough numbers):", label)
+
+    def booking(self, image: bytes, caption: str) -> tuple[str, Buttons | None]:
+        """The bookings in a screenshot as drafts, each with Add and ✖ (and Add all for several). They show in Dorae-2's
+        chat too, where Confirm works the same."""
+        card = self.brain.booking_reply(image, caption)
+        if card["kind"] != "items":
+            return card["text"], None
+        self.db.add_message("calendar", "agent", "📷 From a screenshot on Telegram. " + card["text"], card["kind"],
+                            card["payload"])
+        waiting = [r for r in (self.db.get("item", i) for i in card["payload"]["ids"]) if r["status"] == "proposed"]
+        text = card["text"].replace("Check the dates, then press Confirm to add them to your calendar.",
+                                    "Check the dates, then press Add to put them in your calendar.")
+        buttons = [[(f"✅ Add {r['title'][:28]}", f"make:{r['id']}"), ("✖", f"drop:{r['id']}")] for r in waiting[:6]]
+        if len(waiting) > 1:
+            buttons.append([("✅ Add all", "makeall:" + ",".join(str(r["id"]) for r in waiting[:6]))])
+        return "📷 " + text, buttons or None
 
     def food_card(self, card: dict, intro: str, label: bool = False) -> tuple[str, Buttons | None]:
         """A food draft as lines with Log and Cancel; anything else as its text."""
@@ -305,9 +330,10 @@ class Phone:
                 f"I'll remind you {result.get('reminds') or self.reminds(item, now)}."), \
             [[("✅ Create", f"make:{item_id}"), ("✖ Cancel", f"drop:{item_id}")]]
 
-    def event(self, title: str, when: str, end: str, question: str, now: datetime) -> tuple[str, Buttons | None]:
+    def event(self, title: str, when: str, end: str, question: str, now: datetime,
+              kind: str = "") -> tuple[str, Buttons | None]:
         result, item_id = draft_event(self.db, self.settings.timezone, self.settings.date_order, title, when,
-                                      question, now, end=end)
+                                      question, now, end=end, kind=kind)
         if item_id is None:
             if title:  # the date was missing, unreadable or past: your next message can be the answer
                 self.db.set_setting(ASK_KEY, json.dumps({"title": title, "kind": "event", "at": now.isoformat()}))

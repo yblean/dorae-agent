@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -25,18 +26,19 @@ from doraemon import budgets as bud
 from doraemon import coach, foodlog, income
 from doraemon.income import CATEGORIES
 from doraemon.assistant import last_full_month, month_name, spending as spending_text
-from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule
+from doraemon.calendar_sync import ALL_DAY_TYPES, Schedule, add_to_calendar
 from doraemon.config import Settings
-from doraemon.db import Database, from_chat, item_model, transaction_model
+from doraemon.db import CHAT_ID_PREFIX, Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when
 from doraemon.ledger import counted_between, refunded_purchases, spending_totals
 from doraemon.networth import KINDS, NetWorth, shift_month
 from doraemon.events import draft_event, split_event
+from doraemon.extract import extract_image
 from doraemon.fitness import Fitness, suggest_targets
 from doraemon.reminders import draft_reminder, short_time, split_request
 from doraemon.router import Route, route
 from doraemon.rules import name_key
-from doraemon.schema import Category
+from doraemon.schema import ActionItem, Category
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +158,7 @@ class Brain:
         self.nw = NetWorth(db, self.home, fx)
         self.fit = Fitness(db, settings.timezone)  # Dorae-3
         self.food_backend = None  # the model that reads what you ate (doraemon.foodlog); made when first needed
+        self.calendar = lambda: None  # () -> the Doraemon Google Calendar, or None (doraemon.jobs sets it)
 
     def today(self) -> date:
         return datetime.now(self.tz).date()
@@ -630,12 +633,13 @@ class Brain:
         in_google = {e["id"] for e in events if e.get("id")}
         for r in self.db.items(("proposed", "confirmed")):
             day = self._dated(r)
-            if (r["calendar_event_id"] and r["calendar_event_id"] in in_google) or r["done_at"] or day is None \
-                    or not first <= day <= last:
-                continue  # already in Google Calendar, done, or not in these days
             item = item_model(r)
+            until = max(day, item.end_at.astimezone(self.tz).date()) if day and item.end_at else day  # a hotel's stay
+            if (r["calendar_event_id"] and r["calendar_event_id"] in in_google) or r["done_at"] or day is None \
+                    or until < first or day > last:
+                continue  # already in Google Calendar, done, or not in these days
             timed = not (item.all_day or item.type in ALL_DAY_TYPES)
-            events.append({"title": r["title"], "first": day.isoformat(), "last": day.isoformat(),
+            events.append({"title": r["title"], "first": day.isoformat(), "last": until.isoformat(),
                            "start": item.start_at.astimezone(self.tz).strftime("%H:%M") if timed else "", "end": "",
                            "calendar": "Added in chat" if from_chat(r["gmail_id"]) else "From your email",
                            "color": color, "location": r["location"] or "",
@@ -935,7 +939,7 @@ class Brain:
     def event_reply(self, ask, question: str) -> dict:
         """Draft the event you asked for (doraemon.events) as a card waiting for Confirm."""
         result, item_id = draft_event(self.db, self.settings.timezone, self.settings.date_order, ask.title, ask.when,
-                                      question, datetime.now(self.tz), end=ask.end)
+                                      question, datetime.now(self.tz), end=ask.end, kind=ask.kind)
         if item_id is None:
             return {"text": result["error"], "kind": "text", "payload": None}
         status = self.db.get("item", item_id)["status"]
@@ -945,6 +949,76 @@ class Brain:
         return {"text": f"Here's your event: “{result['title']}”, {result['when']}. Press Confirm to add it to your "
                         "Doraemon calendar, or change it first under Edit.",
                 "kind": "items", "payload": {"ids": [item_id]}}
+
+    def booking_photo(self, image: bytes, said: str = "", file: str | None = None) -> list[int]:
+        """A screenshot of a booking you sent Dorae-2 (and what you said with it), and the answer: the message ids."""
+        ids = [self.db.add_message("calendar", "user", said.strip()[:500], "photo", {"file": file} if file else None)]
+        card = self.booking_reply(image, said)
+        self.last_route = "photo"
+        ids.append(self.db.add_message("calendar", "agent", card["text"], card["kind"], card["payload"], via="model"))
+        return ids
+
+    def booking_reply(self, image: bytes, said: str = "") -> dict:
+        """The bookings in a screenshot as cards waiting for Confirm: a hotel from check-in to check-out, each train or
+        flight leg. One you already have (the same day, much the same name) is brought up to date instead."""
+        if self.food_model() is None:
+            return {"text": "I need the local model to read screenshots, and it isn't running. Open the Ollama app and "
+                            "try again.", "kind": "text", "payload": None}
+        try:
+            found = extract_image(image, said, self.food_backend, self.settings, datetime.now(self.tz))
+        except Exception as e:  # the model gave nothing usable, or can't see
+            log.warning("reading a booking screenshot failed: %s", e)
+            return {"text": "I couldn't read that screenshot just now. Try again, or tell me the booking, like “add Dali "
+                            "Cang'er Hotel 5-7 Nov”.", "kind": "text", "payload": None}
+        if found.problems:
+            log.info("booking screenshot: %s", "; ".join(found.problems))
+        if not found.items:
+            return {"text": "I couldn't find a booking with a date in that screenshot. Send one that shows the dates "
+                            "(a hotel's check-in and check-out, a ticket's departure), or tell me, like “add Dali "
+                            "Cang'er Hotel 5-7 Nov”.", "kind": "text", "payload": None}
+        lines, ids = [], []
+        for item in found.items:
+            item = item.model_copy(update={"evidence_snippet": item.evidence_snippet or "From your screenshot"})
+            when = describe_when(item, self.settings.timezone)
+            if (same := self.same_booking(item)) is not None:
+                ids.append(same["id"])
+                lines.append(f"• {item.title}: {when} (you had it already{self.refresh(same, item)})")
+            else:
+                ids.append(self.db.add_item(f"{CHAT_ID_PREFIX}{uuid.uuid4().hex[:12]}", item))
+                lines.append(f"• {item.title}: {when}")
+        waiting = any(self.db.get("item", i)["status"] == "proposed" for i in ids)
+        return {"text": "From your screenshot:\n" + "\n".join(lines)
+                        + ("\nCheck the dates, then press Confirm to add them to your calendar." if waiting else ""),
+                "kind": "items", "payload": {"ids": ids}}
+
+    def same_booking(self, item: ActionItem):
+        """The item you already have for this booking (waiting or confirmed, starting the same day, its name's words
+        mostly the same), or None."""
+        def words(title: str) -> set[str]:
+            return set(re.findall(r"[^\W_]{3,}", title.lower())) - {"the", "and", "travel", "trip", "booking"}
+        mine, day = words(item.title), item.start_at.astimezone(self.tz).date()
+        for r in self.db.items(("proposed", "confirmed")):
+            theirs = words(r["title"])
+            if self._dated(r) == day and mine and theirs and (len(mine & theirs) >= 2 or mine <= theirs or theirs <= mine):
+                return r
+        return None
+
+    def refresh(self, row, item: ActionItem) -> str:
+        """Bring an item up to date from the booking itself (its name, dates, place, booking number), in Google Calendar
+        too when it's there. Returns words saying so, or "" when nothing changed."""
+        changes = {"title": item.title, "start_at": item.start_at.isoformat(),
+                   "end_at": item.end_at.isoformat() if item.end_at else row["end_at"], "all_day": int(item.all_day),
+                   "location": item.location or row["location"], "booking_ref": item.booking_ref or row["booking_ref"],
+                   "type": row["type"] if row["custom_type_id"] else item.type.value}  # a type of your own stays
+        changes = {k: v for k, v in changes.items() if v != row[k]}
+        if not changes:
+            return ""
+        self.db.update("item", row["id"], "edit", **changes, edited=1)
+        said = "; I updated it to match"
+        if row["status"] == "confirmed" and row["calendar_event_id"]:
+            synced = add_to_calendar(self.db, self.calendar(), row["id"])
+            said += ", in Google Calendar too" if synced.startswith("Added") else f". {synced}"
+        return said
 
     # --- Dorae-3 -----------------------------------------------------------------------------------
 
@@ -1051,7 +1125,8 @@ class Brain:
                 "failed": "I couldn't read that photo just now. Try again, or tell me what you had."}.get(
             seen["kind"], "I couldn't see food or a nutrition label in that photo. Send one of your meal or of the "
                           "label's nutrition table.")
-        return {"text": text, "kind": "text", "payload": None}
+        # "neither": not food at all, so on Telegram it may be a booking screenshot for Dorae-2
+        return {"text": text, "kind": "text", "payload": None, "neither": seen["kind"] == "neither"}
 
     @staticmethod
     def label_text(food: dict) -> str:

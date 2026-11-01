@@ -12,6 +12,7 @@ or is killed, the operating system lets go of the lock.
 import json
 import logging
 import os
+import re
 import threading
 from datetime import datetime, time as dtime, timedelta, timezone
 from decimal import Decimal
@@ -208,6 +209,7 @@ class Runtime:
         self.calendars: list[Calendar] = [calendar] if calendar else []
         self.schedules: list[Schedule] = [schedule] if schedule else []
         self.brain = Brain(self.db, settings, self.fx, schedule=self.get_schedule)
+        self.brain.calendar = self.get_calendar
         self.check = CheckJob(self.db, settings, ingest)
         self.check.after_payments = self.after_payments
         self.check.on_problem = self.warn
@@ -299,6 +301,8 @@ class Runtime:
             return text
         if action == "fkeep" and ident in TARGET_NAMES:
             return f"👍 Keeping your {TARGET_NAMES[ident]} target as it is."
+        if action == "makeall" and re.fullmatch(r"\d+(?:,\d+)*", ident):  # Add all under a booking screenshot
+            return "\n".join(self.phone.create(int(i)) for i in ident.split(","))
         if not ident.isdigit():
             return "I don't know that button."
         item_id = int(ident)

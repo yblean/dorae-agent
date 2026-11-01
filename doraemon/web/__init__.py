@@ -28,9 +28,9 @@ from doraemon import income
 from doraemon.agents import AGENTS, COLORS, Brain, shades, short_clock as clock, styled
 from doraemon.assistant import last_full_month, month_name
 from doraemon.chat import AgentChat
-from doraemon.calendar_sync import Calendar, Schedule, add_to_calendar as calendar_add
+from doraemon.calendar_sync import CALENDAR_NAME, Calendar, Schedule, add_to_calendar as calendar_add
 from doraemon.config import Settings
-from doraemon.db import Database, from_chat, item_model, transaction_model
+from doraemon.db import CHAT_ID_PREFIX, Database, from_chat, item_model, transaction_model
 from doraemon.display import describe_when, zone_name
 from doraemon.fx import FxRates
 from doraemon.jobs import CheckJob, Runtime  # noqa: F401 (CheckJob: used to live here)
@@ -43,7 +43,7 @@ from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messeng
 from doraemon import coach, quiet, senders
 from doraemon.fitness import TREND_VIEWS, health_folders, import_steps, suggest_targets
 from doraemon.rules import RuleStore, name_key, name_matches
-from doraemon.schema import Category, ItemType
+from doraemon.schema import ActionItem, Category, ItemType
 from doraemon.web import charts
 
 HERE = Path(__file__).parent
@@ -68,7 +68,7 @@ TYPE_GROUPS = [
     ("Telegram reminder", [("reminder", "Reminder"), ("bill", "Bill"), ("deadline", "Deadline"),
                            ("delivery", "Delivery"), ("rsvp", "RSVP")]),
     ("Google Calendar event", [("appointment", "Appointment"), ("flight", "Flight"), ("hotel", "Hotel"),
-                               ("other_travel", "Train, bus or ferry")]),
+                               ("other_travel", "Trip or travel")]),
 ]
 BUDGET_OPTIONS = [(bud.TOTAL, "All spending")] + [(c.value, c.value.capitalize()) for c in Category]
 TYPE_LABELS = {value: label for _, options in TYPE_GROUPS for value, label in options}
@@ -141,6 +141,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
     def card(row) -> dict:
         item = item_model(row)
         local = item.start_at.astimezone(ZoneInfo(item.timezone)) if item.start_at else None
+        end = item.end_at.astimezone(ZoneInfo(item.timezone)) if item.end_at and local else None
         bg, fg, kind = CHIPS.get(row["type"], ("#EEF1F6", "#4A5D70", row["type"]))
         custom = db.custom_type(row["custom_type_id"]) if row["custom_type_id"] else None
         if custom:
@@ -169,6 +170,8 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
             "is_travel": row["type"] in TRAVEL,
             "date": local.date().isoformat() if local else "",
             "time": "" if item.all_day or not local else local.strftime("%H:%M"),
+            "end_date": end.date().isoformat() if end and end.date() > local.date() else "",
+            "end_time": "" if item.all_day or not end else end.strftime("%H:%M"),
             "upcoming": item.start_at is None or item.start_at.astimezone(tz).date() >= datetime.now(tz).date(),
         }
 
@@ -299,7 +302,8 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
                                  **({"card": render_card(refresh, back)} if refresh else {})})
         path = back if back.startswith("/") and not back.startswith("//") else f"/chat/{agent}"
         if not path.startswith("/chat/"):  # list pages show it too; chat pages already have it in the thread
-            path += ("&" if "?" in path else "?") + "msg=" + quote(text)
+            path, hash, anchor = path.partition("#")  # "/calendar?item=4#edit": the message goes before the #
+            path += ("&" if "?" in path else "?") + "msg=" + quote(text) + hash + anchor
         return RedirectResponse(path, status_code=303)
 
     # --- Google Calendar ----------------------------------------------------
@@ -512,20 +516,24 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
 
     photos = Path(settings.db_path).parent / "photos"  # the photos you sent Dorae-3, shown in its chat
 
-    @app.post("/chat/fitness/photo")
-    async def photo(request: Request, photo: UploadFile = File(...), q: str = Form("")):
-        """A photo of a nutrition label or of your food, with what you said about it ("2 servings")."""
+    @app.post("/chat/{agent_id}/photo")
+    async def photo(request: Request, agent_id: str, photo: UploadFile = File(...), q: str = Form("")):
+        """A photo with what you said about it: for Dorae-3 a nutrition label or your food ("2 servings"), for Dorae-2
+        a screenshot of a booking (a hotel, train tickets) to add to your calendar."""
+        read = {"fitness": brain.photo, "calendar": brain.booking_photo}.get(agent_id)
+        if read is None:
+            raise HTTPException(404)
         image = await photo.read(MAX_PHOTO + 1)
         if not (photo.content_type or "").startswith("image/") or not image or len(image) > MAX_PHOTO:
             raise HTTPException(400, "Send a photo (JPG or PNG) under 10 MB.")
         photos.mkdir(parents=True, exist_ok=True)
         name = f"{uuid.uuid4().hex}.jpg"
         (photos / name).write_bytes(image)
-        ids = brain.photo(image, q, file=name)
-        db.set_setting("seen:fitness", str(ids[-1]))
+        ids = read(image, q, file=name)
+        db.set_setting(f"seen:{agent_id}", str(ids[-1]))
         if wants_json(request):
             return JSONResponse({"html": render_messages(request, ids)})
-        return RedirectResponse("/chat/fitness", status_code=303)
+        return RedirectResponse(f"/chat/{agent_id}", status_code=303)
 
     @app.get("/photos/{name}")
     def photo_file(name: str):
@@ -670,11 +678,36 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         except ValueError:
             return None, "I don't know that type. Please pick one from the list."
 
+    def when_from_form(day: str, at: str, end_day: str | None, end_at: str, zone: ZoneInfo) -> tuple[datetime, datetime | None]:
+        """(start, end or None) from a form's date and time fields. Without times it's whole days, through the end
+        date (a hotel: check-in to check-out); with them, from the start time to the end time (on the end date, or
+        the same day). Raises ValueError, worded for you, when they don't fit."""
+        try:
+            first = date.fromisoformat(day)
+            last = date.fromisoformat(end_day) if end_day else None
+            start = datetime.combine(first, time.fromisoformat(at) if at else time(0), zone)
+            until = time.fromisoformat(end_at) if end_at and at else None
+        except ValueError:
+            raise ValueError("That date or time doesn't look right. Please check it.") from None
+        if last is not None and last < first:
+            raise ValueError(f"The end date ({last:%a} {last.day} {last:%b}) is before the start. Please check it.")
+        if until is not None:
+            finish = datetime.combine(last or first, until, zone)
+            if finish <= start:
+                raise ValueError("The end time is before the start. Please check it.")
+            return start, finish
+        if at:  # a start time and only an end date: until the end of that day
+            return start, datetime.combine(last, time(23, 59), zone) if last and last > first else None
+        return start, datetime.combine(last, time(0), zone) if last and last > first else None
+
     @app.post("/items/{item_id}/edit")
     def edit(request: Request, item_id: int, title: str = Form(...), type: str = Form(...),
              day: str = Form(""), at: str = Form(""), zone: str = Form(""), back: str = Form("/chat/calendar"),
-             new_type: str = Form(""), new_base: str = Form("reminder")):
+             new_type: str = Form(""), new_base: str = Form("reminder"), end_day: str | None = Form(None),
+             end_at: str = Form(""), location: str | None = Form(None)):
         row = db.get("item", item_id)
+        if row is None:
+            raise HTTPException(404)
         zone = zone.strip() or row["timezone"]
         try:
             item_tz = ZoneInfo(zone)
@@ -684,11 +717,24 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         if picked is None:
             return answer(request, "calendar", back, made, refresh=item_id)
         changes = {"title": title.strip() or row["title"], **picked, "timezone": zone, "edited": 1}
+        if location is not None:
+            changes["location"] = location.strip()[:200] or None
         if day:
-            start = datetime.combine(date.fromisoformat(day), time.fromisoformat(at) if at else time(0), item_tz)
+            try:
+                start, finish = when_from_form(day, at, end_day, end_at, item_tz)
+            except ValueError as e:
+                return answer(request, "calendar", back, str(e), refresh=item_id)
             changes |= {"start_at": start.isoformat(), "all_day": 0 if at else 1}
+            if end_day is not None:  # the form has end fields (blank ones clear the end)
+                changes["end_at"] = finish.isoformat() if finish else None
         db.update("item", item_id, "edit", **changes)
         msg = f"Updated “{changes['title']}”." + made
+        if row["status"] == "confirmed" and row["calendar_event_id"]:  # already in Google Calendar: move it there too
+            synced = add_to_calendar(item_id)
+            if not synced.startswith("Added"):
+                msg += " " + synced
+            else:
+                msg += " Google Calendar is updated."
         if row["type"] in TRAVEL and row["departs_from"] and zone != row["timezone"]:
             rule = rules.add("travel_timezone", row["departs_from"], zone, created_from=f"item #{item_id}")
             msg += f" I'll remember departures from {rule.match} are in {zone_name(zone)} time."
@@ -757,6 +803,109 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         cards = [c for c in (card(r) for r in db.items(("confirmed",))) if c["upcoming"]]
         return render(request, "upcoming.html", cards=cards, calendar_connected=get_calendar() is not None,
                       telegram_connected=get_messenger() is not None)
+
+    # --- the calendar (Dorae-2) ------------------------------------------------
+
+    @app.get("/calendar", response_class=HTMLResponse)
+    def calendar_page(request: Request, month: str = "", item: int | None = None, add: str = ""):
+        """A month of your appointments, trips, bills and reminders (a hotel across its nights), to click and edit,
+        with your other Google calendars' events alongside (edit those in Google Calendar)."""
+        today = datetime.now(tz).date()
+        try:
+            first = date.fromisoformat(f"{month}-01") if month else today.replace(day=1)
+        except ValueError:
+            first = today.replace(day=1)
+        last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        start, end = first - timedelta(days=first.weekday()), last + timedelta(days=6 - last.weekday())
+        days: dict[date, list[dict]] = {start + timedelta(days=i): [] for i in range((end - start).days + 1)}
+        here = f"/calendar?month={first:%Y-%m}"
+
+        def place(entry: dict, begins: date, ends: date) -> None:
+            ends = max(begins, ends)
+            for d in (begins + timedelta(days=i) for i in range((ends - begins).days + 1)):
+                if d in days:
+                    part = "single" if begins == ends else "start" if d == begins else "end" if d == ends else "mid"
+                    days[d].append({**entry, "part": part, "named": part in ("single", "start") or d.weekday() == 0
+                                    or d == start})
+
+        ours, titles = set(), set()
+        for r in db.items(("proposed", "confirmed")):
+            if not r["start_at"]:
+                continue
+            c = card(r)
+            ours.add(r["calendar_event_id"])
+            titles.add(r["title"].lower())
+            place({"id": r["id"], "title": r["title"], "time": c["time"], "bg": c["chip_bg"], "fg": c["chip_fg"],
+                   "kind": c["kind"], "waiting": r["status"] == "proposed", "done": bool(r["done_at"]),
+                   "href": f"{here}&item={r['id']}#edit", "selected": r["id"] == item},
+                  date.fromisoformat(c["date"]), date.fromisoformat(c["end_date"] or c["date"]))
+        events, problem = brain.calendar_events(start, end)
+        for e in events:
+            if e["calendar"] == CALENDAR_NAME and e["title"].split(" ", 1)[-1].lower() in titles:
+                continue  # one of ours whose event id wasn't saved (the reply was lost): it shows from here already
+            if e.get("id") and e["id"] not in ours:  # your other calendars: shown, edited in Google Calendar
+                place({"id": None, "title": e["title"], "time": e["start"], "color": e["color"], "kind": e["calendar"],
+                       "href": e["link"], "waiting": False, "done": False, "selected": False},
+                      date.fromisoformat(e["first"]), date.fromisoformat(e["last"]))
+        for entries in days.values():  # several days first, then all day, then by time
+            entries.sort(key=lambda x: (x["part"] == "single", x["time"] != "", x["time"]))
+        cells = [{"day": d, "entries": entries, "other": d.month != first.month, "today": d == today,
+                  "add": f"{here}&add={d}#edit"} for d, entries in days.items()]
+        row = db.get("item", item) if item else None
+        try:
+            adding = date.fromisoformat(add) if add and not row else None
+        except ValueError:
+            adding = None
+        prev, nxt = (first - timedelta(days=1)).replace(day=1), last + timedelta(days=1)
+        return render(request, "calendar.html", first=first, weeks=[cells[i:i + 7] for i in range(0, len(cells), 7)],
+                      selected=card(row) if row and row["status"] in ("proposed", "confirmed") else None,
+                      adding=adding, here=here, prev=f"{prev:%Y-%m}", next=f"{nxt:%Y-%m}", this=f"{today:%Y-%m}",
+                      problem=problem, calendar_connected=get_calendar() is not None)
+
+    @app.post("/calendar/add")
+    def calendar_new(request: Request, title: str = Form(...), type: str = Form("appointment"), day: str = Form(...),
+                     end_day: str = Form(""), at: str = Form(""), end_at: str = Form(""), location: str = Form(""),
+                     new_type: str = Form(""), new_base: str = Form("reminder"), back: str = Form("/calendar")):
+        """Something you added on the calendar: saved as confirmed, then into Google Calendar (or Telegram reminders
+        for a bill, deadline or reminder)."""
+        picked, made = pick_type(type, new_type, new_base)
+        if picked is None:
+            return answer(request, "calendar", back, made)
+        try:
+            start, finish = when_from_form(day, at, end_day, end_at, tz)
+        except ValueError as e:
+            return answer(request, "calendar", back, str(e))
+        item = ActionItem(message_id="chat", type=ItemType(picked["type"]), title=title.strip()[:80] or "Untitled",
+                          start_at=start, end_at=finish, all_day=not at, timezone=settings.timezone,
+                          location=location.strip()[:200] or None, date_text=day,
+                          evidence_snippet="Added on the calendar page", confidence=1.0)
+        item_id = db.add_item(f"{CHAT_ID_PREFIX}{uuid.uuid4().hex[:12]}", item)
+        db.update("item", item_id, "confirm", status="confirmed", custom_type_id=picked["custom_type_id"])
+        if wants_reminder(picked["type"]):
+            _, msg = set_reminders(item_id, *defaults_for(picked["type"]))
+        else:
+            msg = add_to_calendar(item_id)
+        return answer(request, "calendar", back, msg + made, mood="happy")
+
+    @app.post("/items/{item_id}/remove")
+    def remove_item(request: Request, item_id: int, back: str = Form("/calendar")):
+        """Remove something from your calendar: out of Google Calendar, its reminders stopped (undo under Activity)."""
+        row = db.get("item", item_id)
+        if row is None:
+            raise HTTPException(404)
+        msg = f"Removed “{row['title']}”."
+        if row["calendar_event_id"]:
+            try:
+                if cal := get_calendar():
+                    cal.delete(row["calendar_event_id"])
+                db.set_calendar_event(item_id, None)
+                msg += " It's gone from Google Calendar too."
+            except Exception as e:
+                msg += f" I couldn't remove it from Google Calendar ({str(e)[:120]})."
+        if db.cancel_reminders(item_id):
+            msg += " Its reminders are cancelled."
+        db.update("item", item_id, "dismiss", status="dismissed")
+        return answer(request, "calendar", back, msg)
 
     @app.get("/spending", response_class=HTMLResponse)
     def spending(request: Request, month: str = ""):

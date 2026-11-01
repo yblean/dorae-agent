@@ -33,15 +33,15 @@
       <button type="button" class="plus" data-toggle-chips aria-label="Suggestions" title="Suggestions">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
-      {% if a.id == 'fitness' %}
-      <label class="camera" title="Send a photo of a nutrition label or your food">
+      {% if a.id in ('fitness', 'calendar') %}
+      <label class="camera" title="{{ 'Send a photo of a nutrition label or your food' if a.id == 'fitness' else 'Send a screenshot of a booking (hotel, train, flight, appointment) to add it' }}">
         <input type="file" accept="image/*" id="ask-photo" class="sr-only">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>
         <span class="sr-only">Send a photo</span>
       </label>
       {% endif %}
       <label for="ask-q" class="sr-only">Message {{ a.name }}</label>
-      <input id="ask-q" name="q" autocomplete="off" placeholder="{{ 'Message Dorae-3, or send a label photo' if a.id == 'fitness' else 'Message ' ~ a.name }}" required>
+      <input id="ask-q" name="q" autocomplete="off" placeholder="{{ 'Message Dorae-3, or send a label photo' if a.id == 'fitness' else 'Message ' ~ a.name ~ ', or paste a booking screenshot' if a.id == 'calendar' else 'Message ' ~ a.name }}" required>
       <button class="send" aria-label="Send">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
       </button>
@@ -91,7 +91,7 @@
   <div class="screen-caption">
     {% if panel.kind == 'fitness' %}<a href="/fitness">Fitness page · targets, week and your foods</a>
     {% elif panel.kind == 'money' %}<a href="/spending">All payments</a> · <a href="/budgets">{{ 'Budgets' if panel.has_budgets else 'Set a budget' }}</a> · <a href="/networth">Net worth</a>
-    {% else %}<a href="/upcoming">{{ a.name }}'s screen · {{ 'syncing to Google Calendar' if panel.calendar_connected else 'calendar not connected' }}</a>{% endif %}
+    {% else %}<a href="/calendar">Calendar</a> · <a href="/upcoming">Upcoming · {{ 'syncing to Google Calendar' if panel.calendar_connected else 'calendar not connected' }}</a>{% endif %}
   </div>
 
   <div class="routines">

@@ -27,9 +27,19 @@ def _fmt(dt: datetime) -> str:
 def describe_when(item: ActionItem, user_tz: str) -> str:
     if item.start_at is None:
         return "No date found"
+    start = item.start_at
     if item.all_day:
-        return f"{item.start_at:%a} {item.start_at.day} {item.start_at:%b %Y} (all day)"
-    text = _fmt(item.start_at) + f" {zone_name(item.timezone)} time"
+        last = item.end_at.astimezone(start.tzinfo) if item.end_at else start
+        if last.date() <= start.date():
+            return f"{start:%a} {start.day} {start:%b %Y} (all day)"
+        first = f"{start:%a} {start.day}" + ("" if (start.year, start.month) == (last.year, last.month) else
+                                             f" {start:%b}" if start.year == last.year else f" {start:%b %Y}")
+        return f"{first} – {last:%a} {last.day} {last:%b %Y} ({(last.date() - start.date()).days + 1} days)"
+    text = _fmt(start) + f" {zone_name(item.timezone)} time"
+    if item.end_at and item.end_at > start:
+        end = item.end_at.astimezone(start.tzinfo)
+        text = text.replace(f", {start:%H:%M}", f", {start:%H:%M}–{end:%H:%M}") if end.date() == start.date() else \
+            text + f" until {end:%a} {end.day} {end:%b}, {end:%H:%M}"
     if item.timezone != user_tz:
         local = item.start_at.astimezone(ZoneInfo(user_tz))
         text += f" ({local:%H:%M} {zone_name(user_tz)} time"

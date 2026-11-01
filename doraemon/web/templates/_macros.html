@@ -136,7 +136,10 @@
         <label>Title <input class="field" name="title" value="{{ r.title }}"></label>
         {{ type_picker(c, types) }}
         <label>Date <input class="field" type="date" name="day" value="{{ c.date }}"></label>
+        <label>Until (for several days) <input class="field" type="date" name="end_day" value="{{ c.end_date }}"></label>
         <label>Time (blank = all day) <input class="field" type="time" name="at" value="{{ c.time }}"></label>
+        <label>End time <input class="field" type="time" name="end_at" value="{{ c.end_time }}"></label>
+        <label>Where <input class="field" name="location" value="{{ r.location or '' }}" placeholder="optional"></label>
         {% if c.is_travel %}<label>Departure timezone <input class="field" name="zone" value="{{ r.timezone }}" placeholder="Asia/Tokyo"></label>{% endif %}
       </div>
       <div class="row">

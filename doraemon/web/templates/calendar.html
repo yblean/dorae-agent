@@ -1,0 +1,86 @@
+{% extends "base.html" %}{% from "_macros.html" import type_picker %}{% set title = "Calendar" %}
+{% block content %}
+<div class="cal-page" style="--agent: #EC4899">
+<div class="cal-bar">
+  <a class="tab" href="/calendar?month={{ prev }}" aria-label="Previous month">‹</a>
+  <h2 class="cal-month">{{ first.strftime('%B %Y') }}</h2>
+  <a class="tab" href="/calendar?month={{ next }}" aria-label="Next month">›</a>
+  {% if first.strftime('%Y-%m') != this %}<a class="tab" href="/calendar?month={{ this }}">Today</a>{% endif %}
+  <span class="note cal-hint">Click something to change it, or + on a day to add one.
+    {% if not calendar_connected %}Google Calendar isn't connected: run <code>python -m doraemon.calendar_sync connect</code>.{% endif %}</span>
+</div>
+{% if problem %}<p class="note">I couldn't read your other Google calendars ({{ problem }}), so only Doraemon's things show.</p>{% endif %}
+
+<div class="cal" role="grid" aria-label="{{ first.strftime('%B %Y') }}">
+  <div class="cal-row cal-head" role="row">{% for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] %}<div role="columnheader">{{ d }}</div>{% endfor %}</div>
+  {% for week in weeks %}
+  <div class="cal-row" role="row">
+    {% for c in week %}
+    <div class="cal-day {{ 'other' if c.other }} {{ 'today' if c.today }}" role="gridcell">
+      <div class="cal-date"><span>{{ c.day.day }}</span><a class="cal-add" href="{{ c.add }}" aria-label="Add on {{ c.day.strftime('%a %d %b') }}">+</a></div>
+      {% for e in c.entries %}
+      <a class="cal-e {{ e.part }} {{ 'waiting' if e.waiting }} {{ 'done' if e.done }} {{ 'selected' if e.selected }} {{ 'theirs' if not e.id }}"
+         href="{{ e.href or '#' }}" {% if not e.id and e.href %}target="_blank" rel="noopener"{% endif %}
+         style="{% if e.id %}background: {{ e.bg }}; color: {{ e.fg }}{% else %}--dot: {{ e.color }}{% endif %}"
+         title="{{ e.title }}{{ ' · ' ~ e.time if e.time }} · {{ e.kind }}{{ ' · needs your OK' if e.waiting }}{{ ' · in your Google Calendar' if not e.id }}">
+        {% if e.named %}{% if e.time %}<span class="cal-time">{{ e.time }}</span>{% endif %}{{ e.title }}{% else %}&nbsp;{% endif %}</a>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+<p class="note">Dashed: waiting for your OK. With a dot: from your other Google calendars (click to open it there).</p>
+
+<div id="edit">
+{% if selected %}{% set c = selected %}{% set r = c.row %}
+<div class="panel-box cal-panel">
+  <div class="card-head"><span><span class="chip" style="background: {{ c.chip_bg }}; color: {{ c.chip_fg }}">{{ c.kind }}</span> {{ r.title }}</span>
+    <a class="note" href="{{ here }}">Close</a></div>
+  <p class="note">{{ c.detail }}{% if r.status == 'proposed' %} · waiting for your OK{% elif r.calendar_event_id %} · in Google Calendar{% endif %}</p>
+  <form method="post" action="/items/{{ r.id }}/edit">
+    <input type="hidden" name="back" value="{{ here }}&item={{ r.id }}">
+    <div class="edit-grid">
+      <label>Title <input class="field" name="title" value="{{ r.title }}" maxlength="80"></label>
+      {{ type_picker(c, types) }}
+      <label>From <input class="field" type="date" name="day" value="{{ c.date }}" required></label>
+      <label>Until (blank = one day) <input class="field" type="date" name="end_day" value="{{ c.end_date }}"></label>
+      <label>Start time (blank = all day) <input class="field" type="time" name="at" value="{{ c.time }}"></label>
+      <label>End time <input class="field" type="time" name="end_at" value="{{ c.end_time }}"></label>
+      <label>Where <input class="field" name="location" value="{{ r.location or '' }}" placeholder="optional"></label>
+      {% if c.is_travel %}<label>Departure timezone <input class="field" name="zone" value="{{ r.timezone }}" placeholder="Asia/Tokyo"></label>{% endif %}
+    </div>
+    <div class="row"><button class="btn btn-white btn3d">Save changes</button>
+      {% if r.calendar_event_id %}<span class="note">Google Calendar is updated too.</span>{% endif %}</div>
+  </form>
+  <div class="row cal-actions">
+    {% if r.status == 'proposed' %}
+    <form method="post" action="/items/{{ r.id }}/confirm"><input type="hidden" name="back" value="{{ here }}"><button class="btn btn-primary btn3d">Confirm</button></form>
+    {% elif not r.calendar_event_id and not c.remind %}
+    <form method="post" action="/items/{{ r.id }}/sync"><button class="btn btn-white btn3d">Add to Google Calendar</button></form>
+    {% endif %}
+    <form method="post" action="/items/{{ r.id }}/remove"><input type="hidden" name="back" value="{{ here }}"><button class="btn-link danger">Remove from calendar</button></form>
+  </div>
+</div>
+{% elif adding %}
+<div class="panel-box cal-panel">
+  <div class="card-head"><span>Add on {{ adding.strftime('%a %d %b %Y').replace(' 0', ' ') }}</span><a class="note" href="{{ here }}">Close</a></div>
+  <form method="post" action="/calendar/add">
+    <input type="hidden" name="back" value="{{ here }}">
+    <div class="edit-grid">
+      <label>Title <input class="field" name="title" maxlength="80" required placeholder="e.g. Hotel in Dali" autofocus></label>
+      {{ type_picker({'type_value': 'appointment'}, types) }}
+      <label>From <input class="field" type="date" name="day" value="{{ adding }}" required></label>
+      <label>Until (blank = one day) <input class="field" type="date" name="end_day" min="{{ adding }}"></label>
+      <label>Start time (blank = all day) <input class="field" type="time" name="at"></label>
+      <label>End time <input class="field" type="time" name="end_at"></label>
+      <label>Where <input class="field" name="location" placeholder="optional"></label>
+    </div>
+    <div class="row"><button class="btn btn-primary btn3d">Add</button>
+      <span class="note">Goes to Google Calendar; a bill, deadline or reminder gets Telegram reminders instead.</span></div>
+  </form>
+</div>
+{% endif %}
+</div>
+</div>
+{% endblock %}

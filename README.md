@@ -170,6 +170,13 @@ Ask Dorae-2 "Show my schedule this week" (or "next week") for a week view of all
 show in Google Calendar, plus things from your email that aren't in it yet. All your calendars are read in one batched request
 and remembered for 3 minutes, so a week takes about a second and a follow-up is instant.
 
+**Calendar** (in the sidebar, or from Dorae-2's panel) shows a month: your appointments, trips, bills and
+reminders, with a hotel or trip running across all its days, and your other Google calendars' events alongside
+(click one to open it in Google Calendar). Click one of Doraemon's to change its title, type, dates (**From** and
+**Until**), times or place, confirm it, or remove it; changes and removals go to Google Calendar too. Press **+**
+on a day to add something: it goes to Google Calendar, or gets Telegram reminders if it's a bill, deadline or
+reminder. Things waiting for your OK show dashed.
+
 Triage skips the Gmail Promotions, Social and Forums tabs before the model runs, unless the
 subject looks like an order, booking, bill or delivery.
 
@@ -311,7 +318,19 @@ Ask Dorae-2 to add an event ("add date night on 26/10 19:00") and it drafts a ca
 **Confirm** puts it in your Doraemon calendar. The app reads the date from your own wording (day first,
 per `DORAEMON_DATE_ORDER`), not the model, and keeps an end time only if you typed one. Clear requests
 ("add dinner with Sam on 26/10 7-9pm", "schedule dentist next monday at 3pm") are read by the same rules as the
-Telegram bot (`doraemon/events.py`) and drafted instantly; other wordings go to the model.
+Telegram bot (`doraemon/events.py`) and drafted instantly; other wordings go to the model. A stay or trip can
+span days: "help me log Dali Cang'er Hotel 5th Nov to 7th Nov", "add bali trip 5-7 dec", "nov 5 - nov 7" or
+"20/11 to 23/11" run from the first day through the last. Words like hotel, flight or trip set the type, and
+"as travel" or "as a hotel" sets it outright (and stays out of the title).
+
+**Screenshots of bookings.** Send Dorae-2 a screenshot of a booking (📷 in its chat, or paste one into the message
+box) and the local model reads it: a hotel from check-in to check-out, each train, bus, ferry or flight leg at its
+station's local time, an appointment or ticket, with the booking number, address and price when shown. Each is
+drafted for **Confirm**; one you already have (the same day, much the same name) is brought up to date from the
+screenshot instead of added twice, in Google Calendar too. On Telegram, send the screenshot to the bot: with a
+caption like "hotel" or "train" it goes straight to Dorae-2, and without one it's read as a booking when it isn't
+food. Each booking gets **✅ Add** and **✖**, plus **Add all** for several. The screenshot stays on your computer: only
+your local model sees it.
 
 **Instant answers.** Everyday lookups skip the model: how much you spent (in a period, on a category, at
 a shop), breakdowns, your latest or biggest purchase, top merchants, budget status, the monthly trend,

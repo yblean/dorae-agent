@@ -226,7 +226,7 @@ def edit(client, **form):
 def test_type_dropdown_has_readable_labels_grouped_by_where_items_go(client):
     page = client.get("/pocket").text
     assert '<optgroup label="Telegram reminder">' in page and '<optgroup label="Google Calendar event">' in page
-    assert '<option value="other_travel" >Train, bus or ferry</option>' in page and "other travel" not in page
+    assert '<option value="other_travel" >Trip or travel</option>' in page and "other travel" not in page
     assert '<option value="bill" selected>Bill</option>' in page and '<option value="__new__">' in page
 
 
@@ -328,3 +328,87 @@ def test_a_search_hit_opens_the_chat_at_that_message(client):
     page = client.get(f"/chat/money?at={first}").text
     assert f'data-msg="{first}"' in page and "filler 119" in page  # from it to now, so new ones still follow
     assert 'data-search-results' in page and 'placeholder="Search chats"' in page
+
+
+# --- the calendar page ---------------------------------------------------------------------
+
+class FakeCalendar:
+    def __init__(self):
+        self.bodies, self.deleted = [], []
+
+    def upsert(self, event_id, body):
+        self.bodies.append(body)
+        return event_id or f"ev{len(self.bodies)}"
+
+    def delete(self, event_id):
+        self.deleted.append(event_id)
+
+
+@pytest.fixture
+def cal(client):
+    fake = FakeCalendar()
+    client.app.state.runtime.calendars[:] = [fake]
+    return fake
+
+
+def add_hotel(client):
+    return client.post("/calendar/add", data={"title": "Dali Cang'er Hotel", "type": "hotel", "day": "2026-11-05",
+                                              "end_day": "2026-11-07", "back": "/calendar?month=2026-11"})
+
+
+def test_a_hotel_added_on_the_calendar_runs_across_its_days(client, cal):
+    page = add_hotel(client).text
+    assert "Added “Dali Cang&#39;er Hotel” to your Doraemon calendar." in page
+    assert cal.bodies[0]["start"] == {"date": "2026-11-05"} and cal.bodies[0]["end"] == {"date": "2026-11-08"}
+    cells = page.split('class="cal"')[1].split('class="cal-day')
+    hotel = [i for i, c in enumerate(cells) if "Dali Cang" in c]
+    assert len(hotel) == 3 and hotel == list(range(hotel[0], hotel[0] + 3))  # the 5th, 6th and 7th
+    assert 'cal-e start' in cells[hotel[0]] and 'cal-e mid' in cells[hotel[1]] and 'cal-e end' in cells[hotel[2]]
+
+
+def test_editing_on_the_calendar_changes_the_dates_and_google_calendar(client, cal):
+    add_hotel(client)
+    item_id = client.app.state.db.items(("confirmed",))[-1]["id"]
+    panel = client.get(f"/calendar?month=2026-11&item={item_id}").text
+    assert 'name="end_day" value="2026-11-07"' in panel and "Thu 5 – Sat 7 Nov 2026 (3 days)" in panel
+    page = client.post(f"/items/{item_id}/edit", data={
+        "title": "Dali Cang'er Hotel", "type": "hotel", "day": "2026-11-05", "end_day": "2026-11-09",
+        "at": "", "end_at": "", "location": "Dali", "back": "/calendar?month=2026-11"}).text
+    assert "Google Calendar is updated." in page
+    assert cal.bodies[-1]["end"] == {"date": "2026-11-10"} and cal.bodies[-1]["location"] == "Dali"
+    row = client.app.state.db.get("item", item_id)
+    assert row["end_at"].startswith("2026-11-09") and row["location"] == "Dali"
+    page = client.post(f"/items/{item_id}/edit", data={
+        "title": "x", "type": "hotel", "day": "2026-11-05", "end_day": "2026-11-01", "back": "/calendar"}).text
+    assert "is before the start" in page and client.app.state.db.get("item", item_id)["end_at"].startswith("2026-11-09")
+
+
+def test_a_timed_event_keeps_its_end_time(client, cal):
+    client.post("/calendar/add", data={"title": "Dinner with Sam", "type": "appointment", "day": "2026-11-05",
+                                       "at": "19:00", "end_at": "21:00"})
+    row = client.app.state.db.items(("confirmed",))[-1]
+    assert row["end_at"].startswith("2026-11-05T21:00") and not row["all_day"]
+    assert cal.bodies[-1]["end"]["dateTime"].startswith("2026-11-05T21:00")
+
+
+def test_removing_from_the_calendar_takes_it_out_of_google_calendar(client, cal):
+    add_hotel(client)
+    item_id = client.app.state.db.items(("confirmed",))[-1]["id"]
+    page = client.post(f"/items/{item_id}/remove", data={"back": "/calendar?month=2026-11"}).text
+    assert "Removed “Dali Cang&#39;er Hotel”. It&#39;s gone from Google Calendar too." in page
+    assert cal.deleted == ["ev1"] and client.app.state.db.get("item", item_id)["status"] == "dismissed"
+    assert "Dali Cang" not in page.split('class="cal"')[1]
+
+
+def test_a_bill_added_on_the_calendar_gets_telegram_reminders_not_an_event(client, cal):
+    day = (datetime.now(timezone.utc) + timedelta(days=10)).date().isoformat()
+    client.post("/calendar/add", data={"title": "Phone bill", "type": "bill", "day": day})
+    row = client.app.state.db.items(("confirmed",))[-1]
+    assert row["title"] == "Phone bill" and client.app.state.db.reminders(row["id"]) and cal.bodies == []
+
+
+def test_the_message_after_an_action_goes_before_the_anchor(client):
+    resp = client.post("/items/1/edit", data={"title": "SIT tuition fees", "type": "bill",
+                                              "back": "/calendar?month=2026-11&item=1#edit"}, follow_redirects=False)
+    assert resp.headers["location"].startswith("/calendar?month=2026-11&item=1&msg=Updated")
+    assert resp.headers["location"].endswith("#edit")

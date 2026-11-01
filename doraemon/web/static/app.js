@@ -148,7 +148,8 @@
   }
   document.querySelectorAll('[data-q]').forEach((chip) => chip.addEventListener('click', () => ask(chip.dataset.q)));
 
-  // Dorae-3: a photo of a nutrition label or of your food (what's typed in the box goes with it, e.g. "2 servings")
+  // A photo for Dorae-3 (a nutrition label or your food) or Dorae-2 (a booking screenshot); what's typed in the box goes
+  // with it, e.g. "2 servings". Pick one with the camera, or paste a screenshot into the box.
   function shrink(file, most = 1280) {
     return new Promise((resolve) => {
       const img = new Image();
@@ -166,10 +167,19 @@
     });
   }
   const photoInput = document.getElementById('ask-photo');
-  if (photoInput) photoInput.addEventListener('change', async () => {
+  if (photoInput) photoInput.addEventListener('change', () => {
     const file = photoInput.files[0];
     photoInput.value = '';
-    if (!file) return;
+    if (file) sendPhoto(file);
+  });
+  const askBox = document.getElementById('ask-q');
+  if (photoInput && askBox) askBox.addEventListener('paste', (e) => {
+    const file = [...((e.clipboardData && e.clipboardData.files) || [])].find((f) => f.type.startsWith('image/'));
+    if (!file) return;  // pasted text: as usual
+    e.preventDefault();
+    sendPhoto(file);
+  });
+  async function sendPhoto(file) {
     const input = document.getElementById('ask-q');
     const said = input.value.trim();
     input.value = '';
@@ -203,7 +213,7 @@
       appendHtml('<div class="msg from-agent"><div class="bubble">Sorry, I couldn\'t read that photo just now.</div></div>');
     }
     setMood('idle');
-  });
+  }
   const askForm = document.getElementById('ask');
   if (askForm) askForm.addEventListener('submit', (e) => {
     e.preventDefault();
