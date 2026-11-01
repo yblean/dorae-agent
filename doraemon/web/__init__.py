@@ -41,7 +41,7 @@ from doraemon.telegram import MAX_PHOTO
 from doraemon.reminders import (DEFAULT_FIRST, DEFAULT_TIMES, MAX_TIMES, Messenger, created_text, mark_done,
                                 TIMED_STEPS, defaults_for, plan, short_time, steps_for, wants_reminder)
 from doraemon import coach, quiet, senders
-from doraemon.fitness import health_folders, import_steps, suggest_targets
+from doraemon.fitness import TREND_VIEWS, health_folders, import_steps, suggest_targets
 from doraemon.rules import RuleStore, name_key, name_matches
 from doraemon.schema import Category, ItemType
 from doraemon.web import charts
@@ -875,7 +875,7 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         return RedirectResponse("/fitness?msg=" + quote(msg), status_code=303)
 
     @app.get("/fitness", response_class=HTMLResponse)
-    def fitness_page(request: Request, suggest: int = 0):
+    def fitness_page(request: Request, suggest: int = 0, view: str = "days"):
         fit = brain.fit
         today = fit.day_status()
         t = today["totals"]
@@ -883,11 +883,17 @@ def create_app(settings: Settings | None = None, fx: FxRates | None = None,
         suggested = suggest_targets(profile) if suggest and profile.get("weight_kg") else None
         week = coach.week_card(fit)["payload"]
         health = fit.health_path(settings.health_folder)
+        trend, goals = fit.trend(view), fit.targets()
+        graphs = {"kcal": charts.fit_columns(trend, "kcal", goals["kcal"], " kcal"),
+                  "protein": charts.fit_columns(trend, "protein", goals["protein"], " g"),
+                  "steps": charts.fit_columns(trend, "steps", goals["steps"], " steps"),
+                  "macros": charts.macro_columns(trend), "split": charts.macro_split(trend)}
         return render(request, "fitness.html", today=today, rows=fit_rows({"kcal": t.kcal, "protein": t.protein},
                       today["steps"], today["targets"]), week=week, targets=fit.targets(), suggested=suggested,
                       profile=profile, library=fit.library(30),
                       health=[{"path": str(f), "found": f.exists()} for f in health_folders(health)],
-                      health_path=health, health_custom=fit.health_path("") != "",
+                      health_path=health, health_custom=fit.health_path("") != "", trend=trend, graphs=graphs,
+                      views=TREND_VIEWS,
                       icloud=(Path.home() / "iCloudDrive").is_dir(),
                       check_time=settings.fitness_check_time)
 

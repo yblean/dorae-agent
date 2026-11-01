@@ -58,6 +58,13 @@ form { margin: 0; }
 .food-edit > .field { flex: 1 1 140px; min-width: 0; }
 .food-num { display: flex; flex-direction: column; width: 72px; }
 .food-num .field { width: 100%; }
+.fit-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.fit-charts .wide { grid-column: 1 / -1; }
+.fit-charts .columns { margin-top: 8px; }
+.fit-charts .wide .donut-wrap { max-width: 560px; }
+.tabs-note { align-self: center; margin-left: 4px; }
+details.panel-box summary { cursor: pointer; }
+details.panel-box[open] summary { margin-bottom: 8px; }
 .health-paths code { word-break: break-all; }
 .health-paths .num { white-space: nowrap; }
 .health-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }

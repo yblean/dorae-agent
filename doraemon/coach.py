@@ -4,11 +4,12 @@
   kopi": the foods to log. Questions ("how much protein today?") are never taken for food.
 - parse_target(): "set my protein target to 140" -> {"protein": 140}, set straight away (it's your own number).
 - day_card / week_card / targets_card: the cards, with every number worked out from your log and steps.
+- review_card: several weeks (or a week or month) against your targets, with up to 3 things to improve.
 """
 import re
 from datetime import date, timedelta
 
-from doraemon.fitness import TARGET_NAMES, Fitness
+from doraemon.fitness import KCAL_PER_GRAM, STEPS_PER_MINUTE, TARGET_NAMES, Fitness
 from doraemon.foodlog import given_numbers
 
 # "had chicken rice", "can you log 2 eggs", "this morning i had oats", "im eating laksa", "my lunch was laksa",
@@ -22,7 +23,12 @@ _MEAL = (r"(?:for\s+|my\s+)?(?:breakfast|brunch|lunch|dinner|supper|snack|tea)(?
          r"(?:\s+(?:was|is|today|just\s+now))?")
 FOOD_LOG = re.compile(r"^\W*" + _POLITE + _WHEN + r"(?:" + _ME + r"(?P<verb>" + _ATE + r")|" + _MEAL + r")\b"
                       r"[:,-]?\s*[:,-]?\s*(?P<what>.+)$", re.I | re.S)
-FOR_MEAL = re.compile(r"^(?P<what>.+?)\s+for\s+(?:breakfast|brunch|lunch|dinner|supper|snack|tea)\W*$", re.I)
+FOR_MEAL = re.compile(r"^(?P<what>.+?)\s+for\s+(?:breakfast|brunch|lunch|dinner|supper|snack|tea)(?:\s+(?:today|yesterday|"
+                      r"tonight|just now|earlier(?: today)?|this (?:morning|afternoon|evening)))?\W*$", re.I)
+# "a protein shake", "whey and a banana": foods, though "protein" makes them look like a question about your protein
+PROTEIN_FOOD = re.compile(r"\b(?:protein|whey|casein)\s+(?:shakes?|bars?|powder|balls?|drinks?|milk|yog(?:h)?urts?|"
+                          r"puddings?|cookies?|chips|bites|waffles?|pancakes?|bread|noodles|pasta|ice cream|smoothies?|"
+                          r"coffee|latte|water|wraps?|scoops?)\b|\b(?:whey|casein)\b", re.I)
 _TAIL = re.compile(r"\s+(?:for me|to (?:my|the) (?:food )?(?:log|diary|tracker|day|list)|please|pls|plz|thanks?|thx|"
                    r"ty|now|just now|today|earlier(?: today)?|this (?:morning|afternoon|evening)|yesterday|tonight)\W*$",
                    re.I)
@@ -68,11 +74,13 @@ _QUESTION_WORDS = re.compile(
     r"nutrition(?:al)?|info(?:rmation)?|amount|approx(?:imately)?|roughly|about|it|like)\b", re.I)
 
 
-# A judgement about foods ("which has more protein, tofu or eggs?", "is milo high in sugar?", "is laksa healthy?"):
-# for the model, which looks each food up with its nutrition tool
-FOOD_QUESTION = re.compile(r"(?=.*\b(?:cal(?:orie)?s?|kcal|protein|carbs?|fats?|sugar|macros?|nutrition|healthy|healthier|"
-                           r"nutritious|unhealthy)\b)(?=.*\b(?:which|compare[ds]?|vs|versus|better|healthier|worse|more|"
-                           r"less|high|higher|low|lower|healthy|unhealthy|good|bad|too much|enough|or)\b)", re.I | re.S)
+# A judgement about foods ("which has more protein, tofu or eggs?", "is milo high in sugar?", "is laksa healthy?") or
+# about your own eating ("is 67 g of fat a day too much?", "is my diet balanced?"): for the model, which looks foods
+# up with its nutrition tool and your intake with nutrient_facts
+FOOD_QUESTION = re.compile(r"(?=.*\b(?:cal(?:orie)?s?|kcal|protein|carbs?|fats?|sugars?|macros?|nutrition|healthy|healthier|"
+                           r"nutritious|unhealthy|diet)\b)(?=.*\b(?:which|compare[ds]?|vs|versus|better|healthier|worse|"
+                           r"more|less|high|higher|low|lower|healthy|unhealthy|good|bad|too much|too little|enough|or|"
+                           r"balanced|cut|cutting|reduce)\b)", re.I | re.S)
 
 
 def nutrition_subject(text: str) -> str | None:
@@ -82,7 +90,10 @@ def nutrition_subject(text: str) -> str | None:
         return None
     if FOOD_QUESTION.search(text):
         return None  # "which has more protein, tofu or eggs?", "is milo high in sugar?": the model weighs it up
-    subject = " ".join(_QUESTION_WORDS.sub(" ", re.sub(r"[?!.,]", " ", text.lower())).split())
+    if PROTEIN_FOOD.search(text) and not QUESTION.search(text):
+        return None  # "protein shake" is what you had
+    kept = PROTEIN_FOOD.sub(lambda m: m[0].replace(" ", "_"), text.lower())  # "calories in a protein bar": a bar's
+    subject = " ".join(_QUESTION_WORDS.sub(" ", re.sub(r"[?!.,]", " ", kept)).split()).replace("_", " ")
     return subject if re.search(r"[a-z]{3}", subject) else None
 
 
@@ -151,6 +162,16 @@ def food_with_numbers(text: str) -> bool:
     rest = re.sub(r"\b(?:\d+(?:\.\d+)?\s*(?:g|grams?|gm|kcal|cals?|calories?|ml)?|kcal|cals?|calories?|protein|prot|pro|p|"
                   r"carbs?|fats?|sugars?|each|and|of|with|per|its|it's|is)\b", " ", text, flags=re.I)
     return bool(re.search(r"[a-z]{3}", rest, re.I))
+
+
+def food_said(text: str) -> str | None:
+    """The foods to log in a Telegram message that's clearly one ("ate chicken rice", "2 eggs, 12g protein", "a
+    protein shake"), or None."""
+    if food := food_request(text, own_chat=False):
+        return food
+    if food_with_numbers(text) or PROTEIN_FOOD.search(text) and not QUESTION.search(text):
+        return text.strip()
+    return None
 
 
 def might_be_food(text: str) -> bool:
@@ -262,6 +283,200 @@ def week_card(fit: Fitness, which: str = "this") -> dict:
          "foods": r["foods"], "steps": r["steps"]} for r in rows]}}
 
 
+def review_span(span: str, today: date) -> tuple[date, date, str]:
+    """(first, last, label) for a review: "days:28" (the 28 days before today), "week:this", "week:last",
+    "month:this" or "month:last". Today is left out (it isn't over) unless nothing else is in the span."""
+    kind, _, which = span.partition(":")
+    yesterday = today - timedelta(days=1)
+    if kind == "week":
+        monday = today - timedelta(days=today.weekday())
+        first, last, label = ((monday - timedelta(days=7), monday - timedelta(days=1), "Last week") if which == "last"
+                              else (monday, yesterday, "This week"))
+    elif kind == "month":
+        start = today.replace(day=1)
+        first, last, label = (((start - timedelta(days=1)).replace(day=1), start - timedelta(days=1), "Last month")
+                              if which == "last" else (start, yesterday, "This month"))
+    else:
+        n = max(2, min(int(which) if which.isdigit() else 28, 120))
+        first, last = yesterday - timedelta(days=n - 1), yesterday
+        label = f"The last {n // 7} weeks" if n % 7 == 0 and n > 7 else f"The last {n} days"
+    return (first, last, label) if first <= last else (today, today, label)
+
+
+def review_tips(fit: Fitness, r: dict) -> list[str]:
+    """Up to 3 things to work on from a review (Fitness.review), most useful first; every number from your log."""
+    goals, full = r["targets"], r["full"]
+    if full < 3:
+        return [f"Only {full} fully logged day{'s' if full != 1 else ''} so far: log every meal for a week and I can say "
+                "much more."]
+    tips = []
+    if goals["protein"] and r["protein"] < goals["protein"] * 0.95:
+        gap = goals["protein"] - r["protein"]
+        room = goals["kcal"] - r["kcal"] if goals["kcal"] else None
+        ideas = fit.protein_ideas(gap, max(room, 150) if room is not None else None)
+        tips.append(f"Protein: about {gap:.0f} g a day short, hit on {r['protein_hit']} of {full} days."
+                    + (" Adding " + " or ".join(ideas) + " on most days closes it." if ideas else ""))
+    if goals["kcal"] and (r["kcal"] > goals["kcal"] * 1.05 or r["kcal_days"]["over"] * 3 >= full):
+        tip = f"Calories: over {goals['kcal']:,} on {r['kcal_days']['over']} of {full} days"
+        if r["over_foods"]:
+            tip += ", mostly from " + " and ".join(f"{f['name'].lower()} ({f['times']}×)" for f in r["over_foods"][:2])
+        if r.get("weekend_extra", 0) > 250:
+            tip += f". Weekends run about {r['weekend_extra']:,.0f} kcal more than weekdays"
+        tips.append(tip + ".")
+    elif goals["kcal"] and r["kcal"] < goals["kcal"] * 0.85 and fit.profile().get("goal") != "lose":
+        tips.append(f"Calories: {r['kcal']:,.0f} a day is well under your {goals['kcal']:,}. If that isn't on purpose, a "
+                    "bigger breakfast or a protein snack closes it.")
+    if goals["steps"] and r["steps"] is not None and r["steps"] < goals["steps"]:
+        minutes = max(5, round((goals["steps"] - r["steps"]) / STEPS_PER_MINUTE / 5) * 5)
+        tips.append(f"Steps: {r['steps']:,.0f} a day against {goals['steps']:,}. A {minutes}-minute walk a day closes it.")
+    if r["logged"] < r["days"] * 0.7:
+        tips.append(f"Logging: {r['logged']} of {r['days']} days logged"
+                    + (f", {len(r['light'])} of them partly" if r["light"] else "")
+                    + ". The more days you log, the surer these numbers are.")
+    return tips[:3] or ["You're on target across the board. Keep doing what you're doing."]
+
+
+def review_card(fit: Fitness, span: str = "days:28") -> dict:
+    """How you did against your targets over several weeks (or a week or month), and what to improve."""
+    first, last, label = review_span(span, fit.today())
+    r = fit.review(first, last)
+    goals, full = r["targets"], r["full"]
+    label = "Since you started logging" if r["since_start"] else label
+    head = f"{label}, {short_day(r['first'])} – {short_day(r['last'])}" if r["first"] != r["last"] else f"{label}, {short_day(r['first'])}"
+    if not any(goals.values()):
+        return {"text": f"{head}: set your targets on the Fitness page (or ask me to suggest them) and I'll tell you how "
+                        "you're doing against them.", "kind": "text", "payload": None}
+    if not full and r["steps"] is None:
+        return {"text": f"{head}: nothing fully logged yet. Tell me what you eat for a few days, then ask again.",
+                "kind": "text", "payload": None}
+    rows, verdict = [], []
+    if goals["kcal"] and full:
+        k, d = r["kcal"], r["kcal_days"]
+        state = "on" if 0.9 <= k / goals["kcal"] <= 1.1 else "over" if k > goals["kcal"] else "under"
+        rows.append(["Calories", f"{k:,.0f}", f"{goals['kcal']:,} kcal", state,
+                     f"on target {d['on']} of {full} days" + (f" · over {d['over']}" if d["over"] else "")
+                     + (f" · under {d['under']}" if d["under"] else "")])
+        verdict.append("calories on target" if state == "on" else f"calories {abs(k - goals['kcal']):,.0f} a day {state}")
+    if goals["protein"] and full:
+        p = r["protein"]
+        state = "on" if p >= goals["protein"] * 0.95 else "under"
+        rows.append(["Protein", f"{p:,.0f}", f"{goals['protein']} g", state, f"hit on {r['protein_hit']} of {full} days"])
+        verdict.append("protein on target" if state == "on" else f"protein {goals['protein'] - p:,.0f} g a day short")
+    if goals["steps"]:
+        if r["steps"] is None:
+            rows.append(["Steps", "–", f"{goals['steps']:,}", "none", "no steps recorded"])
+        else:
+            state = "on" if r["steps"] >= goals["steps"] else "under"
+            rows.append(["Steps", f"{r['steps']:,.0f}", f"{goals['steps']:,}", state,
+                         f"{r['steps_hit']} of {r['stepped']} days at target"])
+            verdict.append("steps on target" if state == "on" else f"steps {goals['steps'] - r['steps']:,.0f} a day short")
+    tips = review_tips(fit, r)
+    text = (f"{head}: you logged {r['logged']} of {r['days']} days" + (f" ({full} fully)" if r["light"] else "")
+            + (". On average, " + ", ".join(verdict) + "." if verdict else ".")
+            + "\n\nTo improve:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(tips, 1)))
+    return {"text": text, "kind": "fitness_review", "payload": {
+        "label": head, "rows": rows, "full": full, "tips": tips,
+        "macros": {m: round(r[m]) for m in ("carbs", "fat", "sugar")} if full else None,
+        "foods": [[f["name"], f["times"], round(f["kcal"])] for f in r["foods"][:3]],
+        "protein_foods": [[f["name"], f["times"], round(f["protein"])]
+                          for f in sorted(r["foods"], key=lambda f: -f["protein"])[:3]],
+        "light": [[short_day(d), k] for d, k in r["light"]]}}
+
+
+# Widely used ranges for adults, as a share of calories: the US Dietary Reference Intakes for protein, carbs and fat,
+# the WHO for sugars. General guidance for the model to explain, not medical advice.
+GUIDES = {
+    "protein": (10, 35, "10-35% of calories (US Dietary Reference Intakes)"),
+    "carbs": (45, 65, "45-65% of calories (US Dietary Reference Intakes)"),
+    "fat": (20, 35, "20-35% of calories (US Dietary Reference Intakes), with saturated fat under 10%"),
+    "sugar": (0, 10, "free sugars under 10% of calories, ideally under 5% (WHO)"),
+}
+SERVING = {"protein": 10, "carbs": 20, "fat": 8, "sugar": 5}  # grams a serving for a food to be worth suggesting
+NOT_TRACKED = {"fat": "Saturated and unsaturated fat aren't logged separately, so the kind of fat can't be judged.",
+               "sugar": "Logged sugar includes natural sugar (milk, fruit), so it overstates the free sugar the WHO "
+                        "limit is about."}
+_GRAMS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:g|grams?|gm)\b", re.I)
+_NAMED = {"protein": r"protein", "carbs": r"carbs?|carbohydrates?", "fat": r"fats?", "sugar": r"sugars?"}
+
+
+def asked_nutrient(question: str) -> str | None:
+    """The nutrient a question is about ("is my fat too high" -> "fat"), or None for several or none."""
+    named = [n for n, words in _NAMED.items() if re.search(rf"\b(?:{words})\b", question, re.I)]
+    return named[0] if len(named) == 1 else None
+
+
+def nutrient_facts(fit: Fitness, nutrient: str | None = None, span: str = "days:28", question: str = "") -> dict:
+    """For the model: your protein, carbs, fat and sugar (or just `nutrient`) a day against the usual healthy ranges,
+    with the verdict and the foods most of it comes from, all worked out here. An amount named in the question
+    ("is 67 g of fat a day too much") is judged too. Shares and ranges are worked out at the calories you actually
+    eat (a day on average), so the verdict and the range in grams always agree."""
+    first, last, label = review_span(span, fit.today())
+    r = fit.review(first, last)
+    if r["since_start"]:
+        label = "Since you started logging"
+    full, goals = r["full"], r["targets"]
+    facts = {"period": f"{label}, {short_day(r['first'])} - {short_day(r['last'])}: {full} fully logged "
+                       f"day{'s' if full != 1 else ''}"}
+    if not full:
+        return {**facts, "nothing_logged": "No fully logged days yet, so there's nothing to judge. Say so and suggest "
+                                           "logging every meal for a few days."}
+    kcal = r["kcal"]
+    facts["calories_a_day"] = f"{kcal:,.0f}" + (f" (target {goals['kcal']:,})" if goals["kcal"] else "")
+    out = {}
+    for n in ([nutrient] if nutrient in GUIDES else list(GUIDES)):
+        low, high, guide = GUIDES[n]
+        share = r[n] * KCAL_PER_GRAM[n] / kcal * 100
+        verdict = "above the range" if share > high else "below the range" if share < low else "within the range"
+        foods = sorted(r["foods"], key=lambda f: -f[n])[:3]
+        out[n] = {"grams_a_day": round(r[n]), "share_of_calories": f"{share:.0f}%", "healthy_range": guide,
+                  "range_in_grams": f"{low * kcal / 100 / KCAL_PER_GRAM[n]:.0f}-{high * kcal / 100 / KCAL_PER_GRAM[n]:.0f} g "
+                                    f"a day at your {kcal:,.0f} kcal", "verdict": verdict,
+                  "most_from": [f"{f['name']} ({f['times']}x, {f[n] / f['times']:.0f} g each)" for f in foods if f[n] > 0]}
+        if n == "protein" and goals["protein"]:
+            out[n]["your_target"] = f"{goals['protein']} g ({'met' if r[n] >= goals['protein'] * 0.95 else 'not met'})"
+        if n == "protein" and fit.profile().get("weight_kg"):
+            out[n]["per_kg_body_weight"] = f"{r[n] / float(fit.profile()['weight_kg']):.1f} g (0.8 g is the minimum; " \
+                                           "1.6-2.2 g suits building or keeping muscle)"
+    facts["nutrients"] = out
+    conclusion = []  # what the answer says, in order: the model only puts it into words
+    asked = _GRAMS.search(question)
+    if asked and (named := nutrient or asked_nutrient(question)) in GUIDES:
+        grams = float(asked[1])
+        share = grams * KCAL_PER_GRAM[named] / kcal * 100
+        low, high, _ = GUIDES[named]
+        verdict = "above the range" if share > high else "below the range" if share < low else "within the range"
+        facts["amount_asked_about"] = {"amount": f"{grams:g} g of {named} a day",
+                                       "share_of_calories": f"{share:.0f}% of your {kcal:,.0f} kcal", "verdict": verdict}
+        conclusion.append(f"{grams:g} g of {named} a day would be {share:.0f}% of the {kcal:,.0f} kcal you eat, {verdict} "
+                          f"({GUIDES[named][2].split(' (')[0]}).")
+    for n, o in out.items():
+        top = " and ".join(f["name"].lower() for f in sorted(r["foods"], key=lambda f: -f[n])[:2] if f[n] > 0)
+        said = f"Your log averages {o['grams_a_day']} g of {n} a day ({o['share_of_calories']} of calories)"
+        if o["verdict"] == "above the range":
+            said += f", above the healthy {o['range_in_grams'].split(' a day')[0]}, so it's worth cutting back" + (
+                f": most of it comes from {top}, so have those less often or in smaller portions" if top else "")
+        elif o["verdict"] == "below the range":  # more of your foods richest in it (not fatty unless it's fat, and
+            # with a real amount a serving: an onion is mostly carbs, but a few grams)
+            rich = sorted((f for f in r["foods"] if f["kcal"] > 0 and f[n] / f["times"] >= SERVING[n]
+                           and (n == "fat" or f["fat"] * KCAL_PER_GRAM["fat"] / f["kcal"] < 0.35)),
+                          key=lambda f: -f[n] * KCAL_PER_GRAM[n] / f["kcal"])[:2]
+            said += f", below the healthy {o['range_in_grams'].split(' a day')[0]}, so there's room for more" + (
+                f", e.g. a bit more {' or '.join(f['name'].lower() for f in rich)}" if rich else "")
+        else:
+            said += ", within the healthy range, so there's no need to change it"
+        if n == "protein" and goals["protein"] and r[n] < goals["protein"] * 0.95:
+            said += f", though it's short of your {goals['protein']} g target"
+        conclusion.append(said + ".")
+    facts["conclusion"] = conclusion
+    missing = ([NOT_TRACKED["fat"]] if "fat" in out else []) + ([NOT_TRACKED["sugar"]] if "sugar" in out else [])
+    if missing and len(out) == 1:  # one note at most, and only about what was asked
+        facts["not_tracked"] = missing[0]
+    facts["how"] = ("Say the period, then pass on `conclusion` in your own words and in its order, adding nothing it "
+                    "doesn't say" + (", then the not_tracked note in one sentence" if "not_tracked" in facts else "")
+                    + ". 2 to 5 plain sentences: no list, no 'To improve' section, and don't repeat earlier answers.")
+    return facts
+
+
 def targets_card(fit: Fitness, suggested: dict | None = None) -> dict:
     goals = fit.targets()
     if suggested:
@@ -369,7 +584,9 @@ def ideas_card(fit: Fitness, text: str | None = None) -> dict:
 
 
 def answer(fit: Fitness, route) -> dict:
-    """The card for one of Dorae-3's lookups (doraemon.router: fit_day, fit_week, fit_targets)."""
+    """The card for one of Dorae-3's lookups (doraemon.router: fit_day, fit_week, fit_review, fit_targets)."""
+    if route.intent == "fit_review":
+        return review_card(fit, route.slots.get("span", "days:28"))
     if route.intent == "fit_week":
         return week_card(fit, route.slots.get("which", "this"))
     if route.intent == "fit_targets":

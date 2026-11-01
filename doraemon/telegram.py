@@ -19,6 +19,7 @@ import logging
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +33,7 @@ PHOTO = Path(__file__).parent / "web" / "static" / "dorae-telegram.jpg"  # Dorae
 CHAT_KEY = "telegram_chat_id"
 OFFSET_KEY = "telegram_update_offset"  # updates before this were already answered
 STALE_SECONDS = 600  # commands sent while the app was closed are ignored after 10 minutes
+LATE_SECONDS = 24 * 3600  # other messages are still answered (food logged on the day you sent it) for a day
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +91,10 @@ class Telegram:
             raise TelegramError("no chat yet: run python -m doraemon.telegram connect")
         self.call("sendMessage", wait=10, chat_id=self.chat_id, text=text[:4000],
                   link_preview_options={"is_disabled": True}, **markup(buttons))
+
+    def typing(self) -> None:
+        """"typing…" at the top of the chat for a few seconds, while the model works out an answer."""
+        self.call("sendChatAction", wait=10, chat_id=self.chat_id, action="typing")
 
     def updates(self, offset: int | None, timeout: int = 25) -> list[dict]:
         """New messages and button presses, waiting up to `timeout` seconds for one (long polling)."""
@@ -200,11 +206,14 @@ class CommandListener:
             msg = u.get("message") or {}
             if str((msg.get("chat") or {}).get("id")) != str(bot.chat_id):
                 continue  # someone else found the bot: they get nothing
-            if time.time() - msg.get("date", 0) > STALE_SECONDS:
-                continue
             text = msg.get("text", "")
             command = self.lookup(text) if text.strip().startswith("/") or self.on_text is None else None
-            if (photo := photo_id(msg)) and self.on_photo:
+            photo = photo_id(msg) if self.on_photo else None
+            age = time.time() - msg.get("date", 0)
+            # Sent while the app was closed: a command's answer is old news, but food you sent is still worth logging
+            if age > LATE_SECONDS or age > STALE_SECONDS and (command or not (photo or self.on_text and text.strip())):
+                continue
+            if photo:
                 bot.send("📷 Reading your photo…")
                 try:
                     image = bot.photo_bytes(photo)
@@ -212,15 +221,41 @@ class CommandListener:
                     log.warning("Telegram photo: %s", e)
                     bot.send("I couldn't download that photo. Try sending it again.")
                 else:
-                    bot.send(*self.on_photo(image, msg.get("caption", "")))
+                    self.deliver(bot, *self.on_photo(image, msg.get("caption", "")))
             elif command:
                 bot.send(command.answer())
             elif self.on_text and text.strip():
-                bot.send(*self.on_text(text))
+                self.show_typing(bot)
+                late = {"sent": datetime.fromtimestamp(msg["date"], timezone.utc)} if age > STALE_SECONDS else {}
+                self.deliver(bot, *self.on_text(text, **late))
             else:
                 bot.send(self.help_text())
             answered += 1
         return answered
+
+    @staticmethod
+    def show_typing(bot: Telegram) -> None:
+        try:
+            if hasattr(bot, "typing"):
+                bot.typing()
+        except TelegramError:
+            pass  # only a nicety
+
+    def deliver(self, bot: Telegram, text: str, buttons: Buttons | None = None) -> None:
+        """Send an answer that's already worked out (a food draft may be saved behind it), so it isn't lost to a blip:
+        once more after a network error, and without its buttons if Telegram turns them down."""
+        text = text or self.help_text()
+        try:
+            bot.send(text, buttons)
+        except TelegramError as e:
+            log.warning("Telegram reply: %s; sending it again", e)
+            if "couldn't reach" in str(e) or "Gateway" in str(e):
+                time.sleep(3)
+                bot.send(text, buttons)
+            elif buttons:
+                bot.send(text)
+            else:
+                raise
 
     def press(self, bot: Telegram, press: dict) -> int:
         """A button under one of our messages. Pressed long after it was sent still counts: the item decides."""

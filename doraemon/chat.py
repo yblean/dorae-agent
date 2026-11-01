@@ -390,7 +390,15 @@ def fitness_tools(brain: Brain, turn: dict) -> list[Tool]:
     fit = brain.fit
 
     def fitness_facts(period="today", **_):
-        period = _choice(period, ["today", "yesterday", "this_week", "last_week"]) or "today"
+        period = _choice(period, ["today", "yesterday", "this_week", "last_week", "past_weeks", "this_month",
+                                  "last_month"]) or "today"
+        review = coach.review_card(fit, {"this_month": "month:this", "last_month": "month:last"}.get(period, "days:28"))
+        if period in ("past_weeks", "this_month", "last_month"):
+            p = review["payload"] or {}
+            return {"summary": review["text"].split("\n\n")[0], "targets": fit.targets(),
+                    "against_targets": [f"{r[0]}: {r[1]} of {r[2]} a day, {r[4]}" for r in p.get("rows", [])],
+                    "most_calories_from": [f"{f[0]} ({f[1]}x, {f[2]} kcal)" for f in p.get("foods", [])],
+                    "tips": p.get("tips", [])}, ({"kind": review["kind"], "payload": p} if p else None)
         if period in ("this_week", "last_week"):
             card = coach.week_card(fit, "last" if period == "last_week" else "this")
             p = card["payload"]
@@ -402,23 +410,20 @@ def fitness_tools(brain: Brain, turn: dict) -> list[Tool]:
             p = card["payload"]
             facts = {"summary": card["text"], "eaten": p["eaten"], "steps": p["steps"], "targets": p["targets"],
                      "foods": [{"name": f[1], "kcal": f[3], "protein": f[4]} for f in p["foods"]]}
-        week = fit.week_facts()
-        tips = []
-        if week["targets"]["protein"] and week["avg_protein"] is not None and week["avg_protein"] < week["targets"]["protein"] * 0.9:
-            ideas = fit.protein_ideas(week["targets"]["protein"] - week["avg_protein"], None)
-            tips.append(f"Protein averages {week['avg_protein']} g against {week['targets']['protein']} g: add "
-                        + " or ".join(ideas) + " on most days." if ideas else "")
-        if week["targets"]["kcal"] and week["avg_kcal"] is not None and week["avg_kcal"] > week["targets"]["kcal"] * 1.05:
-            tips.append(f"Calories average {week['avg_kcal']} against {week['targets']['kcal']}: the days over the "
-                        "target are where to look.")
-        if week["targets"]["steps"] and week["avg_steps"] is not None and week["avg_steps"] < week["targets"]["steps"]:
-            tips.append(f"Steps average {week['avg_steps']:,} against {week['targets']['steps']:,}: a "
-                        f"{max(5, round((week['targets']['steps'] - week['avg_steps']) / 100 / 5) * 5)}-minute walk a day closes it.")
-        if week["days_logged"] < 4:
-            tips.append(f"Only {week['days_logged']} of the last 7 days are logged, so the averages are rough: logging "
-                        "every meal makes them reliable.")
-        facts["tips"] = [t for t in tips if t]
-        return facts, card
+        facts["tips"] = (review["payload"] or {}).get("tips", [])  # from the last 4 weeks, as the review card has them
+        return facts, {"kind": card["kind"], "payload": card["payload"]}  # the model's words go above the card
+
+    def nutrient_facts(period="past_weeks", **_):
+        """The nutrient and period come from the question, not the model: it guesses them."""
+        question = turn.get("question", "")
+        if not re.search(r"\b(?:week|month)\b", question, re.I):  # small models pick "this_week" unasked
+            period = "past_weeks"
+        span = {"this_week": "week:this", "last_week": "week:last", "this_month": "month:this",
+                "last_month": "month:last"}.get(_choice(period, ["past_weeks", "this_week", "last_week", "this_month",
+                                                                  "last_month"]) or "past_weeks", "days:28")
+        card = coach.review_card(fit, span)
+        return coach.nutrient_facts(fit, coach.asked_nutrient(question), span, question), \
+            ({"kind": card["kind"], "payload": card["payload"]} if card["kind"] == "fitness_review" else None)
 
     def log_food(text=None, **_):
         text = _text(text, 200) or _text(turn.get("question"), 200)
@@ -457,8 +462,16 @@ def fitness_tools(brain: Brain, turn: dict) -> list[Tool]:
              "with their numbers. Use for 'what should I eat', 'suggest foods to hit my protein', 'dinner ideas'.",
              {}, meal_ideas),
         Tool("fitness_facts", "The user's eating, protein, calories and steps against their targets, worked out by the "
-             "app, with tips for improving. Use for 'how am I doing', 'am I on track', 'what can I improve'.",
-             {"period": {"type": "string", "enum": ["today", "yesterday", "this_week", "last_week"]}}, fitness_facts),
+             "app, with tips for improving. Use for 'how am I doing', 'am I on track'; past_weeks (the last 4 weeks) for "
+             "'lately', 'am I hitting my targets', 'what can I improve'.",
+             {"period": {"type": "string", "enum": ["today", "yesterday", "this_week", "last_week", "past_weeks",
+                                                    "this_month", "last_month"]}}, fitness_facts),
+        Tool("nutrient_facts", "The user's own protein, carbs, fat and sugar a day from their log, against the usual "
+             "healthy ranges, with a verdict and the foods most of it comes from. Use when they ask whether THEIR "
+             "intake is healthy, too much, too little, balanced, or should be cut down (e.g. 'is 67 g of fat a day "
+             "too much', 'am I eating too much sugar', 'is my diet balanced'). Not for a single food: use nutrition.",
+             {"period": {"type": "string", "enum": ["past_weeks", "this_week", "last_week", "this_month", "last_month"]}},
+             nutrient_facts),
         Tool("log_food", "Draft food the user ate for them to log, e.g. 'chicken rice and kopi'. They press Log on the card.",
              {"text": {"type": "string", "description": "what they ate, in their words"}}, log_food),
     ]
@@ -498,14 +511,15 @@ LENGTH = {
              "gives. Never compare numbers yourself or add comparisons the tool didn't make.",
     "calendar": "Keep it to 1 to 3 short sentences.",
     "fitness": "Keep it to 1 to 3 short sentences. When asked how to improve, pass on the tool's tips (up to 3) in "
-               "your own words, up to 5 sentences. When suggesting what to eat, follow meal_ideas' `how`: 2 to 4 "
+               "your own words, up to 5 sentences. With nutrient_facts, up to 5 sentences. When suggesting what to eat, follow meal_ideas' `how`: 2 to 4 "
                "options with their kcal and protein and the total, never more kcal than kcal_left, up to 6 sentences. Never invent numbers, foods or comparisons the tool didn't give. "
                "Give general fitness guidance only, nothing medical and no extreme diets.",
 }
 
 CHANGES = {
     "fitness": "For a food's calories or macros, or comparing foods, call nutrition and use its numbers, saying "
-               "which are estimates. To suggest what to eat, call meal_ideas first and plan from it. "
+               "which are estimates. For whether the user's own intake of fat, sugar, carbs or protein is healthy, "
+               "too much or should be cut, call nutrient_facts and follow its `how`. To suggest what to eat, call meal_ideas first and plan from it. "
                "To log food the user ate, call log_food once with their words, then tell them to check the numbers "
                "and press Log on the card. You can't change targets or past logs from chat: the Fitness page does that.",
     "money": "To set or change a budget, call propose_budget once, then tell the user to press Save on the card. "

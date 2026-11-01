@@ -392,7 +392,11 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
 - **Logging food.** Tell Dorae-3 what you ate, in its chat ("chicken rice and kopi siew dai") or on Telegram
   ("i had 3 eggs and 2 bread", "can you log chicken rice", "lunch: laksa", "nutrisoy no sugar 250ml for breakfast",
   "2 eggs, 12g protein"). On Telegram a plain "chicken rice" works too: the model is asked whether it's food ("had a
-  long meeting" isn't). "Yesterday i had laksa" goes on yesterday. It drafts each food with its portion,
+  long meeting" isn't). "Yesterday i had laksa" goes on yesterday. "Same as yesterday", "same lunch as yesterday"
+  or "my usual breakfast" copies that meal from your log (no model); when it can't tell which meal you mean, it
+  shows yesterday's as buttons to choose from. Food you sent while the laptop was asleep or off is still logged when
+  the bot is back (within a day), on the day you sent it; anything else sent then is said to be left, not lost.
+  While the model works, Telegram shows "typing…". It drafts each food with its portion,
   calories, protein, carbs, fat and sugar, and nothing counts until you press **Log**:
   1. a food you've logged before comes back with your own numbers (no model needed);
   2. a packaged product is looked up in [Open Food Facts](https://openfoodfacts.org) (free; only its name is sent),
@@ -416,6 +420,17 @@ Dorae-3 tracks what you eat and your steps against daily targets, and checks in 
   folder (`iCloudDrive\iCloud~is~workflow~my~workflows\Doraemon\health`), `iCloudDrive\Doraemon\health` and
   `OneDrive\Doraemon\health`; to read another file or folder, paste its path on the **Fitness** page.
   Set-up: [docs/apple-health-steps.md](docs/apple-health-steps.md).
+- **Dorae-3 speaks first** on Telegram (`DORAEMON_FITNESS_NUDGES`), from what the other agents know:
+  - a payment at a food place → "Lunch at Mos Burger? Last time there: Teriyaki burger. Same again?" with a
+    one-tap Log, or reply with what you had;
+  - the same breakfast on several mornings → "Kaya toast set again this morning?" at 9:30 if nothing's logged;
+  - a lunch or dinner out on your calendar → how many calories are left for it, at 10am or 3pm.
+- **Weekly review** on Monday at 9am (`DORAEMON_FITNESS_REVIEW`): last week against your targets, and when the
+  same gap shows over four weeks, a target change to approve (Save in the app, a button on Telegram). Nothing
+  changes until you press it.
+- **Charts** on the Fitness page, by days, weeks or months: calories and protein against your targets, where your
+  calories come from (protein, carbs and fat), the macros stacked over time, and steps. Weeks and months show the
+  average a day over the days you logged, so a day you didn't log doesn't count as eating nothing.
 - **Asking.** "How am I doing today?", "protein left", "calories this week", "what did I eat yesterday", "my
   targets": instant answers with bars against your targets. Questions that need thought ("what can I improve?")
   go to the model, which gets the numbers and tips worked out by the app and only puts them into words.

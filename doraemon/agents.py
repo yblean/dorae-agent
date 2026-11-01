@@ -19,6 +19,8 @@ from decimal import Decimal
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from doraemon import budgets as bud
 from doraemon import coach, foodlog, income
 from doraemon.income import CATEGORIES
@@ -964,7 +966,8 @@ class Brain:
         if subject := coach.nutrition_subject(question):  # "how many calories in a bowl of greek yogurt?"
             self.last_route = "nutrition"
             return [self.nutrition_reply(subject)]
-        if coach.FOOD_QUESTION.search(question) and self.chat is not None:  # "which has more protein, tofu or eggs?"
+        if coach.FOOD_QUESTION.search(question) and self.chat is not None \
+                and not coach.parse_target(question, self.fit.targets()):  # "which has more protein, tofu or eggs?"
             try:
                 self.last_route = "model"
                 return self.chat.answer("fitness", question, history or [])
@@ -1082,11 +1085,16 @@ class Brain:
 
     def food_reply(self, text: str, day: date | None = None) -> dict:
         """Work out what you ate and save it as a draft card waiting for Log (on `day`, or today)."""
+        down = {"text": "I need the local model to work out what you ate, and it isn't running. Open the Ollama app and "
+                        "try again.", "kind": "text", "payload": None}
         if self.food_model() is None:
-            return {"text": "I need the local model to work out what you ate, and it isn't running. Open the Ollama "
-                            "app and try again.", "kind": "text", "payload": None}
+            return down
         try:
             foods = foodlog.understand(text, self.fit, self.db, self.food_backend)
+        except httpx.ConnectError as e:  # Ollama stopped since: start it again next time
+            log.warning("reading food failed: %s", e)
+            self.food_backend = None
+            return down
         except Exception as e:  # the model gave nothing usable
             log.warning("reading food failed: %s", e)
             foods = []

@@ -45,6 +45,11 @@ class Settings:
     briefing_telegram: bool = os.getenv("DORAEMON_BRIEFING_TELEGRAM", "on").lower() != "off"  # also send it there
     # Dorae-3's daily check (protein, calories, steps left and how to close the gap), also on Telegram; "off" to stop it
     fitness_check_time: str = os.getenv("DORAEMON_FITNESS_CHECK_TIME", "18:00")
+    # Dorae-3 asking first on Telegram (doraemon.nudges): what you had after a payment at a food place, your usual
+    # breakfast at 9:30, and a heads-up before a lunch or dinner out on your calendar; "off" to stop them
+    fitness_nudges: bool = os.getenv("DORAEMON_FITNESS_NUDGES", "on").lower() != "off"
+    # Last week's review in Dorae-3's chat and on Telegram, with target changes to approve; "off" to stop it
+    fitness_review: str = os.getenv("DORAEMON_FITNESS_REVIEW", "mon 09:00")
     # Where your iPhone's Shortcuts automation saves Apple Health step counts (docs/apple-health-steps.md): files or
     # folders separated by ";". By default the places iCloud Drive (iCloud for Windows) and OneDrive put them. A path
     # set on the Fitness page wins over this.

@@ -7,6 +7,9 @@
 - The everyday questions the fast path knows (doraemon.router), from either agent: "how much did I
   spend this week?", "what's on tomorrow?", "my budget", "and last month?". Answered from your
   data in milliseconds, as plain text (titles come from email, so no formatting).
+- Food for Dorae-3: "ate chicken rice", "a protein shake", "same as yesterday", or a plain "laksa" (the model says
+  whether it's food), as a draft with Log, Edit and Cancel. Food sent while the bot was off is still logged, on the
+  day you sent it.
 
 Anything else gets examples of what works here. The model only answers in the app: on the phone
 an answer should be instant or not at all.
@@ -14,11 +17,11 @@ an answer should be instant or not at all.
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from doraemon import coach, senders
+from doraemon import coach, nudges, senders
 from doraemon.agents import Brain, money, short_clock
 from doraemon.calendar_sync import add_to_calendar
 from doraemon.db import item_model, transaction_model
@@ -34,12 +37,15 @@ log = logging.getLogger(__name__)
 ASK_KEY = "telegram:asking"            # {"title", "kind", "at"}: the bot asked when this reminder or event is
 LAST_KEY = "telegram:last_question"    # for follow-ups like "and last month?"
 ASK_MINUTES = 15                       # an answer to "when?" counts for this long
+LATE = timedelta(minutes=10)           # a message older than this was sent while the bot was off
+MODEL_DOWN = "I need the local model"  # how Brain.food_reply starts when Ollama can't be reached
 EDIT_KEY = "telegram:editing_food"     # {"batch", "at"}: Edit was pressed under this food
 NEW_FOOD = re.compile(r"\s*(?:i\s+)?(?:just\s+)?(?:had|ate|eaten|drank|breakfast|lunch|dinner|supper|snack)\b", re.I)
 LIST = 8                               # lines under an answer; the rest are in the app
 EXAMPLES = ("remind me to call mom at 5pm tmr", "add dinner with Sam on friday 7-9pm",
             "how much did I spend this week?", "what's on tomorrow?", "my budget", "my reminders",
-            "ate chicken rice and kopi siew dai", "a photo of a nutrition label (caption: 2 servings)",
+            "ate chicken rice and kopi siew dai", "same lunch as yesterday",
+            "a photo of a nutrition label (caption: 2 servings)",
             "how am I doing today?")
 
 Buttons = list[list[tuple[str, str]]]
@@ -56,19 +62,44 @@ class Phone:
         self.tz = ZoneInfo(self.settings.timezone)
         self.help_text = help_text  # () -> the bot's command list, for messages it doesn't understand
 
-    def answer(self, text: str, now: datetime | None = None) -> tuple[str, Buttons | None]:
-        """Your message -> (reply, buttons). Never raises: a failure is said, not lost."""
+    def answer(self, text: str, now: datetime | None = None, sent: datetime | None = None) -> tuple[str, Buttons | None]:
+        """Your message -> (reply, buttons). `sent`: when you sent it, if that was a while ago. Never raises: a
+        failure is said, not lost."""
         try:
-            return self._answer(text, now or datetime.now(self.tz))
+            now = now or datetime.now(self.tz)
+            if sent is not None and now - sent > LATE:
+                return self.late(text, sent.astimezone(self.tz))
+            return self._answer(text, now)
         except Exception:
             log.exception("answering a Telegram message failed")
             return "Sorry, something went wrong answering that. Try again, or ask in the Doraemon app.", None
+
+    def late(self, text: str, sent: datetime) -> tuple[str, Buttons | None]:
+        """A message sent while the bot was off (the laptop asleep): food is still logged, on the day you sent it;
+        anything else is said to be left, not silently dropped (a reminder's "in 2 hours" has passed)."""
+        day = sent.date()
+        at = short_clock(f"{sent:%H:%M}") + ("" if day == self.brain.today() else f" on {sent:%a} {sent.day} {sent:%b}")
+        if (repeated := self.repeat(text, day)) is not None:
+            return repeated
+        sure = coach.food_said(text)
+        asks = split_request(text) is not None or split_event(text) is not None  # a reminder or event: left
+        if sure or coach.might_be_food(text) and not asks:
+            reply, buttons = self.food(sure or text, text, coach.food_day(text, day) or day, sent_at=at)
+            if buttons or sure or reply.startswith(MODEL_DOWN):
+                return reply, buttons
+        return f"I was offline when you sent “{text.strip()[:80]}” ({at}), so I've left it. Send it again if you " \
+               "still need it.", None
 
     def _answer(self, text: str, now: datetime) -> tuple[str, Buttons | None]:
         if (edited := self.edit_food(text, now)) is not None:  # "protein 45, kcal 160" after Edit
             return edited
         asking = self.asked_about(now)
         self.db.set_setting(ASK_KEY, None)
+        meal_day = date.fromisoformat(asking["day"]) if asking and asking.get("kind") == "meal" else None
+        if (repeated := self.repeat(text, meal_day or self.brain.today())) is not None:  # "same as yesterday"
+            return repeated
+        if meal_day and not coach.QUESTION.match(text):  # "laksa" after "Lunch at X?"
+            return self.food(text, text, meal_day)
         if (asked := split_request(text)) is not None:
             return self.draft(*asked, text, now)
         if (event := split_event(text)) is not None:
@@ -87,10 +118,9 @@ class Phone:
                                    ("✖ No thanks", f"fdrop:{batch}")]]
         if coach.FOOD_IDEAS.search(text):  # "what should I eat for dinner?": the app's own ideas (no model here)
             return self.plain(coach.ideas_card(self.brain.fit)), None
-        if food := coach.food_request(text, own_chat=False):  # "ate chicken rice", "lunch: laksa"
+        # "ate chicken rice", "lunch: laksa", "2 eggs, 12g protein" (not a question about your protein), "a protein shake"
+        if food := coach.food_said(text):
             return self.food(food, text)
-        if coach.food_with_numbers(text):  # "2 eggs, 12g protein": food, not a question about your protein
-            return self.food(text, text)
         # Dorae-3's own shapes first ("how am I doing today?"), then everyone else's
         found = route("fitness", text, self.db.get_setting(LAST_KEY))
         if found is not None and found.intent == "help":
@@ -107,18 +137,66 @@ class Phone:
         if coach.might_be_food(text):  # "3 eggs and 2 bread", "chicken rice": the model says if it's food
             try:
                 reply, buttons = self.food(text, text)
-                if buttons:
+                if buttons or reply.startswith(MODEL_DOWN):  # not "help": it may well be food, and it'll work later
                     return reply, buttons
             except Exception:  # only a guess: what works here instead
                 log.exception("asking the model if a Telegram message was food failed")
+        log.info("Telegram message not understood: %r", text[:200])
         return self.help_text(), None
 
-    def food(self, food: str, said: str) -> tuple[str, Buttons | None]:
+    def food(self, food: str, said: str, day: date | None = None, sent_at: str = "") -> tuple[str, Buttons | None]:
         """What you ate, worked out (the model, your foods, Open Food Facts) as a draft with Log and Cancel. "Yesterday"
-        in what you `said` puts it on yesterday."""
-        day = coach.food_day(said, self.brain.today())
-        intro = "🍽 Here's what I worked out" + (" for yesterday:" if day else ":")
+        in what you `said` puts it on yesterday; `day`, on the day of the meal Dorae-3 asked about. `sent_at`: when a
+        message the bot was off for was sent ("1:05pm")."""
+        day = day or coach.food_day(said, self.brain.today())
+        when = "" if day in (None, self.brain.today()) else " for yesterday" if day == self.brain.today() - timedelta(days=1) \
+            else f" for {day:%a} {day.day} {day:%b}"
+        intro = f"🍽 From your message at {sent_at}{when}:" if sent_at else f"🍽 Here's what I worked out{when}:"
         return self.food_card(self.brain.food_reply(food, day), intro)
+
+    def repeat(self, text: str, day: date) -> tuple[str, Buttons | None] | None:
+        """"Same as yesterday", "my usual breakfast": that meal again as a draft on `day`, or which of yesterday's to
+        copy when there were several. None if `text` doesn't ask for a meal again."""
+        if (found := nudges.repeat_choices(self.brain.fit, text, day)) is None:
+            return None
+        which, choices, sure = found
+        if not choices:
+            return ("Nothing was logged yesterday to copy. Tell me what you had, like “chicken rice and kopi”.", None)
+        if sure:
+            return self.copy_food(choices[0], day, "🍽 Same as yesterday:" if which == "yesterday" else
+                                  f"🍽 Your {which}:" if which.startswith("usual") else f"🍽 Same {which}:")
+        lines = [(f"I don't know your {which} yet. " if which.startswith("usual") else "") +
+                 "Which one again? Yesterday you logged:"]
+        buttons = []
+        for rows in choices[:5]:
+            names = " + ".join(r["name"] for r in rows)
+            lines.append(f"• {names}: {sum(r['kcal'] for r in rows):,.0f} kcal")
+            buttons.append([(names if len(names) <= 40 else names[:39] + "…", f"fcopy:{rows[0]['batch']}:{day}")])
+        buttons.append(([("All of it", f"fcopy:all:{day}")] if len(choices) > 1 else []) + [("✖ None", "fskip:0")])
+        return "\n".join(lines), buttons
+
+    def copy_food(self, rows, day: date, intro: str) -> tuple[str, Buttons | None]:
+        batch = self.brain.fit.draft(nudges.copy(rows), day)
+        return self.food_card({"kind": "food", "text": "", "payload": {"batch": batch}}, intro)
+
+    def copy_pressed(self, which: str, day: str) -> tuple[str, Buttons | None] | str:
+        """A meal pressed under "Which one again?": that batch (or all of yesterday's food) as a draft on `day`."""
+        on = date.fromisoformat(day)
+        rows = self.brain.fit.foods_on(on - timedelta(days=1))
+        rows = rows if which == "all" else [r for r in rows if r["batch"] == which]
+        if not rows:
+            return "That meal isn't in your log any more."
+        return self.copy_food(rows, on, "🍽 Same as yesterday:")
+
+    def something_else(self, batch: str) -> str:
+        """Something else under "Chicken rice again?": that draft goes, and your next message is what you had."""
+        rows = self.brain.fit.batch(batch)
+        if not rows or rows[0]["status"] != "draft":
+            return "That one's already logged (or was cancelled)."
+        self.brain.fit.cancel(batch)
+        self.db.set_setting(ASK_KEY, json.dumps({"kind": "meal", "title": "", "day": rows[0]["day"], "minutes": 180,
+                                                 "at": datetime.now(self.tz).isoformat()}))
+        return "✏️ What did you have? Reply like “chicken rice and kopi” and I'll work it out."
 
     def photo(self, image: bytes, caption: str = "") -> tuple[str, Buttons | None]:
         """A photo of a nutrition label or of your food (its caption, e.g. "2 servings", as a hint), as a draft."""
@@ -201,13 +279,14 @@ class Phone:
         return f"✅ Logged. {self.today_text()}"
 
     def asked_about(self, now: datetime) -> dict | None:
-        """{"title", "kind"} of the reminder or event the bot just asked "when?" about, if it's still a fresh question."""
+        """{"title", "kind"} of the reminder or event the bot just asked "when?" about (or the meal Dorae-3 asked
+        "what did you have?" about), if it's still a fresh question."""
         try:
             asked = json.loads(self.db.get_setting(ASK_KEY) or "null")
             at = datetime.fromisoformat(asked["at"])
         except (ValueError, TypeError, KeyError):
             return None
-        return asked if now - at < timedelta(minutes=ASK_MINUTES) else None
+        return asked if now - at < timedelta(minutes=asked.get("minutes", ASK_MINUTES)) else None
 
     # --- reminders ------------------------------------------------------------------------------
 
@@ -366,6 +445,12 @@ class Phone:
                      if p.get("plans") else [f"• {o[0]}: {o[1]} kcal, {o[2]} g protein" for o in p["options"][3:6]])
             if lines:
                 lines.insert(0, "Or:")
+        elif kind == "fitness_review":
+            lines = [f"• {r[0]}: " + (f"{r[1]} of {r[2]} a day, {r[4]}" if r[1] != "–" else r[4]) for r in p["rows"]]
+            if p["foods"]:
+                lines.append("Most calories from: " + ", ".join(f"{f[0]} ({f[1]}×)" for f in p["foods"]))
+            if p["light"]:
+                lines.append("Left out as partly logged: " + ", ".join(d[0] for d in p["light"]))
         elif kind == "fitness_week":
             lines = [f"• {r['name']}: " + (f"{r['kcal']:,} kcal, {r['protein']} g" if r["foods"] else "not logged")
                      + (f", {r['steps']:,} steps" if r["steps"] is not None else "") for r in p["rows"]]

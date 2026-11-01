@@ -26,6 +26,8 @@ TARGETS_KEY, PROFILE_KEY, HEALTH_KEY = "fitness:targets", "fitness:profile", "fi
 TARGET_NAMES = {"kcal": "calories", "protein": "protein", "steps": "steps"}
 UNITS = {"kcal": "kcal", "protein": "g", "carbs": "g", "fat": "g", "sugar": "g", "steps": ""}
 STEPS_PER_MINUTE = 100  # a brisk walk
+TREND_VIEWS = {"days": 14, "weeks": 12, "months": 6}  # how many of each the Fitness page's charts show
+KCAL_PER_GRAM = {"protein": 4, "carbs": 4, "fat": 9, "sugar": 4}
 ACTIVITY = {"low": 1.2, "light": 1.375, "moderate": 1.55, "high": 1.725}  # TDEE multipliers
 GOALS = {"lose": -450, "maintain": 0, "gain": 300}  # kcal a day against what you burn
 # Typical protein snacks, for the evening plan when you haven't logged enough foods of your own yet
@@ -234,25 +236,109 @@ class Fitness:
             d += timedelta(days=1)
         return out
 
-    def week_facts(self, end: date | None = None, days: int = 7) -> dict:
-        """The last `days` days (today included) worked out: averages over the days you logged, how many days hit
-        each target, best and worst. What the model gets for advice, and the week answer."""
-        end = end or self.today()
-        rows = self.days(end - timedelta(days=days - 1), end)
-        goals = self.targets()
-        logged = [r for r in rows if r["foods"]]
-        stepped = [r for r in rows if r["steps"] is not None]
-        avg = lambda xs: round(sum(xs) / len(xs)) if xs else None
-        facts = {"days": days, "days_logged": len(logged), "targets": goals,
-                 "avg_kcal": avg([r["kcal"] for r in logged]), "avg_protein": avg([r["protein"] for r in logged]),
-                 "avg_steps": avg([r["steps"] for r in stepped]), "rows": rows}
-        if goals["kcal"] and logged:
-            facts["days_within_kcal"] = sum(1 for r in logged if r["kcal"] <= goals["kcal"] * 1.05)
-        if goals["protein"] and logged:
-            facts["days_protein_hit"] = sum(1 for r in logged if r["protein"] >= goals["protein"] * 0.95)
-        if goals["steps"] and stepped:
-            facts["days_steps_hit"] = sum(1 for r in stepped if r["steps"] >= goals["steps"])
-        return facts
+    def history(self, first: date, last: date) -> dict[date, dict]:
+        """Each day's logged totals ({"foods", "kcal", ...}) and "steps", for the days that have any: two queries,
+        since the charts span months."""
+        days: dict[date, dict] = {}
+        span = (first.isoformat(), last.isoformat())
+        for r in self.db.conn.execute(
+                f"SELECT day, COUNT(*) AS foods, {', '.join(f'SUM({m}) AS {m}' for m in MACROS)} FROM food_log "
+                "WHERE status = 'logged' AND day BETWEEN ? AND ? GROUP BY day", span):
+            days[date.fromisoformat(r["day"])] = {k: r[k] for k in ("foods", *MACROS)}
+        for r in self.db.conn.execute("SELECT day, steps FROM steps WHERE day BETWEEN ? AND ?", span):
+            days.setdefault(date.fromisoformat(r["day"]), {})["steps"] = r["steps"]
+        return days
+
+    def trend(self, view: str = "days") -> dict:
+        """The charts' numbers: the last 14 days, 12 weeks (Monday to Sunday) or 6 months. Food is averaged over the
+        days you logged and steps over the days with steps, so a day you didn't log isn't a day you ate nothing.
+        The current day, week or month is `partial`. `whole` sums the span's macros, for the split of calories.
+        {"view", "buckets": [{"label", "name", "partial", "logged", "stepped", "kcal", ..., "steps"}], "whole", "logged"}"""
+        view = view if view in TREND_VIEWS else "days"
+        today, n = self.today(), TREND_VIEWS[view]
+        if view == "days":
+            spans = [(today - timedelta(days=i),) * 2 for i in range(n - 1, -1, -1)]
+        elif view == "weeks":
+            monday = today - timedelta(days=today.weekday())
+            spans = [(monday - timedelta(weeks=i), monday - timedelta(weeks=i) + timedelta(days=6)) for i in range(n - 1, -1, -1)]
+        else:
+            spans, first = [], today.replace(day=1)
+            for _ in range(n):
+                spans.insert(0, (first, (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)))
+                first = (first - timedelta(days=1)).replace(day=1)
+        days = self.history(spans[0][0], today)
+        whole, logged, buckets = dict.fromkeys(MACROS, 0.0), 0, []
+        for i, (first, last) in enumerate(spans):
+            rows = [days[d] for d in (first + timedelta(days=k) for k in range((min(last, today) - first).days + 1))
+                    if d in days]
+            eaten = [r for r in rows if r.get("foods")]
+            walked = [r["steps"] for r in rows if r.get("steps") is not None]
+            for m in MACROS:
+                whole[m] += sum(r[m] for r in eaten)
+            logged += len(eaten)
+            if view == "days":
+                label, name = str(first.day), f"{first:%a} {first.day} {first:%b}"
+            elif view == "weeks":  # every other week named, ending with this one: more don't fit
+                label, name = f"{first.day}/{first.month}" if (n - 1 - i) % 2 == 0 else "", f"Week of {first.day} {first:%b}"
+            else:
+                label, name = f"{first:%b}", f"{first:%B %Y}"
+            buckets.append({"label": label, "name": name, "partial": last >= today, "logged": len(eaten),
+                            "stepped": len(walked), "steps": round(sum(walked) / len(walked)) if walked else None,
+                            **{m: sum(r[m] for r in eaten) / len(eaten) if eaten else None for m in MACROS}})
+        return {"view": view, "buckets": buckets, "whole": whole, "logged": logged}
+
+    def review(self, first: date, last: date) -> dict:
+        """Several days against your targets, for the review card and the model's advice. Food counts only on fully
+        logged days: a day under half the calorie target (800 kcal without one) is listed in `light` and left out,
+        since most likely not everything was logged. Every number here; the words are coach.review_card's."""
+        last = min(last, self.today())
+        started = self.db.conn.execute("SELECT MIN(day) FROM (SELECT MIN(day) AS day FROM food_log WHERE status = 'logged' "
+                                       "UNION ALL SELECT MIN(day) FROM steps)").fetchone()[0]
+        since_start = bool(started) and first < date.fromisoformat(started) <= last  # days before you began don't count
+        first = date.fromisoformat(started) if since_start else first
+        goals, days = self.targets(), self.history(first, last)
+        floor = goals["kcal"] * 0.5 if goals["kcal"] else 800
+        logged = sorted(d for d, r in days.items() if r.get("foods"))
+        full = [d for d in logged if days[d]["kcal"] >= floor]
+        stepped = sorted(d for d, r in days.items() if r.get("steps") is not None)
+        avg = lambda xs: sum(xs) / len(xs) if xs else None
+        out = {"first": first, "last": last, "days": (last - first).days + 1, "targets": goals, "since_start": since_start,
+               "logged": len(logged), "full": len(full), "light": [(d, round(days[d]["kcal"])) for d in logged if d not in full],
+               **{m: avg([days[d][m] for d in full]) for m in MACROS}}
+        if goals["kcal"]:
+            ratio = [days[d]["kcal"] / goals["kcal"] for d in full]
+            out["kcal_days"] = {"on": sum(1 for r in ratio if 0.9 <= r <= 1.1), "over": sum(1 for r in ratio if r > 1.1),
+                                "under": sum(1 for r in ratio if r < 0.9)}
+        if goals["protein"]:
+            out["protein_hit"] = sum(1 for d in full if days[d]["protein"] >= goals["protein"] * 0.95)
+        out["stepped"], out["steps"] = len(stepped), avg([days[d]["steps"] for d in stepped])
+        out["steps_hit"] = sum(1 for d in stepped if goals["steps"] and days[d]["steps"] >= goals["steps"])
+        # the latest 7 days against the days before them, when both have at least 2 fully logged days
+        cut = last - timedelta(days=6)
+        recent, before = [d for d in full if d >= cut], [d for d in full if d < cut]
+        if len(recent) >= 2 and len(before) >= 2:
+            out["change"] = {m: avg([days[d][m] for d in recent]) - avg([days[d][m] for d in before])
+                             for m in ("kcal", "protein")}
+        weekend, weekday = [d for d in full if d.weekday() >= 5], [d for d in full if d.weekday() < 5]
+        if len(weekend) >= 2 and len(weekday) >= 2:
+            out["weekend_extra"] = avg([days[d]["kcal"] for d in weekend]) - avg([days[d]["kcal"] for d in weekday])
+        over = [d for d in full if goals["kcal"] and days[d]["kcal"] > goals["kcal"] * 1.1]
+        out["foods"], out["over_foods"], out["full_days"] = self.top_foods(full), self.top_foods(over), full
+        return out
+
+    def top_foods(self, days: list[date]) -> list[dict]:
+        """What you ate on `days`, the same food under any spelling together: [{"name", "times", "kcal", "protein",
+        "carbs", "fat", "sugar"}] with totals, most calories first."""
+        if not days:
+            return []
+        foods: dict[str, dict] = {}
+        for r in self.db.conn.execute(f"SELECT name, {', '.join(MACROS)} FROM food_log WHERE status = 'logged' AND day IN "
+                                      f"({', '.join('?' * len(days))})", [d.isoformat() for d in days]):
+            f = foods.setdefault(key_of(r["name"]), {"name": r["name"], "times": 0, **dict.fromkeys(MACROS, 0.0)})
+            f["times"] += 1
+            for m in MACROS:
+                f[m] += r[m]
+        return sorted(foods.values(), key=lambda f: -f["kcal"])
 
     # --- the evening check -------------------------------------------------------------------------------
 

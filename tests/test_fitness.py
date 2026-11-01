@@ -5,10 +5,12 @@ import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from doraemon import coach
+from doraemon import coach, nudges
+from doraemon.agents import short_clock
 from doraemon.db import Database
 from doraemon.fitness import Fitness, import_steps, parse_steps, suggest_targets
 from doraemon.foodlog import (amount_of, amount_reply, given_numbers, label_food, lookup_product, resolve, said_count,
@@ -234,6 +236,8 @@ def test_numbers_you_give_are_read(text, given):
     ("3 eggs and rice", "rice", None),  # the 3 is the eggs'
     ("300g chicken breast", "chicken breast", None),  # an amount, not 300 of them
     ("had chicken breast at 3 pm", "chicken breast", None),
+    ("bread with tuna, 1 chicken breast", "Bread with Tuna", None),  # the 1 is the chicken breast's
+    ("2 strawberries", "strawberry", (2, "strawberry", "2 strawberries")),
 ])
 def test_how_many_of_each_food_you_said(text, name, said):
     assert said_count(text, name) == said
@@ -375,6 +379,89 @@ def test_dorae3_lookups(agent, question, intent, slots):
     assert (found.agent, found.intent, found.slots) == ("fitness", intent, slots)
 
 
+@pytest.mark.parametrize("agent, question, span", [
+    ("fitness", "based on what i ate the past few weeks, am i hitting my target and what can i improve on", "days:28"),
+    ("fitness", "am i hitting my targets", "days:28"),
+    ("fitness", "what can i improve on", "days:28"),
+    ("fitness", "how can i improve my protein", "days:28"),
+    ("fitness", "how have i been doing over the past 2 weeks", "days:14"),
+    ("fitness", "how did i do this month", "month:this"),
+    ("fitness", "is my protein on track lately", "days:28"),
+    ("money", "how was my eating last month", "month:last"),  # asked elsewhere: pointed to Dorae-3
+])
+def test_reviews_of_several_weeks(agent, question, span):
+    found = route(agent, question)
+    assert (found.agent, found.intent, found.slots) == ("fitness", "fit_review", {"span": span})
+
+
+@pytest.mark.parametrize("agent, question", [
+    ("fitness", "am i hitting my protein target today"),  # a day's lookup
+    ("fitness", "my targets"),
+    ("fitness", "set my protein target to 140"),
+    ("money", "am i hitting my targets"),  # Dorae-1's budgets
+    ("money", "how can i improve my savings"),
+])
+def test_not_reviews(agent, question):
+    found = route(agent, question)
+    assert found is None or found.intent != "fit_review"
+
+
+def test_a_review_against_your_targets(fit):
+    today = fit.today()
+    fit.set_targets(kcal=2000, protein=120, steps=10000)
+    for back in range(1, 9):  # 8 days logged: protein short, three days over on laksa, one day partly logged
+        day = today - timedelta(days=back)
+        if back == 4:
+            eat(fit, day, 500, 20)
+            continue
+        fit.log(fit.draft([{"name": "Laksa" if back in (2, 5, 6) else "Chicken rice", "portion": "",
+                            "kcal": 2500 if back in (2, 5, 6) else 1900,
+                            "protein": 100, "carbs": 200, "fat": 70}], day))
+        fit.set_steps(day, 6000)
+    eat(fit, today, 3000, 200)  # today isn't over: left out
+    fit.remember({"name": "Greek yogurt", "portion": "150 g", "kcal": 130, "protein": 15, "carbs": 6, "fat": 4, "sugar": 5})
+    card = coach.review_card(fit, "days:28")
+    p = card["payload"]
+    assert card["kind"] == "fitness_review" and p["label"].startswith("Since you started logging")  # not 28 empty days
+    assert "you logged 8 of 8 days (7 fully)" in card["text"] and p["light"] == [[coach.short_day(today - timedelta(days=4)), 500]]
+    assert p["rows"][0][:4] == ["Calories", "2,157", "2,000 kcal", "on"] and "over 3" in p["rows"][0][4]
+    assert p["rows"][1][:4] == ["Protein", "100", "120 g", "under"] and p["rows"][1][4] == "hit on 0 of 7 days"
+    assert p["rows"][2][:4] == ["Steps", "6,000", "10,000", "under"]
+    tips = "\n".join(p["tips"])
+    assert "Protein: about 20 g a day short" in tips and "Greek yogurt" in tips
+    assert "Calories: over 2,000 on 3 of 7 days, mostly from laksa (3×)" in tips
+    assert "A 40-minute walk a day closes it." in tips and len(p["tips"]) == 3
+    assert "To improve:\n1. Protein" in card["text"]
+
+
+def test_a_review_with_too_little_logged_says_so(fit):
+    fit.set_targets(kcal=2000, protein=120)
+    eat(fit, fit.today() - timedelta(days=1), 1900, 130)
+    assert coach.review_card(fit)["payload"]["tips"] == [
+        "Only 1 fully logged day so far: log every meal for a week and I can say much more."]
+
+
+def test_a_review_with_nothing_logged(tmp_path):
+    fit = Fitness(Database(tmp_path / "empty.db"), "Asia/Singapore")
+    assert "set your targets on the Fitness page" in coach.review_card(fit)["text"]
+    fit.set_targets(protein=120)
+    assert coach.review_card(fit)["text"].endswith("nothing fully logged yet. Tell me what you eat for a few days, then ask again.")
+
+
+def test_dorae3_answers_a_review_question_in_chat_and_on_telegram(settings):
+    client = chat_client(settings)
+    rt = client.app.state.runtime
+    rt.brain.fit.set_targets(kcal=2000, protein=120)
+    for back in range(1, 5):
+        eat(rt.brain.fit, rt.brain.fit.today() - timedelta(days=back), 1950, 100)
+    html = client.post("/chat/fitness/ask", data={
+        "q": "based on what i ate the past few weeks, am i hitting my target and what can i improve on"}).json()["html"]
+    assert "calories on target, protein 20 g a day short" in html and "To improve:" in html and "Most calories from" in html
+    assert "Your daily targets" not in html
+    card = coach.review_card(rt.brain.fit)
+    assert "• Protein: 100 of 120 g a day, hit on 0 of 4 days" in rt.phone.plain(card)
+
+
 def test_how_am_i_doing_stays_with_money_in_dorae1s_chat():
     assert route("money", "how am i doing on my budget").intent == "budget"
     assert route("money", "how am i doing") is None
@@ -477,6 +564,85 @@ def test_a_new_meal_after_edit_is_a_new_meal(settings):
     assert text.startswith("🍽 Here's what I worked out")
 
 
+@pytest.mark.parametrize("text", ["a protein shake", "protein shake", "whey and a banana",
+                                  "chicken rice for lunch today", "laksa for dinner just now"])
+def test_food_that_looks_like_a_question_is_logged_from_telegram(settings, text):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = food = FakeFood()
+    reply, buttons = rt.phone.answer(text)
+    assert reply.startswith("🍽 Here's what I worked out:") and buttons and food.calls
+
+
+def test_a_protein_bar_question_is_about_the_protein_bar():
+    assert coach.nutrition_subject("how many calories in a protein bar?") == "a protein bar"
+
+
+def test_same_as_yesterday_on_telegram(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = food = FakeFood()
+    fit = rt.brain.fit
+    assert rt.phone.answer("same as yesterday")[0].startswith("Nothing was logged yesterday")
+    yesterday = datetime.now(fit.tz).replace(hour=8, minute=0) - timedelta(days=1)
+    logged_at(fit, yesterday, "Kaya toast", 350, 10)
+    text, buttons = rt.phone.answer("same as yesterday")
+    assert text.startswith("🍽 Same as yesterday:\n• Kaya toast") and buttons[0][0][0] == "✅ Log"
+    assert [r["day"] for r in fit.batch(buttons[0][0][1].split(":")[1])] == [fit.today().isoformat()]
+    logged_at(fit, yesterday.replace(hour=19), "Bak kut teh", 450, 28)
+    assert "Bak kut teh" in rt.phone.answer("had the same dinner as yesterday")[0]  # the evening one
+    text, buttons = rt.phone.answer("same as yesterday")
+    assert text.startswith("Which one again? Yesterday you logged:") and len(buttons) == 3
+    assert buttons[1][0][0] == "Bak kut teh" and buttons[2][0][0] == "All of it"
+    text, kept = rt.button(buttons[2][0][1])
+    assert "Kaya toast" in text and "Bak kut teh" in text and "Total: 800 kcal" in text and kept[0][0][0] == "✅ Log"
+    assert food.calls == []  # copied from your log, no model
+
+
+def test_a_meal_that_cant_be_told_apart_is_chosen(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    fit = rt.brain.fit
+    logged_at(fit, datetime.now(fit.tz).replace(hour=22, minute=0) - timedelta(days=1), "Nasi lemak", 500, 12)
+    text, buttons = rt.phone.answer("same lunch as yesterday")  # the whole day, logged at night: not surely lunch
+    assert text == "Which one again? Yesterday you logged:\n• Nasi lemak: 500 kcal"
+    assert [b[0] for row in buttons for b in row] == ["Nasi lemak", "✖ None"]
+    assert rt.phone.answer("had my usual breakfast")[0].startswith("I don't know your usual breakfast yet. Which one")
+
+
+def test_your_usual_breakfast_on_telegram(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    fit = rt.brain.fit
+    for back in (1, 2, 4):
+        logged_at(fit, datetime.now(fit.tz).replace(hour=8, minute=0) - timedelta(days=back), "Kaya toast", 350, 10)
+    text, buttons = rt.phone.answer("had my usual breakfast")
+    assert text.startswith("🍽 Your usual breakfast:\n• Kaya toast") and buttons
+
+
+def test_messages_sent_while_the_bot_was_off(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = FakeFood()
+    tz = rt.brain.fit.tz
+    sent = datetime.now(tz) - timedelta(days=1)
+    text, buttons = rt.phone.answer("ate chicken rice", sent=sent)
+    assert text.startswith(f"🍽 From your message at {short_clock(f'{sent:%H:%M}')} on ") and "for yesterday:" in text
+    assert {r["day"] for r in rt.brain.fit.batch(buttons[0][0][1].split(":")[1])} == {sent.date().isoformat()}
+    text, buttons = rt.phone.answer("remind me to call mom in 10 minutes", sent=datetime.now(tz) - timedelta(hours=2))
+    assert text.startswith("I was offline when you sent “remind me to call mom in 10 minutes”") and buttons is None
+    assert rt.phone.answer("ate chicken rice", sent=datetime.now(tz))[0].startswith("🍽 Here's what I worked out")
+
+
+def test_telegram_says_when_the_model_is_down(settings):
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_model = lambda: None
+    assert rt.phone.answer("chicken rice")[0].startswith("I need the local model")  # not the list of commands
+
+    class Stopped(FakeFood):
+        def complete_json(self, system, user, schema):
+            raise httpx.ConnectError("refused")
+    rt = Runtime(settings, messenger=FakeBot())
+    rt.brain.food_backend = Stopped()
+    assert rt.phone.answer("ate chicken rice")[0].startswith("I need the local model")
+    assert rt.brain.food_backend is None  # looked for (and started) again next time
+
+
 def test_the_6pm_check_comes_once_and_reaches_telegram(settings, tmp_path):
     bot = FakeBot()
     rt = Runtime(dataclasses.replace(settings, fitness_check_time="18:00"), messenger=bot)
@@ -529,6 +695,53 @@ def test_the_steps_path_is_changed_on_the_fitness_page(settings, tmp_path):
     page = client.post("/fitness/health", data={"reset": "1"}).text
     assert "Back to the default places. Nothing there yet" in page  # the test's default folder doesn't exist
     assert str(tmp_path / "health") in page and "Use the default places" not in page
+
+
+def eat(fit, day, kcal, protein, carbs=0, fat=0):
+    fit.log(fit.draft([{"name": "Meal", "portion": "", "kcal": kcal, "protein": protein, "carbs": carbs, "fat": fat}], day))
+
+
+def test_the_charts_average_over_the_days_you_logged(fit):
+    today = fit.today()
+    eat(fit, today, 600, 30, 60, 20)
+    eat(fit, today, 400, 20, 40, 10)  # a day's meals add up
+    eat(fit, today - timedelta(days=7), 2000, 100)  # always last week
+    fit.set_steps(today, 5000)
+    fit.set_steps(today - timedelta(days=1), 7000)
+    days = fit.trend("days")["buckets"]
+    assert len(days) == 14 and days[-1]["partial"] and not days[-2]["partial"]
+    assert (days[-1]["kcal"], days[-1]["protein"], days[-1]["steps"]) == (1000, 50, 5000)
+    assert days[-2]["kcal"] is None and days[-2]["steps"] == 7000  # not logged isn't zero
+    weeks = fit.trend("weeks")["buckets"]
+    assert len(weeks) == 12 and (weeks[-1]["kcal"], weeks[-1]["logged"]) == (1000, 1) and weeks[-2]["kcal"] == 2000
+    months = fit.trend("months")
+    assert len(months["buckets"]) == 6 and months["buckets"][-1]["partial"]
+    assert months["whole"]["kcal"] == 3000 and months["logged"] == 2
+    assert fit.trend("years")["view"] == "days"
+
+
+def test_the_charts_shapes(fit):
+    from doraemon.web import charts
+    eat(fit, fit.today(), 600, 30, 60, 20)  # 120 + 240 + 180 kcal from protein, carbs and fat
+    trend = fit.trend("days")
+    split = charts.macro_split(trend)
+    assert [l["pct"] for l in split["legend"]] == ["22", "44", "33"] and split["kcal"] == 600  # the centre: as logged
+    cols = charts.fit_columns(trend, "kcal", 2000, " kcal")
+    assert cols["budget"]["label"] == "Target 2,000 kcal" and not cols["empty"]
+    assert cols["cols"][-1]["cap"] == "600" and all(c["cap"] == "" for c in cols["cols"][:-1])  # 14: only the latest
+    assert cols["cols"][-1]["tip"].endswith(": 600 kcal · target 2,000 kcal")
+    assert charts.fit_columns(trend, "steps", None, " steps")["empty"]
+    stacked = charts.macro_columns(trend)["cols"]
+    assert [b["color"] for b in stacked[-1]["bars"]] == list(charts.MACRO_COLORS.values()) and stacked[0]["bars"] == []
+
+
+def test_the_fitness_page_shows_the_charts(settings):
+    client = chat_client(settings)
+    eat(client.app.state.runtime.brain.fit, client.app.state.runtime.brain.fit.today(), 600, 30, 60, 20)
+    page = client.get("/fitness?view=months").text
+    assert 'class="tab" aria-current=page>Months' in page and "The average a day, over the days you logged" in page
+    assert "Where your calories come from" in page and "22% of calories" in page and "No steps in these 6 months" in page
+    assert "a day over 1 day logged: protein 30 g (120 kcal)" in page  # the stacked column's tip
 
 
 def test_the_fitness_page_shows_which_folders_it_watches(settings, tmp_path):
@@ -808,3 +1021,193 @@ def test_label_photos_on_telegram(settings):
     old = json.loads(rt.db.get_setting("fitness:last_label"))
     rt.db.set_setting("fitness:last_label", json.dumps({**old, "at": "2026-01-01T00:00:00+00:00"}))
     assert "From the label" not in rt.phone.answer("2 servings")[0]
+
+
+# --- Dorae-3 asking first (doraemon.nudges) ---------------------------------------------------------------------
+
+def pay(db, merchant, at, amount="7.20", category="dining", refund=0):
+    cur = db.conn.execute("INSERT INTO transactions (gmail_id, source, merchant, purchased_at, amount, currency, category, "
+                          "is_refund) VALUES ('g', 'bank_alert', ?, ?, ?, 'SGD', ?, ?)",
+                          (merchant, at.isoformat(), amount, category, refund))
+    db.conn.commit()
+    return cur.lastrowid
+
+
+def logged_at(fit, at, name="Chicken rice", kcal=600, protein=25):
+    batch = fit.draft([{"name": name, "portion": "1 plate", "kcal": kcal, "protein": protein}], at.date())
+    fit.log(batch)
+    fit.db.conn.execute("UPDATE food_log SET logged_at = ? WHERE batch = ?", (at.astimezone(SG).isoformat(), batch))
+    fit.db.conn.commit()
+
+
+def nudge_runtime(settings):
+    bot = FakeBot()
+    rt = Runtime(dataclasses.replace(settings, fitness_nudges=True), messenger=bot)
+    rt.brain.food_backend = FakeFood()
+    return rt, bot
+
+
+@pytest.mark.parametrize("merchant, name", [("MOS BURGER-JURONG POINT SINGAPORE SG", "Mos Burger"),
+                                            ("McDonalds 930013 Singapore SG", "Mcdonalds"),
+                                            ("STRIPE PAYMENTS SINGAPORE PTE. LTD.", "Stripe Payments")])
+def test_merchant_names(merchant, name):
+    assert nudges.merchant_name(merchant) == name
+
+
+def test_a_payment_at_a_food_place_asks_what_you_had_and_offers_last_time(settings):
+    rt, bot = nudge_runtime(settings)
+    now = datetime.now(SG).replace(hour=13, minute=0, second=0, microsecond=0)
+    week_ago = now - timedelta(days=7, hours=1)
+    pay(rt.db, "McDonald's Jurong Bowl", week_ago)
+    logged_at(rt.brain.fit, week_ago + timedelta(minutes=40), "Double cheeseburger", 450, 25)  # what you had then
+    assert not rt.meal_prompt_tick(now)  # the first time only notes where it's up to
+    pay(rt.db, "McDonalds 930013 Singapore SG", now - timedelta(minutes=20), "9.25")
+    assert rt.meal_prompt_tick(now)
+    text, buttons = bot.sent[-1]
+    assert text.startswith("🍽 Lunch at Mcdonalds? (SGD 9.25 at 12:40pm)") and "Last time there: Double cheeseburger" in text
+    assert buttons[0][0][0] == "✅ Double cheeseburger again" and buttons[1][0][1].startswith("fmeal:")
+    reply = rt.button(buttons[0][0][1])
+    assert reply[0].startswith("✅ Logged. Today: 450") and rt.brain.fit.totals(now.date()).kcal == 450
+    pay(rt.db, "McDonald's Jurong Bowl", now - timedelta(minutes=20), "9.25")  # the twin alert: asked once only
+    assert not rt.meal_prompt_tick(now + timedelta(minutes=15))
+
+
+def test_a_reply_to_the_meal_question_logs_on_that_day(settings):
+    rt, bot = nudge_runtime(settings)
+    now = datetime.now(SG).replace(hour=19, minute=30, second=0, microsecond=0)
+    rt.meal_prompt_tick(now)
+    pay(rt.db, "Kopitiam Bugis", now - timedelta(minutes=30))
+    assert rt.meal_prompt_tick(now)
+    text, buttons = bot.sent[-1]
+    assert text.startswith("🍽 Dinner at Kopitiam Bugis?") and "What did you have?" in text
+    assert buttons == [[("✖ Skip", "fskip:0")]]
+    reply, food_buttons = rt.phone.answer("chicken rice and kopi siew dai", now + timedelta(minutes=5))
+    assert reply.startswith("🍽 Here's what I worked out:") and food_buttons[0][0][1].startswith("flog:")
+
+
+def test_a_payment_processor_isnt_named_as_the_place(settings):
+    rt, bot = nudge_runtime(settings)
+    now = datetime.now(SG).replace(hour=8, minute=20, second=0, microsecond=0)
+    rt.meal_prompt_tick(now)
+    pay(rt.db, "STRIPE PAYMENTS SINGAPORE PTE. LTD.", now - timedelta(minutes=18), "2.92")
+    rt.meal_prompt_tick(now)
+    assert bot.sent[-1][0].startswith("🍽 Breakfast? (SGD 2.92 at 8:02am)\nWhat did you have?")
+
+
+def test_a_question_during_the_meal_question_is_still_answered(settings):
+    rt, bot = nudge_runtime(settings)
+    now = datetime.now(SG).replace(hour=19, minute=30, second=0, microsecond=0)
+    rt.meal_prompt_tick(now)
+    pay(rt.db, "Kopitiam Bugis", now - timedelta(minutes=30))
+    rt.meal_prompt_tick(now)
+    assert not rt.phone.answer("how am i doing today?", now)[0].startswith("🍽 Here's what I worked out")
+
+
+def test_something_else_and_skip(settings):
+    rt, bot = nudge_runtime(settings)
+    now = datetime.now(SG).replace(hour=12, minute=30, second=0, microsecond=0)
+    before = now - timedelta(days=2)
+    pay(rt.db, "Kopitiam", before)
+    logged_at(rt.brain.fit, before + timedelta(minutes=10))
+    rt.meal_prompt_tick(now)
+    pay(rt.db, "Kopitiam", now - timedelta(minutes=10))
+    rt.meal_prompt_tick(now)
+    buttons = bot.sent[-1][1]
+    assert rt.button(buttons[1][0][1]).startswith("✏️ What did you have?")
+    assert rt.brain.fit.batch(buttons[0][0][1].split(":")[1])[0]["status"] == "cancelled"  # the draft went
+    assert rt.phone.answer("laksa", now)[0].startswith("🍽 Here's what I worked out")
+    assert rt.button("fskip:0") == "👍 Okay, not logging that one."
+
+
+@pytest.mark.parametrize("change", [{"refund": 1}, {"category": "groceries"}, {"hours": 6}, {"hour": 2}, {"logged": True}])
+def test_no_meal_question_when_it_isnt_worth_asking(settings, change):
+    rt, bot = nudge_runtime(settings)
+    now = datetime.now(SG).replace(hour=change.get("hour", 13), minute=30, second=0, microsecond=0)
+    rt.meal_prompt_tick(now)
+    if change.get("logged"):
+        logged_at(rt.brain.fit, now - timedelta(minutes=5))
+    pay(rt.db, "Kopitiam", now - timedelta(hours=change.get("hours", 0), minutes=10),
+        category=change.get("category", "dining"), refund=change.get("refund", 0))
+    assert not rt.meal_prompt_tick(now) and not bot.sent
+
+
+def test_your_usual_breakfast_comes_at_930(settings):
+    rt, bot = nudge_runtime(settings)
+    today = datetime.now(SG).replace(hour=9, minute=35, second=0, microsecond=0)
+    for back in (1, 2, 4):
+        logged_at(rt.brain.fit, today - timedelta(days=back, minutes=60), "Kaya toast set", 480, 18)
+    assert rt.nudge_tick(today.replace(hour=9, minute=0)) == []
+    assert rt.nudge_tick(today) == ["breakfast"]
+    text, buttons = bot.sent[-1]
+    assert text == "☀️ Kaya toast set again this morning? (480 kcal, 18 g protein)"
+    rt.button(buttons[0][0][1])
+    assert rt.brain.fit.totals(today.date()).kcal == 480
+    assert rt.nudge_tick(today + timedelta(minutes=5)) == []  # once a day
+
+
+def test_no_breakfast_question_without_a_habit(settings):
+    rt, bot = nudge_runtime(settings)
+    today = datetime.now(SG).replace(hour=9, minute=35, second=0, microsecond=0)
+    for back in (1, 9):  # twice isn't a habit
+        logged_at(rt.brain.fit, today - timedelta(days=back, minutes=60), "Kaya toast set", 480, 18)
+    assert rt.nudge_tick(today) == []
+
+
+def test_a_heads_up_before_dinner_out(settings):
+    rt, bot = nudge_runtime(settings)
+    fit = rt.brain.fit
+    fit.set_targets(kcal=2000, protein=120)
+    eat(fit, fit.today(), 900, 50)
+    today = datetime.now(SG).replace(hour=15, minute=5, second=0, microsecond=0)
+    day = today.date().isoformat()
+    rt.brain.calendar_events = lambda first, last: ([
+        {"title": "Dinner with Alex", "first": day, "last": day, "start": "19:30", "location": "Jumbo Seafood"},
+        {"title": "Team meeting", "first": day, "last": day, "start": "16:00"}], "")
+    assert rt.nudge_tick(today) == ["meal out: Dinner with Alex"]
+    text = bot.sent[-1][0]
+    assert text.startswith("🍽 Dinner with Alex at 7:30pm today (Jumbo Seafood). So far today: 900 kcal, 50 g protein.")
+    assert "about 1,100 kcal for the rest of the day, so keep things light before dinner" in text
+    assert rt.db.last_message("fitness")["text"] == text
+
+
+def test_the_weekly_review_offers_target_changes(settings):
+    rt, bot = nudge_runtime(settings)
+    fit = rt.brain.fit
+    fit.set_targets(kcal=2000, protein=140)
+    monday = fit.today() - timedelta(days=fit.today().weekday())
+    for back in range(1, 15):  # two weeks at about 100 g protein
+        eat(fit, monday - timedelta(days=back), 1950, 100)
+    now = datetime.combine(monday, datetime.min.time(), SG).replace(hour=9, minute=5)
+    assert "weekly" not in rt.nudge_tick(now.replace(hour=8))
+    assert "weekly" in rt.nudge_tick(now)
+    review, offer = bot.sent[-2], bot.sent[-1]
+    assert review[0].startswith("📅 Your week: Last week") and "protein 40 g a day short" in review[0]
+    assert "Protein has been short for a while: 100 g a day last week" in offer[0]
+    assert offer[1] == [[("✅ Set 100 g", "fgoal:protein:100"), ("Keep 140 g", "fkeep:protein")]]
+    assert rt.button("fgoal:protein:100") == "✅ Done: 100 g protein a day."
+    assert fit.targets()["protein"] == 100 and rt.button("fkeep:protein") == "👍 Keeping your protein target as it is."
+    assert "weekly" not in rt.nudge_tick(now + timedelta(hours=1))  # once a week
+
+
+def test_the_weekly_offer_is_a_save_form_in_the_app(settings):
+    client = chat_client(settings)
+    rt = client.app.state.runtime
+    fit = rt.brain.fit
+    fit.set_targets(kcal=2000, protein=140)
+    monday = fit.today() - timedelta(days=fit.today().weekday())
+    for back in range(1, 15):
+        eat(fit, monday - timedelta(days=back), 1950, 100)
+    assert rt.weekly_review(datetime.now(SG))
+    page = client.get("/chat/fitness").text
+    assert "📅 Your week: Last week" in page and "Change anything and press Save" in page
+    assert 'name="protein" inputmode="numeric" value="100"' in page and 'name="kcal" inputmode="numeric" value="2000"' in page
+
+
+def test_no_target_changes_after_one_odd_week(settings):
+    rt, bot = nudge_runtime(settings)
+    fit = rt.brain.fit
+    fit.set_targets(kcal=2000, protein=140)
+    monday = fit.today() - timedelta(days=fit.today().weekday())
+    for back in range(1, 29):
+        eat(fit, monday - timedelta(days=back), 1950, 100 if back <= 7 else 150)
+    assert nudges.proposals(fit) == []

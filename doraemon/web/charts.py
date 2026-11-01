@@ -8,6 +8,8 @@ in the list beside it, which always names every category.
 import math
 from decimal import Decimal
 
+from doraemon.fitness import KCAL_PER_GRAM
+
 CATEGORY_COLORS = {
     "transport": "#2A78D6", "dining": "#EB6834", "groceries": "#1BAF7A", "travel": "#EDA100",
     "shopping": "#E87BA4", "utilities": "#008300", "subscriptions": "#4A3AA7", "entertainment": "#E34948",
@@ -145,3 +147,106 @@ def pairs(months: list[dict], currency: str) -> dict:
                             f"spent {money(Decimal(m['spent']), currency)}, kept {money(kept, currency)}"})
     return {"w": width, "h": height, "base": base, "cols": cols, "month_y": base + 15, "note_y": base + 27,
             "colors": SERIES}
+
+
+# --- Dorae-3: food and steps per day, week or month (Fitness.trend) ------------------------------------------
+
+MACRO_COLORS = {"protein": "#2A78D6", "carbs": "#EB6834", "fat": "#4A3AA7"}  # checked together; not green, Dorae-3's own
+
+
+def _bar(x: float, y: float, width: float, base: float) -> str:
+    """A column from the baseline up to `y`, its top corners rounded."""
+    r = min(4.0, base - y, width / 2)
+    return (f"M{x:.1f},{base:.1f} V{y + r:.1f} Q{x:.1f},{y:.1f} {x + r:.1f},{y:.1f} H{x + width - r:.1f} "
+            f"Q{x + width:.1f},{y:.1f} {x + width:.1f},{y + r:.1f} V{base:.1f} Z") if base - y > 0 else ""
+
+
+def _short(v: float) -> str:
+    return f"{v / 1000:.1f}k" if v >= 10000 else f"{v:,.0f}"
+
+
+def _when(b: dict) -> str:
+    return f"{b['name']}{' so far' if b['partial'] else ''}"
+
+
+def _days(n: int, what: str = "logged") -> str:
+    return f"{n} day{'s' if n != 1 else ''} {what}"
+
+
+def fit_columns(trend: dict, key: str, target: int | None, unit: str) -> dict:
+    """One measure (kcal, protein or steps) per day, week or month as columns, the target as a reference line. Weeks
+    and months show the average a day. Shaped like columns(), so the same macro draws it; with many columns only the
+    latest carries its number."""
+    width, height, top, bottom = 320, 160, 20, 34
+    plot, buckets, daily = height - top - bottom, trend["buckets"], trend["view"] == "days"
+    values = [b[key] for b in buckets]
+    biggest = max([v or 0 for v in values] + [target or 0, 1])
+    band = width / max(len(buckets), 1)
+    bar = min(24.0, band * 0.55)
+    base = top + plot
+    cols = []
+    for i, (b, v) in enumerate(zip(buckets, values)):
+        x = band * i + (band - bar) / 2
+        y = base - (v or 0) / biggest * plot
+        counted = b["stepped"] if key == "steps" else b["logged"]
+        tip = f"{_when(b)}: " + (f"{v:,.0f}{unit}" + ("" if daily else f" a day ({_days(counted, 'with steps' if key == 'steps' else 'logged')})")
+                                 if v is not None else ("no steps" if key == "steps" else "nothing logged"))
+        if target:
+            tip += f" · target {target:,}{unit}"
+        cols.append({"path": _bar(x, y, bar, base), "cx": f"{x + bar / 2:.1f}", "cap_y": f"{y - 6:.1f}",
+                     "cap": _short(v) if v is not None and (len(buckets) <= 8 or i == len(buckets) - 1) else "",
+                     "label": b["label"], "partial": b["partial"], "tip": tip,
+                     "band_x": f"{band * i:.1f}", "band_w": f"{band:.1f}"})
+    line = {"y": f"{base - target / biggest * plot:.1f}", "label": f"Target {target:,}{unit}"} if target else None
+    return {"w": width, "h": height, "base": base, "cols": cols, "budget": line, "month_y": base + 15,
+            "note_y": base + 27, "top": top, "empty": all(v is None for v in values)}
+
+
+def macro_columns(trend: dict) -> dict:
+    """Calories from protein, carbs and fat (4, 4 and 9 kcal a gram) per day, week or month, stacked with protein at
+    the bottom: a 2px gap between the parts, the top one rounded."""
+    width, height, top, bottom = 320, 160, 14, 34
+    plot, buckets, daily = height - top - bottom, trend["buckets"], trend["view"] == "days"
+    parts = [{m: (b[m] or 0) * KCAL_PER_GRAM[m] for m in MACRO_COLORS} for b in buckets]
+    biggest = max([sum(p.values()) for p in parts] + [1])
+    band = width / max(len(buckets), 1)
+    bar = min(24.0, band * 0.55)
+    base = top + plot
+    cols = []
+    for i, (b, p) in enumerate(zip(buckets, parts)):
+        x, y, segs = band * i + (band - bar) / 2, base, []
+        shown = [m for m in MACRO_COLORS if p[m] > 0]
+        for m in shown:
+            upper = y - p[m] / biggest * plot
+            if m == shown[-1]:
+                path = _bar(x, upper, bar, y)
+            else:  # square, and 2px short of the part above it
+                path = f"M{x:.1f},{y:.1f} V{min(upper + GAP, y - 0.5):.1f} H{x + bar:.1f} V{y:.1f} Z"
+            segs.append({"path": path, "color": MACRO_COLORS[m]})
+            y = upper
+        tip = _when(b) + ("" if daily or not b["logged"] else f", a day over {_days(b['logged'])}") + ": " + (
+            ", ".join(f"{m} {b[m]:,.0f} g ({p[m]:,.0f} kcal)" for m in MACRO_COLORS) if b["logged"] else "nothing logged")
+        cols.append({"bars": segs, "label": b["label"], "partial": b["partial"], "cx": f"{x + bar / 2:.1f}",
+                     "band_x": f"{band * i:.1f}", "band_w": f"{band:.1f}", "tip": tip})
+    return {"w": width, "h": height, "base": base, "cols": cols, "month_y": base + 15, "note_y": base + 27,
+            "colors": MACRO_COLORS}
+
+
+def macro_split(trend: dict) -> dict:
+    """The span's calories split between protein, carbs and fat as donut slices, with grams a day (over the days you
+    logged) for the list beside it."""
+    whole, days = trend["whole"], trend["logged"]
+    kcal = {m: whole[m] * KCAL_PER_GRAM[m] for m in MACRO_COLORS}
+    total = sum(kcal.values())
+    legend = [{"name": m, "color": c, "grams": whole[m] / days if days else 0,
+               "pct": f"{kcal[m] / total * 100:.0f}" if total else "0"} for m, c in MACRO_COLORS.items()]
+    shown = [m for m in MACRO_COLORS if kcal[m] > 0]
+    segments, start = [], 0.0
+    for m in shown:
+        length = kcal[m] / total * DONUT_C
+        dash = length if len(shown) == 1 else max(length - GAP, 0.6)
+        segments.append({"color": MACRO_COLORS[m], "dash": f"{dash:.2f} {DONUT_C:.2f}", "offset": f"{-start:.2f}",
+                         "tip": f"{m}: {kcal[m] / total * 100:.0f}% of calories, {whole[m] / days:,.0f} g a day"})
+        start += length
+    return {"segments": segments, "legend": legend, "r": DONUT_R, "days": days,  # kcal as logged, like the Calories chart
+            "kcal": whole["kcal"] / days if days else 0, "sugar": whole["sugar"] / days if days else None}

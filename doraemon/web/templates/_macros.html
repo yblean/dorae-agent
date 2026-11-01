@@ -375,6 +375,20 @@
     </table>
   </div>
 
+  {% elif m.kind == 'fitness_review' and m.payload %}{% set p = m.payload %}
+  <div class="card">
+    <div class="card-head"><span>{{ p.label }}</span><a class="note" href="/fitness?view=weeks#charts">Charts</a></div>
+    {% for r in p.rows %}
+    <div class="legend-row"><span class="swatch-dot" style="background: {{ 'var(--agent)' if r[3] == 'on' else '#A8A7A0' }}"></span>
+      <span class="legend-name as-is">{{ r[0] }}{{ ' ✓' if r[3] == 'on' }}<span class="note">{{ r[4] }}</span></span>
+      <span class="num">{% if r[1] != '–' %}{{ r[1] }} of {{ r[2] }} a day{% else %}–{% endif %}</span></div>
+    {% endfor %}
+    {% if p.macros %}<div class="note">A day on average: carbs {{ p.macros.carbs }} g · fat {{ p.macros.fat }} g · sugar {{ p.macros.sugar }} g</div>{% endif %}
+    {% if p.foods %}<div class="note">Most calories from: {% for f in p.foods %}{{ f[0] }} ({{ f[1] }}×, {{ '{:,}'.format(f[2]) }} kcal){{ ' · ' if not loop.last }}{% endfor %}</div>{% endif %}
+    {% if p.protein_foods %}<div class="note">Most protein from: {% for f in p.protein_foods %}{{ f[0] }} ({{ f[1] }}×, {{ f[2] }} g){{ ' · ' if not loop.last }}{% endfor %}</div>{% endif %}
+    {% if p.light %}<div class="note">Left out as partly logged: {% for d in p.light %}{{ d[0] }} ({{ d[1] }} kcal){{ ', ' if not loop.last }}{% endfor %}</div>{% endif %}
+  </div>
+
   {% elif m.kind == 'targets' and m.payload %}{% set p = m.payload %}{% set v = p.suggested or p.targets %}
   <div class="card">
     <form class="fit-targets" method="post" action="/fitness/targets" data-ajax>
@@ -552,6 +566,45 @@
   </g>
   {% endfor %}
 </svg>
+{% endmacro %}
+
+{# Columns split into coloured parts (Dorae-3's protein, carbs and fat); the legend names every colour. #}
+{% macro stacked_chart(c) %}
+<div class="chart-legend">{% for name, color in c.colors.items() %}<span><i style="background: {{ color }}"></i>{{ name|capitalize }}</span>{% endfor %}</div>
+<svg class="viz columns" viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="{% for col in c.cols %}{{ col.tip }}{{ '; ' if not loop.last }}{% endfor %}">
+  <line x1="0" x2="{{ c.w }}" y1="{{ c.base }}" y2="{{ c.base }}" class="axis"/>
+  {% for col in c.cols %}
+  <g class="pair{{ ' partial' if col.partial }}" data-tip="{{ col.tip }}" tabindex="0">
+    <rect class="hit" x="{{ col.band_x }}" y="0" width="{{ col.band_w }}" height="{{ c.h }}"/>
+    {% for b in col.bars %}<path d="{{ b.path }}" style="fill: {{ b.color }}"/>{% endfor %}
+    <text x="{{ col.cx }}" y="{{ c.month_y }}" class="tick">{{ col.label }}</text>
+    {% if col.partial %}<text x="{{ col.cx }}" y="{{ c.note_y }}" class="tick-note">so far</text>{% endif %}
+  </g>
+  {% endfor %}
+</svg>
+{% endmacro %}
+
+{# How the calories split between protein, carbs and fat, with grams a day beside it. #}
+{% macro macro_donut(d) %}
+<div class="donut-wrap">
+  <svg class="viz donut" viewBox="0 0 120 120" role="img" aria-label="Calories: {% for l in d.legend %}{{ l.name }} {{ l.pct }}%{{ ', ' if not loop.last }}{% endfor %}">
+    {% for s in d.segments %}
+    <circle cx="60" cy="60" r="{{ d.r }}" fill="none" stroke="{{ s.color }}" stroke-width="14" stroke-dasharray="{{ s.dash }}"
+            stroke-dashoffset="{{ s.offset }}" transform="rotate(-90 60 60)" data-tip="{{ s.tip }}" tabindex="0"/>
+    {% endfor %}
+    <text x="60" y="57" class="donut-total">{{ '{:,.0f}'.format(d.kcal) }}</text>
+    <text x="60" y="72" class="donut-caption">kcal a day</text>
+  </svg>
+  <div class="legend-list">
+    {% for l in d.legend %}
+    <div class="legend-row"><span class="swatch-dot" style="background: {{ l.color }}"></span>
+      <span class="legend-name">{{ l.name }}<span class="note">{{ l.pct }}% of calories</span></span>
+      <span class="num">{{ '{:,.0f}'.format(l.grams) }} g a day</span></div>
+    {% endfor %}
+    {% if d.sugar is not none %}<div class="note">Sugar (part of carbs): {{ '{:,.0f}'.format(d.sugar) }} g a day</div>{% endif %}
+    <div class="note">Over {{ d.days }} day{{ 's' if d.days != 1 }} logged · from protein, carbs and fat (4, 4 and 9 kcal a gram)</div>
+  </div>
+</div>
 {% endmacro %}
 
 {# The net worth figure with its change since last month's end. #}

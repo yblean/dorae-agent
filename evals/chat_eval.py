@@ -55,6 +55,11 @@ CASES = [
     ("money", "did I save anything from my salary in september?", "spending", "income_summary"),
     ("calendar", "could you ping me sometime friday to renew my passport", "calendar", "propose_reminder"),
     ("calendar", "what reminders have I got coming up?", "calendar", "find_items"),
+    # Dorae-3: your own intake against the healthy ranges, and a food's numbers
+    ("fitness", "is 67 g a day of fat unhealthy and should it be cut down", "fitness", "nutrient_facts"),
+    ("fitness", "am I eating too much sugar?", "fitness", "nutrient_facts"),
+    ("fitness", "is my diet balanced?", "fitness", "nutrient_facts"),
+    ("fitness", "which has more protein, tofu or eggs?", "fitness", "nutrition"),
 ]
 
 # (agent, message, the path that should answer it without the model): a fast-path intent, "reminder", "event",
@@ -85,6 +90,8 @@ INSTANT = [
     ("fitness", "how am I doing today?", "fit_day"),
     ("fitness", "protein left", "fit_day"),
     ("fitness", "calories this week", "fit_week"),
+    ("fitness", "based on what i ate the past few weeks, am i hitting my target and what can i improve on", "fit_review"),
+    ("fitness", "what can i improve on", "fit_review"),
     ("fitness", "set my protein target to 140", "target"),
     ("money", "how much protein have I had today", "fit_day"),
     ("calendar", 'help me set an event for this Friday 2pm titled "Zx Convocation" at 2pm', "event"),
@@ -173,7 +180,7 @@ def main() -> None:
         except Exception as e:
             text, kind = f"FAILED: {e}", "-"
         ok = chat.last_topic == topic and (tool is None or tool in chat.last_tools) \
-            and (topic == {"money": "spending", "calendar": "calendar"}[agent] or not chat.last_tools)
+            and (topic == {"money": "spending", "calendar": "calendar", "fitness": "fitness"}[agent] or not chat.last_tools)
         passed += ok
         print(f"\n{'PASS' if ok else 'FAIL'} [{agent}] {question}  ({time.time() - start:.1f}s)")
         print(f"   topic={chat.last_topic} (want {topic})  tools={chat.last_tools} (want {tool})  card={kind}")

@@ -33,7 +33,9 @@ from doraemon.telegram import Command, CommandListener, connect_telegram
 from doraemon import senders
 from doraemon.db import from_chat
 from doraemon.rules import RuleStore
-from doraemon.fitness import import_steps
+from doraemon.fitness import TARGET_NAMES, import_steps
+from doraemon import coach, nudges
+from doraemon.phone import ASK_KEY
 from doraemon.tidy import tidy
 
 log = logging.getLogger(__name__)
@@ -207,7 +209,7 @@ class Runtime:
         self.schedules: list[Schedule] = [schedule] if schedule else []
         self.brain = Brain(self.db, settings, self.fx, schedule=self.get_schedule)
         self.check = CheckJob(self.db, settings, ingest)
-        self.check.after_payments = self.brain.budget_alerts
+        self.check.after_payments = self.after_payments
         self.check.on_problem = self.warn
         self.check.after_items = self.announce_new
         self.rules = RuleStore(settings.db_path)  # for "Skip emails from ..." (doraemon.senders)
@@ -281,7 +283,22 @@ class Runtime:
         if action == "fedit":  # Edit under food, logged or not: your next message changes its numbers
             return self.phone.start_edit(ident)
         if action == "fdrop":
+            self.clear_meal_question()
             return "✖ Not logged." if self.brain.fit.cancel(ident) else "That one's already logged (or was cancelled)."
+        if action == "fmeal":  # Something else under "Chicken rice again?": your next message is what you had
+            return self.phone.something_else(ident)
+        if action == "fcopy" and length:  # a meal under "Which one again?" after "same as yesterday"
+            return self.phone.copy_pressed(ident, length)
+        if action == "fskip":  # Skip under "Lunch at X? What did you have?"
+            self.clear_meal_question()
+            return "👍 Okay, not logging that one."
+        if action == "fgoal" and ident in TARGET_NAMES and length.isdigit():  # a change offered with the weekly review
+            goals = self.brain.fit.set_targets(**{ident: int(length)})
+            text = f"✅ Done: {coach.target_text({ident: goals[ident]})}."
+            self.db.add_message("fitness", "agent", f"{text} (You chose that on Telegram.)")
+            return text
+        if action == "fkeep" and ident in TARGET_NAMES:
+            return f"👍 Keeping your {TARGET_NAMES[ident]} target as it is."
         if not ident.isdigit():
             return "I don't know that button."
         item_id = int(ident)
@@ -496,6 +513,124 @@ class Runtime:
                 log.warning("fitness check on Telegram: %s", e)
         return True
 
+    # --- Dorae-3 speaking first (doraemon.nudges) ---------------------------------------------------------------
+
+    PROMPTED, PROMPTED_AT = "fitness:prompted_payment", "fitness:prompted_at"
+
+    def after_payments(self) -> None:
+        """A check brought in new payments: budget alerts (Dorae-1), then a meal question (Dorae-3)."""
+        self.brain.budget_alerts()
+        self.meal_prompt_tick()
+
+    def say(self, nudge: nudges.Nudge, now: datetime, chat: bool = False) -> bool:
+        """Send a nudge on Telegram (and to Dorae-3's chat when `chat`). A question it asks is what your next plain
+        message answers. Returns whether Telegram got it."""
+        if chat:
+            self.db.add_message("fitness", "agent", nudge.text)
+        bot = self.get_messenger()
+        if bot is None:
+            return False
+        try:
+            bot.send(nudge.text, buttons=nudge.buttons)
+        except Exception as e:
+            log.warning("Dorae-3 on Telegram: %s", e)
+            return False
+        if nudge.ask:
+            self.db.set_setting(ASK_KEY, json.dumps({**nudge.ask, "at": now.isoformat()}))
+        return True
+
+    def clear_meal_question(self) -> None:
+        try:
+            if json.loads(self.db.get_setting(ASK_KEY) or "{}").get("kind") == "meal":
+                self.db.set_setting(ASK_KEY, None)
+        except ValueError:
+            pass
+
+    def meal_prompt_tick(self, now: datetime | None = None) -> bool:
+        """After new payments: "Lunch at Kopitiam? Chicken rice again?" on Telegram for one at a food place, at most one
+        every 2 hours. The first time it only notes where it's up to. Returns whether it asked."""
+        now = (now or datetime.now(self.brain.tz)).astimezone(self.brain.tz)
+        newest = self.db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM transactions").fetchone()[0]
+        last = self.db.get_setting(self.PROMPTED)
+        self.db.set_setting(self.PROMPTED, str(newest))
+        if last is None or not self.settings.fitness_nudges or self.get_messenger() is None:
+            return False
+        recent = self.db.get_setting(self.PROMPTED_AT)
+        if recent and now - datetime.fromisoformat(recent) < nudges.PROMPT_GAP:
+            return False
+        for txn in self.db.conn.execute("SELECT * FROM transactions WHERE id > ? ORDER BY purchased_at DESC",
+                                        (int(last),)).fetchall():
+            if (nudge := nudges.meal_prompt(self.brain.fit, txn, now)) and self.say(nudge, now):
+                self.db.set_setting(self.PROMPTED_AT, now.isoformat())
+                return True
+        return False
+
+    def once(self, now: datetime, name: str, at: tuple[int, int], within: timedelta = timedelta(hours=2)) -> bool:
+        """True the first time it's asked today from `at` on (and no later than `within` after it)."""
+        start = now.replace(hour=at[0], minute=at[1], second=0, microsecond=0)
+        key = f"fitness:nudge:{name}:{now.date().isoformat()}"
+        if not start <= now <= start + within or self.db.get_setting(key):
+            return False
+        self.db.set_setting(key, now.isoformat())
+        return True
+
+    def nudge_tick(self, now: datetime | None = None) -> list[str]:
+        """Dorae-3's day: your usual breakfast at 9:30, a heads-up before a lunch (at 10am) or dinner (3pm) out on your
+        calendar, and the weekly review. Returns what it said, by name."""
+        now = (now or datetime.now(self.brain.tz)).astimezone(self.brain.tz)
+        fit, said = self.brain.fit, []
+        if self.settings.fitness_nudges:
+            if self.once(now, "breakfast", nudges.BREAKFAST_AT) and self.get_messenger() is not None \
+                    and (nudge := nudges.breakfast_prompt(fit, now)):
+                said += ["breakfast"] if self.say(nudge, now) else []
+            for lunch, at in ((True, nudges.LUNCH_NOTE_AT), (False, nudges.DINNER_NOTE_AT)):
+                if not self.once(now, "lunch" if lunch else "dinner", at):
+                    continue
+                events, _ = self.brain.calendar_events(now.date(), now.date())
+                for event in nudges.meals_out(events, now.date(), lunch):
+                    if event["start"] > now.strftime("%H:%M"):
+                        self.say(nudges.meal_out_note(fit, event), now, chat=True)
+                        said.append(f"meal out: {event['title']}")
+        if self.weekly_due(now):
+            said += ["weekly"] if self.weekly_review(now) else []
+        return said
+
+    def weekly_due(self, now: datetime) -> bool:
+        """DORAEMON_FITNESS_REVIEW ("mon 09:00"): once a week, from that day and time."""
+        day, _, at = self.settings.fitness_review.strip().lower().partition(" ")
+        days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        try:
+            weekday, start = days.index(day[:3]), dtime.fromisoformat(at or "09:00")
+        except ValueError:  # "off", or not a day and time
+            return False
+        key = f"fitness:weekly:{(now.date() - timedelta(days=now.weekday())).isoformat()}"
+        if now.weekday() != weekday or now.time() < start or self.db.get_setting(key):
+            return False
+        self.db.set_setting(key, now.isoformat())
+        return True
+
+    def weekly_review(self, now: datetime) -> bool:
+        """Last week in Dorae-3's chat and on Telegram, then any target changes worth making: Save on the card in the
+        app, or a button on Telegram. Quiet when last week has nothing logged. Returns whether it spoke."""
+        fit = self.brain.fit
+        card, found = nudges.weekly(fit)
+        if card["kind"] != "fitness_review":
+            return False
+        self.db.add_message("fitness", "agent", "📅 Your week: " + card["text"], card["kind"], card["payload"])
+        bot = self.get_messenger()
+        if bot is not None:
+            try:
+                bot.send("📅 Your week: " + self.phone.plain(card))
+            except Exception as e:
+                log.warning("weekly review on Telegram: %s", e)
+        if found:
+            goals = fit.targets()
+            text = "\n\n".join(p["text"] for p in found)
+            self.db.add_message("fitness", "agent", text + "\n\nChange anything and press Save, or leave it as it is.",
+                                "targets", {"targets": goals, "suggested": {**goals, **{p["key"]: p["to"] for p in found}}})
+            self.say(nudges.Nudge(text, nudges.proposal_buttons(found, goals)), now)
+        return True
+
     def webull_expires(self) -> datetime | None:
         if not (self.settings.webull_app_key and self.settings.webull_app_secret):
             return None
@@ -562,6 +697,9 @@ class Runtime:
         if self.db.get_setting(self.ANNOUNCED) is None:  # new finds from now on go to Telegram, not what's waiting
             self.db.set_setting(self.ANNOUNCED, str(self.db.conn.execute(
                 "SELECT COALESCE(MAX(id), 0) FROM action_items").fetchone()[0]))
+        if self.db.get_setting(self.PROMPTED) is None:  # meal questions for payments from now on, not old ones
+            self.db.set_setting(self.PROMPTED, str(self.db.conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM transactions").fetchone()[0]))
         if s.poll_minutes > 0:  # first look shortly after starting, so the program has settled
             self.stops.append(every(s.poll_minutes * 60, lambda: self.check.start(auto=True), "gmail-check", first=20))
         self.stops.append(every(60, self.reminders.tick, "reminders", first=5))
@@ -574,6 +712,7 @@ class Runtime:
         self.stops.append(every(30 * 60, self.monthly_tick, "monthly-summary", first=20))
         self.stops.append(every(10 * 60, self.steps_tick, "steps", first=30))
         self.stops.append(every(5 * 60, self.fitness_tick, "fitness-check", first=45))
+        self.stops.append(every(5 * 60, self.nudge_tick, "fitness-nudges", first=50))
 
     def stop_jobs(self) -> None:
         for stop in self.stops:

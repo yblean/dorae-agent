@@ -312,6 +312,8 @@ def understand(agent: str, q: str, previous: str | None = None) -> Route | None:
     q = fix_typos(q)
     if HELP.match(q):
         return Route(agent, "help")
+    if review := fit_review(agent, q):  # "how can I improve" too: the review's tips are worked out, not written
+        return review
     if NEEDS_THOUGHT.search(q) or CHANGES.search(q):
         return None
     if (found := FIND.match(q)) and not re.fullmatch(TOPIC_ONLY, found["what"]):
@@ -409,9 +411,38 @@ FITNESS_TOPIC = re.compile(r"\b(?:calories|calorie|kcal|protein|carbs?|carbohydr
                            r"what did i eat|diet)\b")
 
 
+# "am i hitting my targets", "based on what i ate the past few weeks, what can i improve on", "how have i been doing
+# this month": several weeks against your targets, with what to improve (coach.review_card)
+FIT_REVIEW = re.compile(r"\b(?:hit(?:ting)?|meet(?:ing)?|met|reach(?:ing|ed)?|on track|improve(?:ments?)?|improving|"
+                        r"work on|analy[sz]e|analysis|review|overall|progress|how (?:have|has) (?:i|my \w+) been|"
+                        r"how (?:did|was|am|have) i (?:been )?(?:doing|going|done|do)|"
+                        r"how(?:'s| is| was| has) my (?:eating|diet|food|nutrition)(?: been)?)\b")
+_COUNT = {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "couple of": 2, "couple": 2,
+          "few": 4, "several": 4}
+
+
+def fit_review(agent: str, q: str) -> Route | None:
+    """A review of your eating and steps against your targets, over the span the question names (4 weeks unless it
+    says otherwise); None when it isn't one. Today or yesterday on its own is a day's lookup, not a review."""
+    if not FIT_REVIEW.search(q) or CHANGES.search(q) or re.search(r"\b(?:today|tonight|yesterday)\b", q):
+        return None
+    if not (agent == "fitness" or FITNESS_TOPIC.search(q) or re.search(r"\b(?:eat|eating|food|meals?)\b", q)) \
+            or re.search(r"\b(?:spend|spent|spending|paid|pay|cost|budgets?|sgd|savings?|income)\b|\$", q):
+        return None
+    if m := re.search(rf"\b(?:past|last|previous|these|the)\s+(\d{{1,3}}|{'|'.join(_COUNT)})\s+(days?|weeks?|months?)\b", q):
+        n = int(m[1]) if m[1].isdigit() else _COUNT[m[1]]
+        return Route("fitness", "fit_review", {"span": f"days:{n * {'d': 1, 'w': 7, 'm': 30}[m[2][0]]}"})
+    for words, span in ((r"last month|previous month", "month:last"), (r"this month", "month:this"),
+                        (r"(?:last|previous) week", "week:last"), (r"this week", "week:this"),
+                        (r"past week|fortnight", "days:7" if "fortnight" not in q else "days:14")):
+        if re.search(rf"\b(?:{words})\b", q):
+            return Route("fitness", "fit_review", {"span": span})
+    return Route("fitness", "fit_review", {"span": "days:28"})
+
+
 def _fitness(q: str) -> Route:
     """Dorae-3's lookups: a day (today, yesterday), the week, or your targets."""
-    if re.search(r"\b(?:targets?|goals?)\b", q) and not re.search(r"\b(?:hit|reach|reached|met|on track)\b", q):
+    if re.search(r"\b(?:targets?|goals?)\b", q) and not FIT_REVIEW.search(q):
         return Route("fitness", "fit_targets")
     when = spoken_when(q)
     if when in ("this_week", "last_week") or re.search(r"\b(?:week|weekly|7 days)\b", q):

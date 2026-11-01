@@ -402,3 +402,53 @@ def test_a_reminder_the_model_looks_up_first_is_drafted_anyway(chat):
     answer = AgentChat(Brain(chat.db, chat.settings, None), model).answer("calendar", "could you ping me sometime friday to renew my passport", [])
     assert any(r["title"] == "Renew my passport" for r in chat.db.items(("proposed",)))
     assert answer[0]["kind"] == "items"
+
+
+# --- Dorae-3: questions about your own eating, answered from your log -------------------------------------------
+
+def eaten(db, settings, days, **food):
+    from doraemon.fitness import Fitness
+    fit = Fitness(db, settings.timezone)
+    fit.set_targets(kcal=2000, protein=120)
+    for back in range(1, days + 1):
+        fit.log(fit.draft([{"name": "Nasi lemak", "portion": "1 plate", **food}], fit.today() - timedelta(days=back)))
+    return fit
+
+
+def test_a_question_about_your_fat_is_answered_from_your_log(chat):
+    eaten(chat.db, chat.settings, 5, kcal=1800, protein=90, carbs=170, fat=80, sugar=20)
+    model = ScriptedModel("fitness", call("nutrient_facts", period="this_week"),
+                          say("67 g would be fine, but you average 80 g, so cut back on nasi lemak."))
+    html = chat("fitness", "is 67 g a day of fat unhealthy and should it be cut down", model)
+    assert "67 g would be fine, but you average 80 g, so cut back on nasi lemak." in html  # the model's words
+    facts = json.loads(model.seen[1]["messages"][-1]["content"])
+    assert facts["period"].startswith("Since you started logging") and "5 fully logged days" in facts["period"]  # not "this week"
+    assert list(facts["nutrients"]) == ["fat"] and facts["nutrients"]["fat"]["verdict"] == "above the range"
+    assert facts["conclusion"][0] == ("67 g of fat a day would be 34% of the 1,800 kcal you eat, within the range "
+                                      "(20-35% of calories).")
+    assert facts["conclusion"][1].startswith("Your log averages 80 g of fat a day (40% of calories), above the "
+                                             "healthy 40-70 g, so it's worth cutting back: most of it comes from nasi lemak")
+    assert "kind of fat" in facts["not_tracked"]
+
+
+def test_is_my_diet_balanced_covers_every_nutrient(chat):
+    eaten(chat.db, chat.settings, 4, kcal=2000, protein=60, carbs=300, fat=60, sugar=30)
+    model = ScriptedModel("fitness", call("nutrient_facts", nutrient="fat"), say("Mostly, but protein is low."))
+    chat("fitness", "is my diet balanced?", model)
+    facts = json.loads(model.seen[1]["messages"][-1]["content"])
+    assert list(facts["nutrients"]) == ["protein", "carbs", "fat", "sugar"]  # the model's "fat" guess is ignored
+    assert "not_tracked" not in facts and "amount_asked_about" not in facts
+    assert "60 g of protein a day (12% of calories), within the healthy range" in facts["conclusion"][0]
+    assert "short of your 120 g target" in facts["conclusion"][0]
+
+
+def test_fitness_facts_keep_the_models_words(chat):
+    eaten(chat.db, chat.settings, 3, kcal=1900, protein=100, carbs=200, fat=60, sugar=20)
+    model = ScriptedModel("fitness", call("fitness_facts", period="past_weeks"), say("Calories are close to target."))
+    html = chat("fitness", "how have things been lately", model)
+    assert "Calories are close to target." in html and "To improve:" not in html  # the card's own text stays out
+
+
+def test_changing_a_target_never_goes_to_the_model(chat):
+    html = chat("fitness", "lower my calories to 1800", ScriptedModel("fitness"))  # no turns: calling it would fail
+    assert "1,800 kcal" in html

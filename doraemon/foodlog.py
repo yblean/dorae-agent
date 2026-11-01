@@ -163,12 +163,14 @@ _JOINS = r"(?:and|with|plus|or|then|also)\b"
 def said_count(text: str, name: str) -> tuple[float, str, str] | None:
     """How many of a food your words say: (3, 'egg', '3 eggs') for "i had 3 eggs and 2 bread" and the egg;
     (2, 'piece', '2 pc') for "2 pc of milk bread". None if you didn't say a number for it."""
-    words = [w for w in key_of(name).split() if len(w) > 2]
+    words = [w for w in key_of(name).split() if len(w) > 2 and not re.fullmatch(_JOINS + "|from|side", w)]
     if not words or not text:
         return None
-    things = "|".join(re.escape(_stem(w)[:-1] if len(_stem(w)) > 4 else _stem(w)) for w in words)
+    # "berry" finds "berries" and "egg" finds "eggs", but "bread" never finds "breast"
+    things = "|".join(re.escape(s[:-1]) + "(?:y|ies)" if (s := _stem(w)).endswith("y") else re.escape(s) + "(?:e?s)?"
+                      for w in words)
     numbers = r"(\d+(?:\.\d+)?|(?:" + "|".join(_NUMBER_WORDS) + r")\b)"
-    thing = r"(?:" + things + r")[a-z]*"
+    thing = r"(?:" + things + r")\b"
     m = re.search(r"\b" + numbers + r"\s*(?:x\s*)?((?:(?!" + _JOINS + r")[a-z]+\s+){0,4}?)" + thing + r"(?:\s+" + thing + ")*",
                   text, re.I)
     if m is None:

@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% from "_macros.html" import fit_meters %}{% set title = "Fitness" %}
+{% extends "base.html" %}{% from "_macros.html" import fit_meters, columns, stacked_chart, macro_donut %}{% set title = "Fitness" %}
 {% block content %}
 <div class="fit-page" style="--agent: #22C55E">
 <div class="panel-box">
@@ -14,6 +14,44 @@
     {% endfor %}
   </table>
 </div>
+
+{% set span = {'days': 'these 14 days', 'weeks': 'these 12 weeks', 'months': 'these 6 months'}[trend.view] %}
+<div class="tabs" id="charts">
+  {% for v in views %}<a href="/fitness?view={{ v }}#charts" class="tab" {{ 'aria-current=page' if v == trend.view }}>{{ v|capitalize }}</a>{% endfor %}
+  <span class="note tabs-note">{{ 'Each day' if trend.view == 'days' else 'The average a day, over the days you logged' }}</span>
+</div>
+<div class="fit-charts">
+  {% for key, title in [('kcal', 'Calories'), ('protein', 'Protein')] %}{% set c = graphs[key] %}
+  <div class="panel-box">
+    <div class="card-head"><span>{{ title }}</span>{% if c.budget %}<span class="note key-line">{{ c.budget.label }}</span>{% endif %}</div>
+    {% if c.empty %}<p class="empty">Nothing logged in {{ span }}.</p>{% else %}{{ columns(c) }}{% endif %}
+  </div>
+  {% endfor %}
+  <div class="panel-box wide">
+    <div class="card-head"><span>Where your calories come from</span><span class="note">{{ span }}</span></div>
+    {% if graphs.split.days %}{{ macro_donut(graphs.split) }}{% else %}<p class="empty">Nothing logged in {{ span }}.</p>{% endif %}
+  </div>
+  <div class="panel-box">
+    <div class="card-head"><span>Protein, carbs and fat</span><span class="note">in kcal</span></div>
+    {% if graphs.split.days %}{{ stacked_chart(graphs.macros) }}{% else %}<p class="empty">Nothing logged in {{ span }}.</p>{% endif %}
+  </div>
+  {% set c = graphs.steps %}
+  <div class="panel-box">
+    <div class="card-head"><span>Steps</span>{% if c.budget %}<span class="note key-line">{{ c.budget.label }}</span>{% endif %}</div>
+    {% if c.empty %}<p class="empty">No steps in {{ span }}. Set-up is under <a href="#health">Steps from Apple Health</a>.</p>{% else %}{{ columns(c) }}{% endif %}
+  </div>
+</div>
+<details class="panel-box">
+  <summary class="note">The numbers behind the charts</summary>
+  <table class="payments">
+    <tr><th>{{ trend.view[:-1]|capitalize }}</th><th class="num">kcal</th><th class="num">Protein</th><th class="num">Carbs</th><th class="num">Fat</th><th class="num">Sugar</th><th class="num">Steps</th></tr>
+    {% for b in trend.buckets|reverse %}
+    <tr><td>{{ b.name }}{% if b.partial %} <span class="note">so far</span>{% endif %}{% if trend.view != 'days' and b.logged %}<div class="note">{{ b.logged }} day{{ 's' if b.logged != 1 }} logged</div>{% endif %}</td>
+      {% for m in ['kcal', 'protein', 'carbs', 'fat', 'sugar'] %}<td class="num">{{ '{:,.0f}'.format(b[m]) ~ ('' if m == 'kcal' else ' g') if b[m] is not none else '–' }}</td>{% endfor %}
+      <td class="num">{{ '{:,}'.format(b.steps) if b.steps is not none else '–' }}</td></tr>
+    {% endfor %}
+  </table>
+</details>
 
 <form class="panel-box" method="post" action="/fitness/targets">
   <input type="hidden" name="back" value="/fitness">
@@ -62,7 +100,7 @@
   </table>
 </div>
 
-<div class="panel-box">
+<div class="panel-box" id="health">
   <div class="card-head"><span>Steps from Apple Health</span>
     <span class="note">{% if today.steps is not none %}today so far: {{ '{:,}'.format(today.steps) }}{% else %}none for today yet{% endif %}</span></div>
   <p class="note">An automation in your iPhone's Shortcuts app saves today's steps to iCloud Drive, iCloud for Windows

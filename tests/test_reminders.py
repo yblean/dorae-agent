@@ -427,6 +427,31 @@ def test_plain_messages_go_to_the_handler_and_commands_dont(db):
     assert bot.sent == ["answered", "listed", "answered"] and bot.buttons[0] == [[("OK", "ok:1")]]
 
 
+def test_messages_sent_while_the_app_was_closed_are_still_answered(db):
+    bot = FakeChatBot([update(1, "ate laksa", age=3600), update(2, "/reminders", age=3600),
+                       update(3, "ate laksa", age=2 * 86400)])
+    heard = []
+    CommandListener(db, lambda: bot, [Command("reminders", "List your reminders", lambda: "listed")],
+                    on_text=lambda text, **late: (heard.append((text, late)) or "logged?", None)).poll_once()
+    (text, late), = heard  # the old command and the one from two days ago: nothing
+    assert text == "ate laksa" and time.time() - late["sent"].timestamp() >= 3600 and bot.sent == ["logged?"]
+
+
+def test_a_reply_lost_to_a_network_blip_is_sent_again(db, monkeypatch):
+    monkeypatch.setattr("doraemon.telegram.time.sleep", lambda s: None)
+    bot = FakeChatBot([update(1, "ate laksa")])
+    send, tries = bot.send, []
+
+    def flaky(text, buttons=None):
+        tries.append(text)
+        if len(tries) == 1:
+            raise TelegramError("couldn't reach Telegram (ReadError)")
+        send(text, buttons)
+    bot.send = flaky
+    CommandListener(db, lambda: bot, [], on_text=lambda text: ("🍽 Laksa", [[("✅ Log", "flog:ab")]])).poll_once()
+    assert tries == ["🍽 Laksa", "🍽 Laksa"] and bot.sent == ["🍽 Laksa"] and bot.buttons == [[[("✅ Log", "flog:ab")]]]
+
+
 def test_anything_else_gets_the_command_list(db):
     bot = FakeChatBot([update(1, "hello")])
     lst = listener(db, bot)
